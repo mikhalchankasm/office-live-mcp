@@ -720,10 +720,17 @@ def _find_slicer(wb, key: str):
     """
     k = key.lower()
     caches = [wb.SlicerCaches(i) for i in range(1, int(wb.SlicerCaches.Count) + 1)]
-    pairs = [(sc, sl) for sc in caches for sl in _slicers_of(sc)]
+    pairs, unreadable = [], []
+    for sc in caches:
+        try:
+            pairs += [(sc, sl) for sl in _slicers_of(sc)]
+        except ToolError:
+            unreadable.append(sc.Name)
     for sc, sl in pairs:
         if sl.Name.lower() == k:
             return sc, sl
+    if unreadable:  # искомый срез может быть в непрочитанном кэше: подбирать замену по кэшу/подписи/полю нельзя
+        raise ToolError(f"Excel could not list the slicers of cache(s) {unreadable}, so '{key}' cannot be resolved safely. Retry, or pass a slicer name from another cache.")
     for sc in caches:
         if sc.Name.lower() == k:
             return sc, None
@@ -741,10 +748,11 @@ def _find_slicer(wb, key: str):
 
 
 def _slicers_of(sc) -> list:
+    """Срезы кэша. Ошибку перечисления не превращаем в пустой список: «срезов нет» разрешило бы удалить весь кэш."""
     try:
         return [sc.Slicers(j) for j in range(1, int(sc.Slicers.Count) + 1)]
-    except pywintypes.com_error:
-        return []
+    except pywintypes.com_error as exc:
+        raise ToolError(f"Excel could not list the slicers of cache '{sc.Name}': {com.com_error_text(exc)}. Nothing was changed.") from None
 
 
 def _target_slicer(sc, sl, key: str):
@@ -938,7 +946,11 @@ def excel_manage_slicers(
         if len(siblings) > 1:
             name = picked.Name  # у кэша есть другие срезы — удаляем только названный
             picked.Delete()
-            return {"ok": True, "workbook": wb.Name, "deleted": name, "kept_slicers": [x.Name for x in _slicers_of(sc)]}
+            try:
+                kept = [x.Name for x in _slicers_of(sc)]
+            except ToolError:  # удаление уже выполнено — не превращаем его в ошибку из-за отчёта
+                kept = None
+            return {"ok": True, "workbook": wb.Name, "deleted": name, "kept_slicers": kept}
         # единственный срез (или кэш без срезов): удаляем вместе с кэшем, чтобы не оставлять фильтр без кнопок
         removed = [x.Name for x in siblings]
         cache_name = sc.Name

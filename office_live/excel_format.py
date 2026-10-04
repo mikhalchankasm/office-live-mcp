@@ -965,18 +965,20 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
             except pywintypes.com_error as exc:
                 last_error = last_error or com.com_error_text(exc)
     finally:
-        for obj, state in restore_states:
-            try:
-                obj.WindowState = state
-            except pywintypes.com_error:
-                pass
-        if prev is not None:
-            _restore_view(app, prev)
-        if resume_autosave:
-            try:
-                wb.AutoSaveOn = True
-            except pywintypes.com_error:
-                print(f"[office-live] could not turn AutoSave back on for {wb.Name}; ask the user to re-enable it", file=sys.stderr)
+        try:
+            for obj, state in restore_states:
+                try:
+                    obj.WindowState = state
+                except pywintypes.com_error:
+                    pass
+            if prev is not None:
+                _restore_view(app, prev)
+        finally:  # окна могут не вернуться («Office занят»), но AutoSave возвращаем в любом случае
+            if resume_autosave:
+                try:
+                    wb.AutoSaveOn = True
+                except Exception:  # не заслонять исходную ошибку, но и не молчать
+                    print(f"[office-live] could not turn AutoSave back on for {wb.Name}; ask the user to re-enable it", file=sys.stderr)
     if not data:
         raise ToolError("Could not render the range (the workbook window must be visible and not minimized)" + (f": {last_error}" if last_error else "."))
     if blank and has_content:

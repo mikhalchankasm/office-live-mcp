@@ -307,9 +307,9 @@ def test_slicer_delete_by_name_removes_only_that_slicer(slicer_env):
     assert second.deleted and not first.deleted and not cache.deleted and out["deleted"] == "Second"
 
 
-def test_slicer_delete_by_cache_name_or_for_the_last_slicer_removes_the_cache(slicer_env):
+def test_slicer_delete_cache_removes_all_and_the_last_slicer_takes_its_cache(slicer_env):
     cache, first, second = slicer_env
-    out = excel_pivot.excel_manage_slicers("B.xlsx", action="delete", slicer="Slicer_Region")
+    out = excel_pivot.excel_manage_slicers("B.xlsx", action="delete_cache", slicer="Slicer_Region")
     assert cache.deleted and set(out["deleted_slicers"]) == {"First", "Second"}
     lone = FakeCache("Slicer_X", "X", [FakeSlicer("Only")])
     wb = SimpleNamespace(Name="B.xlsx", SlicerCaches=Coll([lone]))
@@ -462,14 +462,6 @@ def test_read_action_that_writes_a_file_is_audited(monkeypatch, tmp_path):
         registry.CATALOG.pop("zz_charts", None)
 
 
-def test_live_fixtures_only_claim_files_of_their_own_run():
-    from tests.live.conftest import RUN_TAG, _is_ours
-
-    assert _is_ours("a.xlsx", "b.xlsx", rf"C:\Temp\{RUN_TAG}_x") is True
-    assert _is_ours("a.xlsx", "b.xlsx", r"C:\Temp\ol_pytest_old_run_dir") is False  # чужой каталог и прежнего запуска — не наш
-    assert _is_ours("Книга1", "Книга1", "") is True and _is_ours("x", "y", "") is False
-
-
 # ======================================================================== 8. установщик
 
 
@@ -497,31 +489,20 @@ def codex_cfg(home, text=READONLY_TOML):
 
 
 def test_codex_reinstall_keeps_restrictions_without_tomllib(fake_home, monkeypatch):
-    """Python 3.10 не имеет tomllib: прежний код возвращал {} и затирал ограничения."""
+    """Python 3.10 не имеет tomllib: прежний код возвращал {} и затирал ограничения. Теперь читает бэкпорт tomli."""
+    tomllib = pytest.importorskip("tomllib")
     monkeypatch.setitem(sys.modules, "tomllib", None)  # import tomllib -> ImportError
+    monkeypatch.setitem(sys.modules, "tomli", tomllib)  # tomli — бэкпорт с тем же API
     cfg = codex_cfg(fake_home)
     assert cli.run("setup", ["--yes", "--clients", "codex"]) == 0
     text = cfg.read_text(encoding="utf-8")
     assert 'OFFICE_LIVE_MODE = "readonly"' in text and "OFFICE_LIVE_ALLOWED_DIRS" in text and 'command = "old"' not in text
 
 
-@pytest.mark.parametrize(
-    "text,expected",
-    [
-        ('[mcp_servers.office-live.env]\nA = "1"\nB = \'2\'  # c\n', {"A": "1", "B": "2"}),
-        ('[mcp_servers."office-live"]\ncommand = "x"\nenv = { A = "1", "B" = \'two\' }\n', {"A": "1", "B": "two"}),
-        ('[mcp_servers.office-live]\ncommand = "x"\nenv.A = "1"\n', {"A": "1"}),
-        ('[other]\nA = "9"\n[mcp_servers.office-live]\ncommand = "x"\n', {}),
-        ('[mcp_servers.office-live.env]\nP = "C:\\\\dir\\\\x"\n', {"P": "C:\\dir\\x"}),
-    ],
-)
-def test_toml_fallback_parser_reads_our_entry(text, expected):
-    assert cli._toml_env_fallback(text) == expected
-
-
 def test_unreadable_entry_is_not_silently_overwritten(fake_home, monkeypatch, capsys):
-    monkeypatch.setitem(sys.modules, "tomllib", None)
-    cfg = codex_cfg(fake_home, '[mcp_servers.office-live]\ncommand = "old"\n[mcp_servers.office-live.env]\nOFFICE_LIVE_MODE = 5\n')
+    monkeypatch.setitem(sys.modules, "tomllib", None)  # Python 3.10 без tomli: разбирать нечем
+    monkeypatch.setitem(sys.modules, "tomli", None)
+    cfg = codex_cfg(fake_home)
     before = cfg.read_text(encoding="utf-8")
     assert cli.run("setup", ["--yes", "--clients", "codex"]) == 1  # настройки прочитать нельзя -> отказ, файл не тронут
     assert cfg.read_text(encoding="utf-8") == before

@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from tests.live.mcpclient import Stdio
+from tests.live.mcpclient import Stdio, ToolFailed
 from tests.live.office_cleanup import quit_word_if_idle, word_running
 
 
@@ -25,27 +25,66 @@ def srv():
 RUN_TAG = f"ol_pytest_{uuid.uuid4().hex[:8]}"  # уникальна для этого запуска: файлы других запусков и пользователя не совпадут
 
 
-def _is_ours(name, original, path):
-    """Наш файл: исходное имя черновика или файл в временной папке ЭТОГО запуска (имя меняется после Save As)."""
-    return name == original or (bool(path) and RUN_TAG in path)
+def _in_run_dir(path) -> bool:
+    """Файл лежит во временной папке ЭТОГО запуска (туда тесты делают Save As): путь уникален, чужим быть не может."""
+    return bool(path) and RUN_TAG in path
+
+
+def _full(item) -> str:
+    return item["path"] + "\\" + item["name"] if item["path"] else item["name"]
 
 
 @pytest.fixture
 def wb(srv):
     name = srv.call("excel_new_workbook", sheets=["Data"])["workbook"]
+    marker = f"{RUN_TAG}_{uuid.uuid4().hex[:8]}"
+    # имя несохранённой книги («Книга3») может совпасть с книгой пользователя в другом экземпляре Excel:
+    # свою узнаём по уникальной метке, а не по имени
+    srv.call("excel_manage_names", workbook=name, action="add", name=marker, formula="=1")
     yield name
+    close_own_workbooks(srv, name, marker)
+
+
+def close_own_workbooks(srv, name, marker):
+    """Закрывает (discard) только книги этого теста: файлы в папке запуска и несохранённую книгу с нашей меткой."""
     for w in srv.call("excel_list_workbooks")["workbooks"]:
-        if _is_ours(w["name"], name, w["path"]):
-            srv.call("excel_close_workbook", workbook=w["path"] + "\\" + w["name"] if w["path"] else w["name"], discard=True)
+        if _in_run_dir(w["path"]):
+            srv.call("excel_close_workbook", workbook=_full(w), discard=True)
+        elif not w["path"] and w["name"] == name and _excel_marked(srv, name, marker):
+            srv.call("excel_close_workbook", workbook=name, discard=True)
+
+
+def _excel_marked(srv, name, marker) -> bool:
+    try:  # имя в нескольких экземплярах -> сервер откажет; тогда не закрываем ничего
+        names = srv.call("excel_manage_names", workbook=name, action="list")["names"]
+    except ToolFailed:
+        return False
+    return any(n["name"] == marker for n in names)
 
 
 @pytest.fixture
 def doc(srv):
     name = srv.call("word_new_document")["document"]
+    marker = f"{RUN_TAG}_{uuid.uuid4().hex[:8]}"
+    srv.call("word_document_properties", document=name, action="set", properties={"Comments": marker})
     yield name
+    close_own_documents(srv, name, marker)
+
+
+def close_own_documents(srv, name, marker):
     for d in srv.call("word_list_documents")["documents"]:
-        if _is_ours(d["name"], name, d["path"]):
-            srv.call("word_close_document", document=d["path"] + "\\" + d["name"] if d["path"] else d["name"], discard=True)
+        if _in_run_dir(d["path"]):
+            srv.call("word_close_document", document=_full(d), discard=True)
+        elif not d["path"] and d["name"] == name and _word_marked(srv, name, marker):
+            srv.call("word_close_document", document=name, discard=True)
+
+
+def _word_marked(srv, name, marker) -> bool:
+    try:
+        props = srv.call("word_document_properties", document=name)["properties"]
+    except ToolFailed:
+        return False
+    return props.get("Comments") == marker
 
 
 @pytest.fixture

@@ -33,4 +33,5 @@ line-length = 180
 target-version = "py310"
 
 [tool.ruff.lint]
-select = ["F", "E9"]
+# F — ошибки (неопределённые имена и т. п.), E9 — синтаксис, W — пробелы, B — типичные ловушки, UP — устаревший синтаксис, PLE — ошибки pylint
+select = ["F", "E9", "W", "B", "UP", "PLE"]

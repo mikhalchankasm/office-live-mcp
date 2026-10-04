@@ -96,7 +96,7 @@ def tools(args) -> int:
     ns = p.parse_args(args)
     items = list(CATALOG.values())
     if ns.json:
-        print(json.dumps([{"name": i.name, "group": i.group, "kind": i.kind, "registered": i.registered, "description": i.doc.split("\n")[0]} for i in items], ensure_ascii=False, indent=1))
+        print(json.dumps([{"name": i.name, "group": i.group, "kind": i.kind, "read_actions": list(i.read_actions), "registered": i.registered, "description": i.doc.split("\n")[0]} for i in items], ensure_ascii=False, indent=1))
         return 0
     groups: dict[str, list] = {}
     for i in items:
@@ -106,11 +106,13 @@ def tools(args) -> int:
             print(f"\n### {g} ({len(lst)})\n\n| Tool | Kind | What it does |\n|---|---|---|")
             for i in lst:
                 first = i.doc.split("\n")[0].replace("|", "\\|")
-                print(f"| `{i.name}` | {i.kind} | {first} |")
+                kind = i.kind + (f" (readonly: {', '.join(i.read_actions)})" if i.read_actions else "")
+                print(f"| `{i.name}` | {kind} | {first} |")
         else:
             print(f"\n[{g}] {len(lst)} tools")
             for i in lst:
-                print(f"  {i.name:<34} {i.kind:<11} {'' if i.registered else '(disabled) '}{i.doc.split(chr(10))[0][:90]}")
+                kind = i.kind + ("*" if i.read_actions else "")
+                print(f"  {i.name:<34} {kind:<12} {'' if i.registered else '(disabled) '}{i.doc.split(chr(10))[0][:90]}")
     print(f"\nTotal: {len(items)} tools, {sum(1 for i in items if i.registered)} registered with the current settings.", file=sys.stderr)
     return 0
 
@@ -205,9 +207,8 @@ def _json_target(client: str) -> tuple[Path | None, list[str], bool]:
 
 
 _TOML_HEADER = re.compile(r"^\s*\[\[?[^\[\]=\n]*\]\]?\s*(?:#.*)?$")
-_OURS = re.compile(
-    r"""^\s*\[\s*mcp_servers\s*\.\s*(?:"%(n)s"|'%(n)s'|%(n)s)\s*(?:\.[^\]]*)?\]\s*(?:#.*)?$""" % {"n": re.escape(SERVER_NAME)}
-)
+_NAME_RE = re.escape(SERVER_NAME)
+_OURS = re.compile(rf"""^\s*\[\s*mcp_servers\s*\.\s*(?:"{_NAME_RE}"|'{_NAME_RE}'|{_NAME_RE})\s*(?:\.[^\]]*)?\]\s*(?:#.*)?$""")
 
 
 def _strip_toml_tables(text: str) -> str:

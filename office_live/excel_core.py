@@ -14,7 +14,7 @@ from .util import (
     parse_color, quote_sheet, to_com_grid, to_grid,
 )
 from .xl_common import (
-    addr_of, all_workbooks, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
+    addr_of, all_workbooks, workbook_allowed, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
     pick_sheet, pick_workbook, preview, read_grid, ref_label, sheet_is_empty, sheet_names, sub_range,
     validate_sheet_name,
 )
@@ -24,6 +24,13 @@ GRID_HINT = "2-D array: a list of rows, each row a list of cell values (a flat l
 
 # коды форматов SaveAs
 _SAVE_FORMATS = {"xlsx": 51, "xlsm": 52, "xlsb": 50, "xls": 56, "csv": 62, "txt": 42, "html": 44, "htm": 44, "ods": 60, "xltx": 54, "xltm": 53}
+
+
+def _autosave(wb) -> bool | None:
+    try:
+        return bool(wb.AutoSaveOn)
+    except (pywintypes.com_error, AttributeError):
+        return None
 
 
 def _pid(app):
@@ -75,6 +82,8 @@ def excel_list_workbooks() -> dict:
             active_sheet = sh.Name if sh is not None else None
         for i in range(1, app.Workbooks.Count + 1):
             wb = app.Workbooks(i)
+            if not workbook_allowed(wb):
+                continue  # вне OFFICE_LIVE_ALLOWED_DIRS: даже имя не показываем
             books.append({
                 "name": wb.Name,
                 "path": wb.Path or None,
@@ -84,6 +93,7 @@ def excel_list_workbooks() -> dict:
                 "sheets": _sheet_list(wb),
                 "active": idx == 0 and act_name == wb.Name,
                 "instance": idx,
+                "autosave": _autosave(wb),
             })
     return {
         "excel_running": True,
@@ -139,6 +149,7 @@ def excel_workbook_info(workbook: str = "") -> dict:
         "path": wb.FullName if wb.Path else None,
         "saved": bool(wb.Saved),
         "read_only": bool(wb.ReadOnly),
+        "autosave": _autosave(wb),
         "calculation": calc,
         "active_sheet": act.Name if act is not None else None,
         "sheets": sheets,
@@ -167,23 +178,12 @@ def excel_open_workbook(path: str, read_only: bool = False) -> dict:
             return {"ok": True, "already_open": True, "workbook": wb.Name, "path": wb.FullName, "sheets": _sheet_list(wb)}
     app = com.primary_app("excel", launch=True)
     force_ro = bool(read_only or config.SETTINGS.readonly)
-    old_sec = None
     try:
-        old_sec = app.AutomationSecurity
-        app.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
-    except pywintypes.com_error:
-        pass
-    try:
-        # Open(Filename, UpdateLinks, ReadOnly, Format, Password): пароль-пустышка — зашифрованный файл не зависнет на диалоге
-        wb = app.Workbooks.Open(full, 0, force_ro, None, "__office_live_no_password__")
+        with com.macros_disabled(app):
+            # Open(Filename, UpdateLinks, ReadOnly, Format, Password): пароль-пустышка — зашифрованный файл не зависнет на диалоге
+            wb = app.Workbooks.Open(full, 0, force_ro, None, "__office_live_no_password__")
     except pywintypes.com_error as exc:
         raise ToolError(f"Excel could not open {full}: {com.com_error_text(exc)} (password-protected or corrupt file?)") from None
-    finally:
-        if old_sec is not None:
-            try:
-                app.AutomationSecurity = old_sec
-            except pywintypes.com_error:
-                pass
     return {"ok": True, "already_open": False, "workbook": wb.Name, "path": wb.FullName, "read_only": bool(wb.ReadOnly), "sheets": _sheet_list(wb)}
 
 
@@ -195,7 +195,7 @@ def _excel_running() -> bool:
         return False
 
 
-@office_tool("excel_core", "open", title="New workbook")
+@office_tool("excel_core", "write", title="New workbook")
 def excel_new_workbook(sheets: list[str] | None = None) -> dict:
     """Create a new empty workbook in Excel (starts Excel if needed). The workbook is unsaved until excel_save_as.
 
@@ -227,13 +227,14 @@ def excel_close_workbook(workbook: str, save: bool = False, discard: bool = Fals
     """
     if not workbook:
         raise ToolError("'workbook' is required for closing.")
-    app, wb = pick_workbook(workbook)
+    app, wb = pick_workbook(workbook, allow_autosave=True)
     name = wb.Name
     saved_first = False
     if not wb.Saved:
         if save:
             if not wb.Path:
                 raise ToolError(f"{name} has never been saved; use excel_save_as first or pass discard=true.")
+            check_path(wb.FullName, "write")  # зона доступа и запретные каталоги — и для сохранения уже открытой книги
             wb.Save()
             saved_first = True
         elif not discard:
@@ -250,11 +251,12 @@ def excel_save(workbook: str = "") -> dict:
     Args:
         workbook: exact name or '' for the active workbook.
     """
-    app, wb = pick_workbook(workbook)
+    app, wb = pick_workbook(workbook, allow_autosave=True)
     if not wb.Path:
         raise ToolError(f"{wb.Name} has never been saved - use excel_save_as with a path.")
     if wb.ReadOnly:
         raise ToolError(f"{wb.Name} is open read-only; use excel_save_as to write a copy.")
+    check_path(wb.FullName, "write")  # зона доступа и запретные каталоги
     wb.Save()
     return {"ok": True, "workbook": wb.Name, "path": wb.FullName, "saved": bool(wb.Saved)}
 
@@ -268,7 +270,7 @@ def excel_save_as(workbook: str, path: str, overwrite: bool = False) -> dict:
         path: destination full path with extension.
         overwrite: allow replacing an existing file.
     """
-    app, wb = pick_workbook(workbook)
+    app, wb = pick_workbook(workbook, allow_autosave=True)
     full = check_path(path, "write", EXCEL_EXTS - {"pdf"})
     if os.path.exists(full) and not overwrite:
         raise ToolError(f"File already exists: {full}. Pass overwrite=true to replace it.")
@@ -296,7 +298,7 @@ def excel_export_pdf(workbook: str, path: str, sheet: str = "", overwrite: bool 
         sheet: sheet name to export only that sheet; '' exports the whole workbook.
         overwrite: allow replacing an existing file.
     """
-    app, wb = pick_workbook(workbook)
+    app, wb = pick_workbook(workbook, allow_autosave=True)
     full = check_path(path, "write", {"pdf"})
     if os.path.exists(full) and not overwrite:
         raise ToolError(f"File already exists: {full}. Pass overwrite=true to replace it.")
@@ -377,6 +379,7 @@ def excel_find(
     whole_cell: bool = False,
     regex: bool = False,
     max_results: int = 100,
+    count_all: bool = False,
 ) -> dict:
     """Search cell values or formulas. Returns matching cells with their address and content.
 
@@ -387,7 +390,8 @@ def excel_find(
         all_sheets: search every worksheet of the workbook.
         look_in: 'values' (default) or 'formulas'.
         match_case, whole_cell, regex: matching options.
-        max_results: stop collecting after this many matches (the total is still counted up to 100000).
+        max_results: stop searching once more than this many matches exist (the answer then says truncated=true).
+        count_all: keep scanning after max_results to count every match (up to 100000) - slower on big sheets.
     """
     if not query:
         raise ToolError("'query' is empty.")
@@ -403,29 +407,42 @@ def excel_find(
         sheets = [pick_sheet(wb, sheet)]
     results, total, cap = [], 0, max(1, int(max_results))
     what = "formulas" if look_in == "formulas" else "values"
+    stop = False
     for ws in sheets:
+        if stop:
+            break
         if sheet_is_empty(app, ws):
             continue
         used = ws.UsedRange
         r1, c1, r2, c2 = bounds(used)
         step = max(1, 20000 // max(1, c2 - c1 + 1))
         for start in range(r1, r2 + 1, step):
+            if stop:
+                break
             end = min(r2, start + step - 1)
-            block = sub_range(ws, start, c1, end, c2)
-            grid = read_grid(block, what)
+            grid = read_grid(sub_range(ws, start, c1, end, c2), what)
             for i, row in enumerate(grid):
                 for j, v in enumerate(row):
                     if v is None or v == "":
                         continue
                     s = v if isinstance(v, str) else str(v)
-                    hit = pat.fullmatch(s) if whole_cell else pat.search(s)
-                    if hit:
-                        total += 1
-                        if len(results) < cap:
-                            results.append({"sheet": ws.Name, "cell": a1_cell(start + i, c1 + j), "value": v})
-                        if total >= 100000:
-                            break
-    return {"workbook": wb.Name, "query": query, "total_matches": total, "returned": len(results), "matches": results}
+                    if not (pat.fullmatch(s) if whole_cell else pat.search(s)):
+                        continue
+                    total += 1
+                    if len(results) < cap:
+                        results.append({"sheet": ws.Name, "cell": a1_cell(start + i, c1 + j), "value": v})
+                    elif not count_all:
+                        stop = True  # нашлось больше, чем просили, — дальше не ищем
+                    if total >= 100000:
+                        stop = True
+                    if stop:
+                        break
+                if stop:
+                    break
+    out = {"workbook": wb.Name, "query": query, "total_matches": total, "returned": len(results), "truncated": stop, "matches": results}
+    if stop:
+        out["note"] = "Search stopped early: total_matches is a lower bound. Raise max_results, narrow the sheet/range, or pass count_all=true."
+    return out
 
 
 @office_tool("excel_core", "read", title="Get user selection")
@@ -672,23 +689,49 @@ def excel_replace(
     rng = clip_to_used(app, ws, rng)
     if rng is None or sheet_is_empty(app, ws):
         return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells_changed": 0, "occurrences": 0}
-    grid = to_grid(rng.Formula)
+    before = to_grid(rng.Formula)
     flags = 0 if match_case else re.IGNORECASE
     pat = re.compile(re.escape(find), flags)
     cells_hit = occ = 0
-    for row in grid:
+    for row in before:
         for v in row:
             if v is None:
                 continue
-            s = v if isinstance(v, str) else str(v)
-            n = 1 if (whole_cell and pat.fullmatch(s)) else (0 if whole_cell else len(pat.findall(s)))
+            text = _excel_text(v)
+            n = (1 if pat.fullmatch(text) else 0) if whole_cell else len(pat.findall(text))
             if n:
                 cells_hit += 1
                 occ += n
+    changed = 0
     if occ:
-        # Replace(What, Replacement, LookAt: 1=whole 2=part, SearchOrder: 1=rows, MatchCase)
-        rng.Replace(find, replace, 1 if whole_cell else 2, 1, bool(match_case))
-    return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "scope": addr_of(rng), "cells_changed": cells_hit, "occurrences": occ}
+        # Replace(What, Replacement, LookAt: 1=whole 2=part, SearchOrder: 1=rows, MatchCase, MatchByte, SearchFormat, ReplaceFormat).
+        # Символы * ? ~ в What — шаблоны Excel, а нужен буквальный поиск; форматы поиска/замены из диалога пользователя сбрасываем.
+        rng.Replace(_wildcard_escape(find), replace, 1 if whole_cell else 2, 1, bool(match_case), False, False, False)
+        after = to_grid(rng.Formula)
+        changed = sum(1 for r0, r1 in zip(before, after) for x, y in zip(r0, r1) if x != y)
+    out = {
+        "ok": True, "workbook": wb.Name, "sheet": ws.Name, "scope": addr_of(rng),
+        "cells_matching": cells_hit, "occurrences": occ, "cells_changed": changed,
+    }
+    if changed != cells_hit:
+        out["warning"] = (
+            f"{cells_hit} cell(s) matched but {changed} actually changed (locked cells, a replacement equal to the original "
+            "text, or Excel interpreted the text differently). Read the range to check."
+        )
+    return out
+
+
+def _excel_text(v) -> str:
+    """Как Excel видит значение ячейки при поиске: целое число без «.0», логические — TRUE/FALSE."""
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return v if isinstance(v, str) else str(v)
+
+
+def _wildcard_escape(text: str) -> str:
+    return text.replace("~", "~~").replace("*", "~*").replace("?", "~?")
 
 
 # ================================================================== листы
@@ -737,7 +780,7 @@ def excel_add_worksheet(workbook: str, name: str = "", position: str = "end", ac
     return {"ok": True, "workbook": wb.Name, "added_sheet": ws.Name, "index": int(ws.Index), "sheets": _sheet_list(wb)}
 
 
-@office_tool("excel_core", "write", title="Manage sheet")
+@office_tool("excel_core", "write", title="Manage sheet", destructive=True)
 def excel_manage_sheet(
     workbook: str,
     sheet: str,
@@ -1018,7 +1061,6 @@ def excel_hide_rows_columns(
         has_header: the block's first row is a header (never hidden by `where`; used to look up the column name).
     """
     app, wb = pick_workbook(workbook)
-    ws = pick_sheet(wb, sheet)
     ax = axis.lower()
     if ax not in ("rows", "columns"):
         raise ToolError("axis must be 'rows' or 'columns'.")
@@ -1027,7 +1069,7 @@ def excel_hide_rows_columns(
     if where:
         if ax != "rows":
             raise ToolError("`where` works only with axis='rows'.")
-        _, rng = get_range(wb, sheet, cells)
+        ws, rng = get_range(wb, sheet, cells)  # лист берём из ссылки 'Лист!A1:F9', а не из параметра sheet
         rng = clip_to_used(app, ws, rng)
         if rng is None:
             return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "count": 0}
@@ -1042,6 +1084,7 @@ def excel_hide_rows_columns(
         rows = [r1 + i for i in range(start, len(grid)) if _where_match(grid[i][col - 1], op, where.get("value"))]
         spans = _runs(rows)
     else:
+        ws = pick_sheet(wb, sheet)
         spans = _line_spec(lines, ax)
     for a, b in spans:
         target = ws.Range(f"{a}:{b}") if ax == "rows" else ws.Range(f"{col_letter(a)}:{col_letter(b)}")
@@ -1244,8 +1287,8 @@ def excel_filter_range(
         has_header: the block's first row holds headers.
     """
     app, wb = pick_workbook(workbook)
-    ws = pick_sheet(wb, sheet)
     if clear:
+        ws = get_range(wb, sheet, cells, empty_means_used=False)[0] if cells else pick_sheet(wb, sheet)
         c = clear.lower()
         if c == "show_all":
             if ws.AutoFilterMode and ws.FilterMode:
@@ -1258,7 +1301,7 @@ def excel_filter_range(
         return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cleared": c}
     if not filters:
         raise ToolError("Pass 'filters' to apply or 'clear' to remove.")
-    _, rng = get_range(wb, sheet, cells, empty_means_used=False)
+    ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
     r1, c1, r2, c2 = bounds(rng)
     header_names = to_grid(sub_range(ws, r1, c1, r1, c2).Value)[0] if has_header else []
     if ws.AutoFilterMode:
@@ -1344,7 +1387,7 @@ def excel_merge_cells(workbook: str, sheet: str, cells: str, unmerge: bool = Fal
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "action": "unmerge" if unmerge else "merge"}
 
 
-@office_tool("excel_core", "write", title="Defined names")
+@office_tool("excel_core", "write", title="Defined names", read_actions=("list",), destructive=True)
 def excel_manage_names(workbook: str, action: str = "list", name: str = "", sheet: str = "", cells: str = "", formula: str = "") -> dict:
     """List, add or delete defined names (named ranges / named formulas).
 

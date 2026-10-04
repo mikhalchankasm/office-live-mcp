@@ -172,7 +172,7 @@ def excel_pivot_info(workbook: str, pivot: str = "", max_items: int = 100) -> di
 # ================================================================== фильтры
 
 
-@office_tool("excel_analysis", "write", title="Filter pivot table")
+@office_tool("excel_analysis", "write", title="Filter pivot table", read_actions=("items",))
 def excel_pivot_filter(
     workbook: str,
     field: str = "",
@@ -329,18 +329,28 @@ def raw_of(proxy):
 # ================================================================== поля, сортировка, группировка
 
 
-def _data_field_by_source(pt, source: str, fallback):
+def _refetch_data_field(pt, source: str, position: int):
+    """Поле данных после смены функции: Excel переименовывает его, и старая ссылка недействительна.
+
+    Ищем по позиции среди полей данных (источник у нескольких полей может совпадать — «Сумма» и «Среднее» по одному полю);
+    если позиция не подошла, берём единственное поле с тем же источником, иначе честно отказываем.
+    """
     try:
-        for k in range(1, int(pt.DataFields.Count) + 1):
-            cand = pt.DataFields(k)
-            if cand.SourceName == source and cand.Name != fallback.Name:
-                return cand
-        for k in range(1, int(pt.DataFields.Count) + 1):
-            if pt.DataFields(k).SourceName == source:
-                return pt.DataFields(k)
+        cand = pt.DataFields(int(position))
+        if cand.SourceName == source:
+            return cand
     except pywintypes.com_error:
         pass
-    return fallback
+    try:
+        same = [pt.DataFields(k) for k in range(1, int(pt.DataFields.Count) + 1) if pt.DataFields(k).SourceName == source]
+    except pywintypes.com_error:
+        same = []
+    if len(same) == 1:
+        return same[0]
+    raise ToolError(
+        f"Excel changed the aggregation, but the edited value field of '{source}' could not be identified afterwards "
+        "(several value fields share this source). Read the pivot and adjust the caption/format by the new caption."
+    )
 
 
 def pivot_number_format(app, fmt: str) -> str:
@@ -377,7 +387,7 @@ def _add_data_field(pt, spec: dict):
     return df
 
 
-@office_tool("excel_analysis", "write", title="Edit pivot fields")
+@office_tool("excel_analysis", "write", title="Edit pivot fields", destructive=True)
 def excel_pivot_fields(
     workbook: str,
     action: str,
@@ -385,7 +395,7 @@ def excel_pivot_fields(
     field: str = "",
     orientation: str = "row",
     position: int = 0,
-    function: str = "sum",
+    function: str = "",
     caption: str = "",
     number_format: str = "",
     show_as: str = "",
@@ -407,7 +417,7 @@ def excel_pivot_fields(
         pivot: pivot table name ('' if only one).
         field: pivot field name (or data field caption where stated).
         orientation: row | column | filter | data | hidden. position: 1-based place among the fields of that axis (0 = last).
-        function: sum|count|average|max|min|product|count_numbers|stdev|var. caption: caption of the new data field. number_format, show_as (normal|percent_of_total|percent_of_row|percent_of_column|percent_of_parent|difference|running_total).
+        function: sum|count|average|max|min|product|count_numbers|stdev|var (empty = sum when adding a value field; for 'data_field' empty leaves the aggregation unchanged). caption: caption of the new data field. number_format, show_as (normal|percent_of_total|percent_of_row|percent_of_column|percent_of_parent|difference|running_total).
         new_caption: new caption for 'data_field'/'rename'.
         order: 'asc' | 'desc' | 'manual' for sort. sort_by: data field caption to sort by values (e.g. 'Sum of Revenue').
         group_by: for dates a list of: days, months, quarters, years, hours, minutes, seconds. group_start/end/step: numeric grouping bounds and bin size.
@@ -426,7 +436,7 @@ def excel_pivot_fields(
             raise ToolError("orientation must be row, column, filter or data.")
         with _Manual(pt):
             if o == "data":
-                _add_data_field(pt, {"field": field, "function": function, "caption": caption, "number_format": number_format, "show_as": show_as})
+                _add_data_field(pt, {"field": field, "function": function or "sum", "caption": caption, "number_format": number_format, "show_as": show_as})
             else:
                 pf = _field(pt, field)
                 pf.Orientation = ORIENTATIONS[o]
@@ -461,9 +471,13 @@ def excel_pivot_fields(
             if f not in PIVOT_FUNCS:
                 raise ToolError(f"Unknown function '{function}'. Use {sorted(PIVOT_FUNCS)}")
             source = df.SourceName
+            try:
+                position = int(df.Position)
+            except pywintypes.com_error:
+                position = 0
             df.Function = PIVOT_FUNCS[f]
             # Excel сам переименовывает поле («Среднее по полю X») и после этого старая ссылка недействительна — берём заново
-            df = _data_field_by_source(pt, source, df)
+            df = _refetch_data_field(pt, source, position)
             cap = new_caption or f"{f.capitalize()} of {source}"
             df.Caption = cap
             changed.append(f"function={f}")
@@ -532,7 +546,7 @@ def excel_pivot_fields(
         f = formula if formula.startswith("=") else "=" + formula
         pt.CalculatedFields().Add(field, f, True)  # Add(Name, Formula, UseStandardFormula)
         if orientation.lower() == "data":
-            _add_data_field(pt, {"field": field, "function": function, "caption": caption or field, "number_format": number_format})
+            _add_data_field(pt, {"field": field, "function": function or "sum", "caption": caption or field, "number_format": number_format})
         return {"ok": True, "workbook": wb.Name, "action": act, "field": field, "formula": f, **_summary(ws, pt)}
 
     if act in ("expand", "collapse"):
@@ -706,7 +720,7 @@ def _find_cache(wb, key: str):
     raise ToolError(f"Slicer '{key}' not found. Slicer caches: {seen}")
 
 
-@office_tool("excel_analysis", "write", title="Slicers and timelines")
+@office_tool("excel_analysis", "write", title="Slicers and timelines", read_actions=("list",), destructive=True)
 def excel_manage_slicers(
     workbook: str,
     action: str = "list",

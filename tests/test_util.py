@@ -128,6 +128,35 @@ def test_smart_number_leaves_codes_as_text(text):
     assert util.smart_number(text, ",") is None
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "12.03.2026",      # дата, а не 12032026
+        "1.2.3", "1.2.3.4",  # номера разделов
+        "1,23,4", "12,34,56",  # неправильные группы разрядов
+        "12 34", "1 23 456",   # пробельные группы не по 3 цифры
+        "1,234.5,6", "1.234,56,7", ",5", "5,", "1..2", "1 234 ,5",
+        "0,123,456",       # группа не может начинаться с нуля
+        "-", "--5", "(", "()", "%", ".",
+    ],
+)
+def test_smart_number_rejects_ambiguous_or_malformed_groupings(text):
+    assert util.smart_number(text, ",") is None
+    assert util.smart_number(text, ".") is None
+
+
+@pytest.mark.parametrize(
+    "text,decimal,expected",
+    [
+        ("1 234 567", ",", 1234567), ("12 345,6", ",", 12345.6), ("1,234,567", ".", 1234567), ("1.234.567", ",", 1234567),
+        ("1,234,567.89", ".", 1234567.89), ("1.234.567,89", ",", 1234567.89), ("-1 234", ",", -1234), ("+5", ",", 5),
+        ("0.5", ".", 0.5), ("0,123", ",", 0.123), ("0,123", ".", 0.123), ("100%", ",", 1.0), ("(1 000)", ",", -1000),
+    ],
+)
+def test_smart_number_accepts_well_formed_groupings(text, decimal, expected):
+    assert util.smart_number(text, decimal) == pytest.approx(expected)
+
+
 def test_clean_word_text():
     assert util.clean_word_text("cell\r\x07") == "cell"
     assert util.clean_word_text("a\rb") == "a\nb"

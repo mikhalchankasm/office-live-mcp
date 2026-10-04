@@ -1,10 +1,9 @@
 """Excel: форматирование, условное форматирование, валидация, ссылки, примечания, вид листа, картинки."""
 
+import io
 import json
 import os
 import re
-import shutil
-import tempfile
 import time
 
 import pythoncom
@@ -16,7 +15,10 @@ from .errors import ToolError
 from .registry import office_tool
 from .safety import IMAGE_EXTS, check_path
 from .util import a1_cell, cm_to_points, color_to_hex, parse_a1, parse_color, quote_sheet
-from .xl_common import addr_of, bounds, delocalize_formulas, get_range, localize_formula, number_format_for_read, number_format_for_write, pick_sheet, pick_workbook
+from .xl_common import (
+    addr_of, bounds, count_nonempty, delocalize_formulas, get_range, localize_formula, number_format_for_read,
+    number_format_for_write, pick_sheet, pick_workbook,
+)
 
 # ------------------------------------------------------------------ словари значений
 
@@ -327,7 +329,7 @@ def cf_rules_detail(app, wb, ws, limit: int = 60) -> list[dict]:
     return items
 
 
-@office_tool("excel_format", "write", title="Conditional formatting")
+@office_tool("excel_format", "write", title="Conditional formatting", read_actions=("list",), destructive=True)
 def excel_conditional_format(
     workbook: str,
     sheet: str,
@@ -477,7 +479,7 @@ def _restore_view(app, state: dict):
 # ================================================================== проверка данных
 
 
-@office_tool("excel_format", "write", title="Data validation")
+@office_tool("excel_format", "write", title="Data validation", read_actions=("get",), destructive=True)
 def excel_data_validation(
     workbook: str,
     sheet: str,
@@ -624,7 +626,7 @@ def excel_add_hyperlink(workbook: str, sheet: str, cell: str, url: str = "", tar
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cell": addr_of(rng), "link": url or sub}
 
 
-@office_tool("excel_format", "write", title="Cell notes")
+@office_tool("excel_format", "write", title="Cell notes", read_actions=("list",), destructive=True)
 def excel_manage_comments(workbook: str, sheet: str, action: str = "list", cells: str = "", text: str = "") -> dict:
     """List, add/replace or delete cell notes (the yellow-sticker comments).
 
@@ -689,7 +691,7 @@ def excel_insert_image(workbook: str, sheet: str, path: str, cell: str = "A1", w
 # ================================================================== вид листа и печать
 
 
-@office_tool("excel_format", "ui", title="Sheet view settings")
+@office_tool("excel_format", "write", title="Sheet view settings")
 def excel_sheet_view(
     workbook: str,
     sheet: str = "",
@@ -812,8 +814,6 @@ def excel_page_setup(
 def _is_blank_png(data: bytes) -> bool:
     """Картинка почти однотонная (экранный CopyPicture вне видимой области/в свёрнутом окне даёт белый прямоугольник с рамкой)."""
     try:
-        import io
-
         from PIL import Image as PILImage
 
         im = PILImage.open(io.BytesIO(data)).convert("L")
@@ -825,39 +825,40 @@ def _is_blank_png(data: bytes) -> bool:
         return len(data) < 600
 
 
-def _copy_picture_png(app, wb, ws, rng, appearance: int) -> bytes:
-    """CopyPicture -> временная диаграмма-контейнер -> Export PNG. appearance: 1 = как на экране, 2 = как при печати."""
-    was_saved = bool(wb.Saved)
-    tmpdir = tempfile.mkdtemp(prefix="office_live_")
-    png = os.path.join(tmpdir, "range.png")
-    holder = None
+def _copy_picture_png(app, rng, appearance: int) -> bytes:
+    """CopyPicture -> растровая картинка из буфера обмена -> PNG. appearance: 1 = как на экране, 2 = как при печати.
+
+    Никаких временных диаграмм/листов в книге пользователя: картинку забираем прямо из буфера обмена.
+    """
+    from PIL import ImageGrab
+
+    rng.CopyPicture(appearance, 2)  # Appearance, Format=xlBitmap
     try:
-        rng.CopyPicture(appearance, 2)  # Appearance, Format=xlBitmap
-        holder = ws.ChartObjects().Add(float(rng.Left), float(rng.Top), float(rng.Width), float(rng.Height))  # временный контейнер
-        holder.Chart.Paste()
-        holder.Chart.Export(png, "PNG")
-        with open(png, "rb") as f:
-            return f.read()
+        image = None
+        for attempt in range(6):  # буфер может быть занят другой программой долю секунды
+            image = ImageGrab.grabclipboard()
+            if hasattr(image, "save"):
+                break
+            time.sleep(0.15 * (attempt + 1))
+        if not hasattr(image, "save"):
+            raise ToolError("Could not read the picture from the Windows clipboard (another program may be holding it); retry in a moment.")
+        buf = io.BytesIO()
+        image.convert("RGB").save(buf, "PNG")
+        return buf.getvalue()
     finally:
-        if holder is not None:
-            try:
-                holder.Delete()
-            except pywintypes.com_error:
-                pass
         try:
             app.CutCopyMode = False
-            wb.Saved = was_saved  # временный объект не должен «пачкать» книгу
         except pywintypes.com_error:
             pass
-        shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
-    """Диапазон «как на экране» -> PNG. Кратко занимает буфер обмена.
+    """Диапазон «как на экране» -> PNG. Кратко занимает буфер обмена; содержимое книги не изменяется.
 
     Экранный CopyPicture рисует только видимое: лист должен быть активным и диапазон прокручен в видимую область —
-    поэтому временно активируем книгу/лист и прокручиваем (состояние пользователя потом возвращается). Если картинка
-    всё равно подозрительно пустая (окно свёрнуто и т. п.), перерисовываем в режиме «как при печати».
+    поэтому временно активируем книгу/лист и прокручиваем (состояние пользователя потом возвращается). Если снимок
+    подозрительно пуст (окно свёрнуто и т. п.), повторяем в режиме «как при печати»; если и он пуст при непустых
+    данных — честная ошибка вместо белого прямоугольника.
     """
     r1, c1, r2, c2 = bounds(rng)
     cells = (r2 - r1 + 1) * (c2 - c1 + 1)
@@ -865,8 +866,10 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
         raise ToolError(f"Range is larger than max_cells={max_cells}; render a smaller area.")
     if float(rng.Width) < 1 or float(rng.Height) < 1:
         raise ToolError("The range is hidden or has zero size.")
+    has_content = count_nonempty(app, rng) != 0
     prev = _remember_view(app)
     restore_states = []
+    data, blank = b"", True
     try:
         # свёрнутое или маленькое окно (приложения/книги) даёт пустой снимок — на время разворачиваем на весь экран,
         # после снимка возвращаем как было
@@ -886,11 +889,10 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
             app.Goto(rng.Cells(1, 1), True)  # прокрутить к началу диапазона
         except pywintypes.com_error:
             pass  # окно скрыто — сработает запасной режим ниже
-        data, blank = b"", True
         for attempt in range(3):
             time.sleep(0.4 * (attempt + 1))  # дать окну перерисоваться после смены состояния/прокрутки
             try:
-                data = _copy_picture_png(app, wb, ws, rng, 1)
+                data = _copy_picture_png(app, rng, 1)
                 blank = _is_blank_png(data)
             except pywintypes.com_error:
                 data, blank = b"", True
@@ -898,13 +900,11 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
                 break
         if blank:
             try:
-                fallback = _copy_picture_png(app, wb, ws, rng, 2)  # «как при печати» (нужен принтер по умолчанию)
+                fallback = _copy_picture_png(app, rng, 2)  # «как при печати» (нужен принтер по умолчанию)
                 if fallback and not _is_blank_png(fallback):
-                    data = fallback
+                    data, blank = fallback, False
             except pywintypes.com_error:
                 pass
-        if not data:
-            raise ToolError("Could not render the range (the workbook window must be visible and not minimized).")
     finally:
         for obj, state in restore_states:
             try:
@@ -912,6 +912,10 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
             except pywintypes.com_error:
                 pass
         _restore_view(app, prev)
+    if not data:
+        raise ToolError("Could not render the range (the workbook window must be visible and not minimized).")
+    if blank and has_content:
+        raise ToolError("The rendered image is blank although the range has data: the workbook window is probably hidden or minimized. Make it visible and retry.")
     return data
 
 

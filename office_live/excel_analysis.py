@@ -12,7 +12,7 @@ import pythoncom
 import pywintypes
 from mcp.server.mcpserver import Image
 
-from . import com
+from . import com, config
 from .errors import ToolError
 from .registry import office_tool
 from .safety import check_path
@@ -40,7 +40,7 @@ def _find_table(wb, name: str):
     raise ToolError(f"Table '{name}' not found. Tables in the workbook: {names}")
 
 
-@office_tool("excel_analysis", "write", title="Excel tables")
+@office_tool("excel_analysis", "write", title="Excel tables", read_actions=("list",), destructive=True)
 def excel_manage_tables(
     workbook: str,
     action: str = "list",
@@ -286,7 +286,7 @@ def _drop_pivot(pt):
         pass
 
 
-@office_tool("excel_analysis", "write", title="Manage pivot tables")
+@office_tool("excel_analysis", "write", title="Manage pivot tables", read_actions=("list",), destructive=True)
 def excel_manage_pivot_tables(workbook: str, action: str = "list", name: str = "", sheet: str = "") -> dict:
     """List, refresh or delete pivot tables.
 
@@ -521,7 +521,7 @@ def excel_create_chart(
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "chart": shape.Name, "type": key, "series": series, "position": {"left": left, "top": top, "width": float(width), "height": float(height)}}
 
 
-@office_tool("excel_analysis", "write", title="Manage charts", unstructured=True)
+@office_tool("excel_analysis", "write", title="Manage charts", unstructured=True, read_actions=("list", "export_image"), destructive=True)
 def excel_manage_charts(
     workbook: str,
     action: str = "list",
@@ -540,6 +540,7 @@ def excel_manage_charts(
     height: float | None = None,
     anchor_cell: str = "",
     export_path: str = "",
+    overwrite: bool = False,
     value_axis_number_format: str | None = None,
     value_axis_min: float | None = None,
     value_axis_max: float | None = None,
@@ -558,7 +559,8 @@ def excel_manage_charts(
         series_overrides: combo-chart control, e.g. [{"index": 2, "chart_type": "line", "secondary_axis": true}].
         new_series: add a series, e.g. {"name": "Plan", "values": "B2:B6", "x_values": "A2:A6"} (ranges on the chart's sheet or 'Sheet!A1:A5').
         width, height, anchor_cell: resize/move the chart.
-        export_path: optional PNG path for export_image.
+        export_path: optional PNG path for export_image (refuses to replace an existing file unless overwrite=true; not available in read-only mode).
+        overwrite: allow export_path to replace an existing file.
         value_axis_number_format ('#,##0'), value_axis_min, value_axis_max, series_colors (one per series), data_label_number_format: axis and look settings for 'update'.
     """
     app, wb = pick_workbook(workbook)
@@ -581,14 +583,20 @@ def excel_manage_charts(
         co.Delete()
         return {"ok": True, "workbook": wb.Name, "deleted": chart_name}
     if act == "export_image":
+        dest = None
+        if export_path:
+            if config.SETTINGS.readonly:
+                raise ToolError("export_path writes a file, which read-only mode does not allow; omit it to just get the image back.")
+            dest = check_path(export_path, "write", {"png"})
+            if os.path.exists(dest) and not overwrite:
+                raise ToolError(f"File already exists: {dest}. Pass overwrite=true to replace it.")
         tmpdir = tempfile.mkdtemp(prefix="office_live_")
         png = os.path.join(tmpdir, "chart.png")
         try:
             ch.Export(png, "PNG")
             with open(png, "rb") as f:
                 data = f.read()
-            if export_path:
-                dest = check_path(export_path, "write", {"png"})
+            if dest:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 shutil.copyfile(png, dest)
         finally:
@@ -603,7 +611,7 @@ def excel_manage_charts(
         ch.ChartType = _chart_type_code(key)
         applied.append(f"chart_type={key}")
     if source:
-        _, src = get_range(wb, ws.Name, source, empty_means_used=False)
+        _, src = get_range(wb, ws.Name, source, empty_means_used=False, allow_other_sheet=True)
         ch.SetSourceData(src)
         applied.append(f"source={addr_of(src)}")
     _style_chart(ch, key or "", title, x_axis_title, y_axis_title, legend, data_labels, value_axis_number_format, value_axis_min, value_axis_max, series_colors, data_label_number_format)
@@ -626,9 +634,9 @@ def excel_manage_charts(
         if new_series.get("name"):
             s.Name = new_series["name"]
         if new_series.get("values"):
-            s.Values = get_range(wb, ws.Name, new_series["values"], empty_means_used=False)[1]
+            s.Values = get_range(wb, ws.Name, new_series["values"], empty_means_used=False, allow_other_sheet=True)[1]
         if new_series.get("x_values"):
-            s.XValues = get_range(wb, ws.Name, new_series["x_values"], empty_means_used=False)[1]
+            s.XValues = get_range(wb, ws.Name, new_series["x_values"], empty_means_used=False, allow_other_sheet=True)[1]
         applied.append("new_series")
     if width:
         co.Width = float(width)
@@ -678,7 +686,9 @@ def _read_block(app, ws, rng, max_cells: int):
         return None, None, False
     r1, c1, r2, c2 = bounds(clipped)
     cols = c2 - c1 + 1
-    keep_rows = max(1, max_cells // max(cols, 1))
+    if cols > max_cells:
+        raise ToolError(f"The range has {cols} columns, more than max_cells={max_cells}. Narrow the columns or raise max_cells.")
+    keep_rows = max(1, max_cells // cols)
     truncated = (r2 - r1 + 1) > keep_rows
     if truncated:
         clipped = sub_range(ws, r1, c1, r1 + keep_rows - 1, c2)
@@ -840,8 +850,9 @@ def excel_find_issues(workbook: str = "", sheet: str = "", cells: str = "", max_
                 add("blank_header", "medium", a1_cell(r1, c1 + j), "column has data but no header")
     data_rows = [i for i in range(nrows) if any(v not in (None, "") for v in values[i])]
     if data_rows:
+        filled = set(data_rows)  # множество: проверка членства за O(1), а не O(n) на каждую строку
         for i in range(data_rows[0], data_rows[-1] + 1):
-            if i not in data_rows:
+            if i not in filled:
                 add("blank_row_inside_data", "low", f"{r1 + i}:{r1 + i}", "empty row between data rows")
     try:
         merged = block.MergeCells

@@ -316,11 +316,45 @@ def to_com_grid(values, pad=None) -> tuple:
 _NUM_PLAIN = re.compile(r"^[+-]?\d+(\.\d+)?$")
 
 
+_SPACE_GROUPED = re.compile(r"([1-9]\d{0,2}(?: \d{3})+)(?:[.,](\d+))?")
+_DOT_GROUPED = re.compile(r"[1-9]\d{0,2}(?:\.\d{3})+")
+_COMMA_GROUPED = re.compile(r"[1-9]\d{0,2}(?:,\d{3})+")
+
+
+def _plain_digits(core: str, decimal_sep: str) -> str | None:
+    """Тело числа без знака -> строка вида '1234.5' или None, если запись не похожа на число.
+
+    Допустимы только осмысленные записи: целое/десятичное; тысячи группами строго по 3 цифры (пробел, запятая, точка);
+    смесь '.' и ',' — только в виде 1,234.56 / 1.234,56. Всё остальное (12.03.2026, 1.2.3, 1,23,4, 12 34) — не число.
+    """
+    if " " in core:
+        m = _SPACE_GROUPED.fullmatch(core)
+        return None if not m else m.group(1).replace(" ", "") + ("." + m.group(2) if m.group(2) else "")
+    has_dot, has_comma = "." in core, "," in core
+    if has_dot and has_comma:
+        dec = "." if core.rfind(".") > core.rfind(",") else ","
+        head, _, frac = core.rpartition(dec)
+        grouped = _COMMA_GROUPED if dec == "." else _DOT_GROUPED
+        if not frac.isdigit() or not grouped.fullmatch(head):
+            return None
+        return head.replace("," if dec == "." else ".", "") + "." + frac
+    if has_dot or has_comma:
+        sep = "," if has_comma else "."
+        grouped = _COMMA_GROUPED if sep == "," else _DOT_GROUPED
+        if core.count(sep) > 1:
+            return core.replace(sep, "") if grouped.fullmatch(core) else None  # 1,234,567 — тысячи; 1.2.3 — не число
+        if sep != decimal_sep and grouped.fullmatch(core):
+            return core.replace(sep, "")  # 1,234 при десятичной точке -> тысячи
+        head, _, frac = core.partition(sep)
+        return head + "." + frac if head.isdigit() and frac.isdigit() else None
+    return core if core.isdigit() else None
+
+
 def smart_number(text: str, decimal_sep: str = ",") -> float | int | None:
-    """Строку вида '1 234,56' | '1,234.56' | '12%' -> число; иначе None. Идентификаторы с ведущими нулями остаются текстом."""
+    """Строку вида '1 234,56' | '1,234.56' | '12%' -> число; иначе None. Идентификаторы, даты и номера разделов остаются текстом."""
     if text is None:
         return None
-    s = str(text).strip().replace(" ", " ").replace(" ", " ")
+    s = str(text).strip().replace("\u00a0", " ").replace("\u202f", " ")
     if not s:
         return None
     if s.startswith("+") and " " in s:
@@ -331,36 +365,26 @@ def smart_number(text: str, decimal_sep: str = ",") -> float | int | None:
     neg = False
     if s.startswith("(") and s.endswith(")"):
         neg, s = True, s[1:-1].strip()
-    s = s.replace(" ", "")
-    if not s or not re.fullmatch(r"[+-]?[\d.,]+", s):
+    sign = ""
+    if s and s[0] in "+-":
+        sign, s = s[0], s[1:].strip()
+    if not s or not re.fullmatch(r"[\d., ]+", s):
         return None
-    if re.match(r"^[+-]?0\d", s) and not re.match(r"^[+-]?0[.,]\d+$", s):
-        return None  # 007, 0123 — коды, не числа
-    if "." in s and "," in s:
-        dec = "." if s.rfind(".") > s.rfind(",") else ","
-        thou = "," if dec == "." else "."
-        s = s.replace(thou, "").replace(dec, ".")
-    elif "," in s or "." in s:
-        sep = "," if "," in s else "."
-        if s.count(sep) > 1:
-            s = s.replace(sep, "")  # 1,234,567
-        elif sep != decimal_sep and re.fullmatch(r"[+-]?\d{1,3}" + re.escape(sep) + r"\d{3}", s):
-            s = s.replace(sep, "")  # 1,234 при десятичной точке -> тысячи
-        else:
-            s = s.replace(sep, ".")
-    if not _NUM_PLAIN.match(s):
+    if re.match(r"^0\d", s):
+        return None  # 007, 0123, 00,5 — коды, не числа ('0,5' и '0.5' допустимы)
+    plain = _plain_digits(s, decimal_sep)
+    if plain is None:
         return None
-    digits = s.lstrip("+-").replace(".", "")
-    if len(digits) > 15:
-        return None
-    num = float(s)
+    if len(plain.replace(".", "")) > 15:
+        return None  # точность double исчерпана — оставляем текстом
+    num = float(plain)
+    if sign == "-":
+        num = -num
     if neg:
         num = -num
     if pct:
-        num = num / 100
-    if num == int(num) and "." not in s and not pct:
-        return int(num)
-    return num
+        return num / 100
+    return int(num) if "." not in plain else num
 
 
 def cell_kind(v) -> str:

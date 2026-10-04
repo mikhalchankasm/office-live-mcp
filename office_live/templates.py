@@ -119,9 +119,7 @@ def excel_create_from_template(template_path: str, new_path: str, overwrite: boo
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if s_ext in _TEMPLATE_EXTS:
         app = com.primary_app("excel", launch=True)
-        old = app.AutomationSecurity
-        app.AutomationSecurity = 3
-        try:
+        with com.macros_disabled(app):
             wb = app.Workbooks.Add(src)
             before = app.DisplayAlerts
             app.DisplayAlerts = False
@@ -129,8 +127,6 @@ def excel_create_from_template(template_path: str, new_path: str, overwrite: boo
                 wb.SaveAs(dst, 52 if d_ext == "xlsm" else 51)
             finally:
                 app.DisplayAlerts = before
-        finally:
-            app.AutomationSecurity = old
         info = {"ok": True, "workbook": wb.Name, "path": wb.FullName, "sheets": [wb.Sheets(i).Name for i in range(1, int(wb.Sheets.Count) + 1)]}
     else:
         if os.path.exists(dst) and overwrite and _is_open(dst):
@@ -181,7 +177,8 @@ def word_create_from_template(template_path: str, new_path: str, overwrite: bool
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if s_ext in ("dotx", "dotm"):
         app = com.primary_app("word", launch=True)
-        doc = app.Documents.Add(src)
+        with com.macros_disabled(app):
+            doc = app.Documents.Add(src)
         before = app.DisplayAlerts
         app.DisplayAlerts = 0
         try:
@@ -289,13 +286,20 @@ def excel_describe_layout(
 
     last_idx = max((i for i, row in enumerate(values) if row_has_data(row)), default=0)
     view = _freeze_state(app, wb, ws)
-    hdr = int(header_rows) or (view.get("split_row") if view.get("frozen") and view.get("split_row") else 1)
+    # SplitRow считается от верха окна (строка 1), а используемая область может начинаться ниже — переводим в число строк шапки
+    frozen_rows = int(view.get("split_row") or 0) if view.get("frozen") else 0
+    relative = frozen_rows - (r1 - 1)
+    hdr = int(header_rows) or (relative if relative >= 1 else 1)
     hdr = max(1, min(hdr, last_idx + 1))
     data_first_idx = hdr  # индекс первой строки данных в values
     out: dict = {
         "workbook": wb.Name, "sheet": ws.Name, "used_range": addr_of(used),
         "data_rows": {"first": r1 + data_first_idx, "last": r1 + last_idx, "count": max(0, last_idx - data_first_idx + 1)},
         "header_rows": hdr, "view": view,
+        "truncated": {
+            "columns": (c2 - c1 + 1) > ncols, "rows": (r2 - r1 + 1) > rows_limit,
+            "note": "Only the first max_columns columns / the first rows were analysed." if (c2 - c1 + 1) > ncols or (r2 - r1 + 1) > rows_limit else None,
+        },
     }
     # --- шапка: значения и объединения
     header_texts = {}
@@ -326,8 +330,9 @@ def excel_describe_layout(
                     header_texts[(i, j)] = _clean(v)
     title_rows = set(wide_rows)
     for i in range(hdr):
-        if sum(1 for j in range(ncols) if values[i][j] not in (None, "")) <= 2:
-            title_rows.add(i)  # строка почти пустая: заголовок, дата отчёта и т.п.
+        # почти пустая строка — заголовок отчёта, дата и т.п. Но в узкой таблице (меньше 5 столбцов) это обычная шапка
+        if ncols >= 5 and sum(1 for j in range(ncols) if values[i][j] not in (None, "")) <= 2:
+            title_rows.add(i)
     out["header_merged_ranges"] = header_merges[:60]
     out["title_rows"] = [
         {"row": r1 + i, "cells": [{"cell": a1_cell(r1 + i, c1 + j), "text": _clean(values[i][j])[:100]} for j in range(ncols) if values[i][j] not in (None, "")][:6]}
@@ -396,17 +401,19 @@ def excel_describe_layout(
         step = max(1, len(row_idxs) // max(1, int(max_style_rows)))
         sampled = row_idxs[::step]
         groups: dict = {}
-        # скрытые строки одним вызовом: видимые области первого столбца -> пропуски
+        # скрытые строки одним вызовом: видимые области ПЕРВОГО ВИДИМОГО столбца -> пропуски
         first_abs, last_abs = r1 + row_idxs[0], r1 + row_idxs[-1]
         hidden_rows = []
-        try:
-            visible = set()
-            for area in ws.Range(f"{col_letter(c1)}{first_abs}:{col_letter(c1)}{last_abs}").SpecialCells(12).Areas:  # xlCellTypeVisible
-                a1_, _, a2_, _ = bounds(area)
-                visible.update(range(a1_, a2_ + 1))
-            hidden_rows = [r for r in range(first_abs, last_abs + 1) if r not in visible]
-        except pywintypes.com_error:
-            hidden_rows = list(range(first_abs, last_abs + 1))  # все строки скрыты
+        probe_col = next((c1 + j for j in range(ncols) if not bool(ws.Cells(first_abs, c1 + j).EntireColumn.Hidden)), None)
+        if probe_col is not None:
+            try:
+                visible = set()
+                for area in ws.Range(f"{col_letter(probe_col)}{first_abs}:{col_letter(probe_col)}{last_abs}").SpecialCells(12).Areas:  # xlCellTypeVisible
+                    a1_, _, a2_, _ = bounds(area)
+                    visible.update(range(a1_, a2_ + 1))
+                hidden_rows = [r for r in range(first_abs, last_abs + 1) if r not in visible]
+            except pywintypes.com_error:
+                hidden_rows = list(range(first_abs, last_abs + 1))  # видимых ячеек нет: скрыты все строки
         partial = False
         for i in sampled:
             if time.monotonic() - started > 60:

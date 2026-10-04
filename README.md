@@ -73,6 +73,9 @@ C:\Python313\python.exe -m venv .venv
 заменяется, **а её настройки `OFFICE_LIVE_*` сохраняются** — повторная установка не снимает «только чтение» и ограничения по папкам.
 Явно изменить: `--readonly`, `--full` (вернуть полный режим), `--toolsets`, `--allowed-dirs`, `--env OFFICE_LIVE_AUTOSAVE=allow`;
 начать с нуля — `--reset`. Если `claude mcp add` не удался, прежняя запись Claude Code восстанавливается.
+Если прежние настройки прочитать не удаётся (битый файл или Codex `config.toml` на Python 3.10 без пакета `tomli`, который ставится
+вместе с зависимостями), либо запись в `config.toml` оформлена так, что её нельзя заменить построчно, файл не меняется, а установщик
+сообщает причину.
 
 ```bat
 .venv\Scripts\python -m office_live config claude-code            :: печатает команду `claude mcp add ...`

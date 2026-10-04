@@ -233,74 +233,58 @@ class UnreadableConfig(ValueError):
     """Существующую запись office-live не удалось прочитать: молча затирать её настройки нельзя."""
 
 
-_KEY = r"""(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))"""  # один компонент ключа (без точек)
-_KV = re.compile(r"""^\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+))\s*=\s*(.+?)\s*$""")  # ключ в строке значения; точки — составной ключ env.A
-
-
-def _header_parts(line: str) -> list[str]:
-    """'[ mcp_servers."office-live".env ] # c' -> ['mcp_servers', 'office-live', 'env']."""
-    inner = line.split("#", 1)[0].strip()
-    inner = inner.strip("[]").strip() if inner.startswith("[") else inner
-    return [m.group(1) or m.group(2) or m.group(3) for m in re.finditer(rf"\s*{_KEY}\s*(?:\.|$)", inner)]
-
-
-def _toml_string(raw: str) -> str:
-    """Значение TOML-строки: "…" (с экранированием) или '…' (буквальная); иначе — отказ."""
-    raw = raw.strip()
-    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
-        return raw[1:-1]
-    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
-        return json.loads(raw)  # экранирование \\ \" \n у базовых строк TOML совпадает с JSON для наших значений
-    raise UnreadableConfig(f"unsupported value {raw[:40]!r}")
-
-
-def _toml_env_fallback(text: str) -> dict:
-    """env записи office-live без tomllib (Python 3.10): таблица [mcp_servers.office-live.env], ключи env.X = ... и env = { ... }.
-
-    Бросает UnreadableConfig, если внутри нашей записи есть то, что разобрать не удаётся, — тогда настройки не теряем молча.
-    """
-    env: dict = {}
-    section: list[str] = []
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        if _TOML_HEADER.match(line):
-            section = _header_parts(line)
-            continue
-        if section[:2] != ["mcp_servers", SERVER_NAME]:
-            continue
-        sub = section[2:]
-        m = _KV.match(line)
-        if not m:
-            raise UnreadableConfig(f"cannot parse line {stripped[:40]!r}")
-        key, value = m.group(1) or m.group(2) or m.group(3), re.sub(r"\s+#[^'\"]*$", "", m.group(4))
-        if sub == ["env"]:
-            env[key] = _toml_string(value)
-        elif not sub and key.startswith("env."):
-            env[key[4:]] = _toml_string(value)
-        elif not sub and key == "env":
-            body = value.strip()
-            if not (body.startswith("{") and body.endswith("}")):
-                raise UnreadableConfig("env is not an inline table")
-            for pair in re.finditer(rf"{_KEY}\s*=\s*(\"(?:[^\"\\]|\\.)*\"|'[^']*')", body[1:-1]):
-                env[pair.group(1) or pair.group(2) or pair.group(3)] = _toml_string(pair.group(4))
-    return env
-
-
 def _toml_env(text: str) -> dict:
     """env уже установленной записи office-live в config.toml. Нет записи — {}; не удалось прочитать — UnreadableConfig."""
     if not any(_OURS.match(line) for line in text.splitlines()) and "office-live" not in text:
         return {}
+    toml = _toml_module()
+    if toml is None:  # самодельный разбор TOML уже терял ограничения на допустимом синтаксисе — лучше честный отказ
+        raise UnreadableConfig("this Python has no TOML parser (Python 3.10 needs the 'tomli' package: pip install tomli)")
+    try:
+        node = toml.loads(text).get("mcp_servers", {}).get(SERVER_NAME, {})
+    except toml.TOMLDecodeError as exc:
+        raise UnreadableConfig(f"invalid TOML: {exc}") from None
+    if not isinstance(node, dict) or not isinstance(node.get("env") or {}, dict):
+        raise UnreadableConfig(f"unexpected structure of the {SERVER_NAME} entry")
+    return {str(k): str(v) for k, v in (node.get("env") or {}).items()}
+
+
+def _toml_rewrite_problem(old_text: str, new_text: str, env: dict) -> str:
+    """Проверка построчной замены записи: результат должен разбираться и содержать ровно нашу запись с этим env.
+
+    Если исходный файл и сам не разбирался (замена с --reset поверх битого файла), сравнивать не с чем — пропускаем.
+    """
+    toml = _toml_module()
+    if toml is None:
+        return ""
+    try:
+        toml.loads(old_text)
+    except toml.TOMLDecodeError:
+        return ""
+    try:
+        node = toml.loads(new_text).get("mcp_servers", {}).get(SERVER_NAME, {})
+    except toml.TOMLDecodeError as exc:
+        return f"the result would not be valid TOML ({exc})"
+    got = {str(k): str(v) for k, v in (node.get("env") or {}).items()} if isinstance(node, dict) and isinstance(node.get("env") or {}, dict) else None
+    if got != {str(k): str(v) for k, v in env.items()}:
+        return "the existing entry is written in a form this installer cannot replace line by line"
+    return ""
+
+
+def _toml_module():
+    """tomllib (Python 3.11+) или его бэкпорт tomli (зависимость пакета на 3.10); None — разбирать нечем."""
     try:
         import tomllib
-    except ImportError:  # Python 3.10
-        return _toml_env_fallback(text)
+
+        return tomllib
+    except ImportError:
+        pass
     try:
-        node = tomllib.loads(text).get("mcp_servers", {}).get(SERVER_NAME, {})
-    except tomllib.TOMLDecodeError as exc:
-        raise UnreadableConfig(f"invalid TOML: {exc}") from None
-    return {str(k): str(v) for k, v in (node.get("env") or {}).items()}
+        import tomli
+
+        return tomli
+    except ImportError:
+        return None
 
 
 def _existing_env(client: str, path: Path | None, keys: list[str], scope: str = "user") -> dict:
@@ -436,9 +420,14 @@ def config_cmd(args) -> int:
         say(block)
         if ns.write:
             text = path.read_text(encoding="utf-8") if path.exists() else ""
-            _backup(path)
             base = _strip_toml_tables(text) if text else ""
-            _atomic_write(path, base + ("\n" if base else "") + block)
+            new_text = base + ("\n" if base else "") + block
+            problem = _toml_rewrite_problem(text, new_text, env)
+            if problem:
+                print(f"Refusing to rewrite {path}: {problem}. Nothing was changed; edit the {SERVER_NAME} entry by hand.", file=sys.stderr)
+                return 1
+            _backup(path)
+            _atomic_write(path, new_text)
             print(f"Written to {path}")
         return 0
 

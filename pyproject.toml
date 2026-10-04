@@ -13,6 +13,7 @@ dependencies = [
     "pywin32>=306; sys_platform == 'win32'",
     "olefile>=0.47",
     "pillow>=10",
+    "tomli>=2; python_version < '3.11'",
 ]
 
 [project.optional-dependencies]

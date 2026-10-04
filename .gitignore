@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+
+# Office: служебные файлы блокировки и черновики тестов
+~$*
+scratch-test.*
+smoke.*
+
+# артефакты живых тестов
+tests/live/_*.png
+
+# журнал аудита, если включён рядом с проектом
+*.audit.jsonl
+
+# результаты прогона живого агента
+agent_test_output/

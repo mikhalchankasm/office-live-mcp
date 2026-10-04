@@ -1,0 +1,9 @@
+# Единые окончания строк в репозитории; .cmd/.bat обязаны быть CRLF (cmd.exe путает метки goto в файлах с LF).
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.png binary
+*.pdf binary
+*.xlsx binary
+*.xlsm binary
+*.docx binary

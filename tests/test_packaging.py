@@ -46,3 +46,9 @@ def test_installer_stays_ascii_with_windows_line_endings():
     raw = (ROOT / "install.cmd").read_bytes()
     raw.decode("ascii")
     assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")
+
+
+def test_packaged_installer_stays_ascii_with_windows_line_endings():
+    raw = (ROOT / "packaging" / "install.cmd").read_bytes()
+    raw.decode("ascii")
+    assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")

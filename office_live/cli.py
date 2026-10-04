@@ -121,12 +121,19 @@ def tools(args) -> int:
 
 
 def _server_command() -> tuple[str, list[str]]:
+    if getattr(sys, "frozen", False):  # собранный office-live-mcp.exe: без аргументов он и есть stdio-сервер
+        return sys.executable, []
     py = sys.executable
     root = Path(__file__).resolve().parent.parent
     script = root / "server.py"
     if script.exists():
         return py, [str(script)]
     return py, ["-m", "office_live"]
+
+
+def _self_cmd() -> str:
+    """Как запускать служебные команды в подсказках: путь к exe у собранной программы, иначе python -m office_live."""
+    return f'"{sys.executable}"' if getattr(sys, "frozen", False) else "python -m office_live"
 
 
 def _json_server_entry(env: dict | None, extra_type: bool = False) -> dict:
@@ -642,7 +649,7 @@ def setup_cmd(args) -> int:
             return 2
 
     if not selected:
-        print("\nНи к какому агенту не подключаю. Подключить позже: python -m office_live setup")
+        print(f"\nНи к какому агенту не подключаю. Подключить позже: {_self_cmd()} setup")
         return 0
     failed = 0
     print()
@@ -673,11 +680,11 @@ def setup_cmd(args) -> int:
     if ns.remove:
         print("\nГотово. Перезапустите агентов.")
     elif failed:
-        print(f"\nНе удалось подключить: {failed}. Проверка окружения: python -m office_live doctor")
+        print(f"\nНе удалось подключить: {failed}. Проверка окружения: {_self_cmd()} doctor")
     else:
         mode = "только чтение" if ns.readonly else "полный доступ"
         print(f"\nГотово ({mode}). Перезапустите агента и попросите, например: «покажи, какие книги открыты в Excel».")
-        print("Проверить окружение: python -m office_live doctor   |   отключить: python -m office_live setup --remove")
+        print(f"Проверить окружение: {_self_cmd()} doctor   |   отключить: {_self_cmd()} setup --remove")
     return 1 if failed else 0
 
 
@@ -701,5 +708,9 @@ def run(cmd: str, args: list[str]) -> int:
         return config_cmd(args)
     if cmd == "setup":
         return setup_cmd(args)
-    print("Usage: python -m office_live [serve | setup | doctor | tools [--markdown|--json] | config <client> [--write]]", file=sys.stderr)
+    if cmd in ("install", "uninstall"):
+        from .install import install_cmd, uninstall_cmd
+
+        return install_cmd(args) if cmd == "install" else uninstall_cmd(args)
+    print(f"Usage: {_self_cmd()} [serve | install | uninstall | setup | doctor | tools [--markdown|--json] | config <client> [--write]]", file=sys.stderr)
     return 2

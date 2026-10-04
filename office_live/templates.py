@@ -28,7 +28,7 @@ from .util import a1_cell, col_letter, color_to_hex, to_grid
 from .wd_common import pick_document
 from .word_core import word_open_document
 from .xl_common import (
-    addr_of, bounds, get_range, number_format_for_read, pick_sheet, pick_workbook, preview, sheet_is_empty, sub_range,
+    addr_of, bounds, get_range, number_format_for_read, pick_sheet, pick_workbook, preview, sheet_is_empty, sub_range, suspend_events,
 )
 
 MISSING = pythoncom.Missing
@@ -119,6 +119,7 @@ def excel_create_from_template(template_path: str, new_path: str, overwrite: boo
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     if s_ext in _TEMPLATE_EXTS:
         app = com.primary_app("excel", launch=True)
+        suspend_events(app)
         with com.macros_disabled(app):
             wb = app.Workbooks.Add(src)
             before = app.DisplayAlerts

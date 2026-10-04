@@ -110,8 +110,9 @@ def _audit(name, kind, args, kwargs, phase, error=None, duration=None, targets=N
     _audit_write(record)
 
 
-def _annotations(kind: str, title: str | None, idempotent: bool | None, destructive: bool | None = None) -> ToolAnnotations:
-    read_only = kind in {"read", "ui"}
+def _annotations(kind: str, title: str | None, idempotent: bool | None, destructive: bool | None = None, read_only: bool | None = None) -> ToolAnnotations:
+    if read_only is None:
+        read_only = kind in {"read", "ui"}
     if destructive is None:
         destructive = kind == "destructive"
     return ToolAnnotations(
@@ -135,6 +136,15 @@ def _action_of(sig: inspect.Signature, args, kwargs) -> str:
     return "" if default is inspect.Parameter.empty else str(default).lower()
 
 
+def _has_argument(sig: inspect.Signature, args, kwargs, names) -> bool:
+    """Передан ли хотя бы один из параметров `names` с непустым значением."""
+    try:
+        bound = sig.bind_partial(*args, **kwargs)
+    except TypeError:
+        return False
+    return any(bound.arguments.get(n) for n in names)
+
+
 def office_tool(
     group: str,
     kind: str = "read",
@@ -143,6 +153,8 @@ def office_tool(
     unstructured: bool = False,
     read_actions: tuple | None = None,
     destructive: bool | None = None,
+    read_only: bool | None = None,
+    file_args: tuple | None = None,
 ):
     """Регистрирует функцию как MCP-инструмент.
 
@@ -152,6 +164,8 @@ def office_tool(
     read_actions: для многоактных инструментов (параметр `action`) — действия, безопасные для режима readonly: инструмент
                   регистрируется и в readonly, но любое другое действие там отклоняется.
     destructive: переопределить подсказку destructiveHint (инструмент с действием delete/clear и т. п.).
+    read_only: переопределить readOnlyHint (False — инструмент доступен в readonly, но на мгновение меняет документ, например снимок диапазона).
+    file_args: параметры-пути, запись в которые делает даже «читающий» вызов (export_path): такой вызов попадает в журнал аудита.
     Функция выполняется в COM-контексте (CoInitialize, повторы при «Office занят», перевод ошибок в ToolError).
     """
     if kind not in config.ALL_KINDS:
@@ -175,7 +189,8 @@ def office_tool(
                     f"Read-only mode: action '{action}' of {name} would change documents. Allowed here: {sorted(read_actions)}."
                 )
             is_read_action = bool(read_actions) and action in read_actions
-            audited = kind in _AUDIT_KINDS and not is_read_action
+            writes_file = bool(file_args) and _has_argument(sig, args, kwargs, file_args)
+            audited = kind in _AUDIT_KINDS and (not is_read_action or writes_file)
             meta: dict = {}
             started = time.monotonic()
             if audited:
@@ -191,7 +206,7 @@ def office_tool(
             return result
 
         mcp.add_tool(
-            wrapper, name=name, title=title, annotations=_annotations(kind, title, idempotent, destructive),
+            wrapper, name=name, title=title, annotations=_annotations(kind, title, idempotent, destructive, read_only),
             structured_output=False if unstructured else None,
         )
         return fn

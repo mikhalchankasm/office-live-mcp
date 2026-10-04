@@ -390,11 +390,16 @@ def run_com(fn, args=(), kwargs=None, tool: str | None = None, kind: str | None 
             except Exception as exc:  # noqa: BLE001 — все ошибки превращаем в ToolError ниже, после очистки COM
                 message = translate(exc)
             finally:
-                for undo in reversed(_CTX["cleanup"]):  # вернуть состояние приложения (события и т. п.), пока COM жив
+                pending = _CTX["cleanup"]
+                while pending:  # вернуть состояние приложения (события и т. п.), пока COM жив; в обратном порядке
+                    undo = pending.pop()
                     try:
                         undo()
                     except Exception as exc:  # noqa: BLE001
                         print(f"[office-live] cleanup failed: {exc}", file=sys.stderr)
+                    finally:
+                        del undo  # иначе замыкание с прокси приложения пережило бы CoUninitialize
+                del pending
                 if meta is not None:
                     meta["targets"] = list(_CTX["targets"])
                 _CTX["tool"] = _CTX["kind"] = None

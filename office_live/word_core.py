@@ -47,7 +47,7 @@ def word_list_documents() -> dict:
     active = None
     for idx, app in enumerate(apps):
         act = active_document(app)
-        act_name = act.Name if act is not None else None
+        act_name = act.Name if act is not None and document_allowed(act) else None  # запрещённый документ и как «активный» не называем
         if idx == 0:
             active = act_name
         for i in range(1, app.Documents.Count + 1):

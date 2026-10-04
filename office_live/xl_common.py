@@ -50,6 +50,25 @@ def workbook_allowed(wb) -> bool:
     return safety.doc_allowed(workbook_path(wb))
 
 
+def suspend_events(app) -> None:
+    """Отключает события Excel (Worksheet_Change, BeforeSave, SheetActivate ...) до конца вызова; возврат — в run_com.
+
+    Если отключить не удалось, вызов отклоняется: чужие обработчики могли бы изменить документ или сработать на наши правки.
+    OFFICE_LIVE_ENABLE_EVENTS=1 оставляет события включёнными осознанно.
+    """
+    if config.SETTINGS.enable_events:
+        return
+    try:
+        if bool(app.EnableEvents):
+            app.EnableEvents = False
+            com.add_cleanup(lambda a=app: setattr(a, "EnableEvents", True))
+    except pywintypes.com_error as exc:
+        raise ToolError(
+            "Could not switch off Excel events for this call (" + com.com_error_text(exc) + "), so it was not performed: macros of the open workbooks could react to it. "
+            "Retry, or start the server with OFFICE_LIVE_ENABLE_EVENTS=1 to allow events."
+        ) from None
+
+
 def _guard_workbook(app, wb, allow_autosave: bool = False):
     """Проверки перед пишущим вызовом: AutoSave (правки сохраняются сами и не проходят проверку пользователем) и события Excel."""
     com.note_target(f"workbook:{workbook_path(wb) or wb.Name}")
@@ -65,13 +84,7 @@ def _guard_workbook(app, wb, allow_autosave: bool = False):
                 f"AutoSave is ON for {wb.Name}: every change would be saved to the cloud file immediately, before the user can review it. "
                 "Ask the user to turn AutoSave off for this workbook (or start the server with OFFICE_LIVE_AUTOSAVE=allow)."
             )
-    if not config.SETTINGS.enable_events:
-        try:
-            if bool(app.EnableEvents):
-                app.EnableEvents = False  # чужие макросы (Worksheet_Change, BeforeSave...) не должны срабатывать от наших правок
-                com.add_cleanup(lambda a=app: setattr(a, "EnableEvents", True))
-        except pywintypes.com_error:
-            pass
+    suspend_events(app)
     return app, wb
 
 

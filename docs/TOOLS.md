@@ -1,6 +1,7 @@
 # Каталог инструментов
 
 Сгенерировано командой `python -m office_live tools --markdown`. Описания — на английском: их читает агент.
+Вид `write (readonly: list)` — многоактный инструмент: в режиме `OFFICE_LIVE_MODE=readonly` доступны только перечисленные действия чтения.
 
 ### excel_core (33)
 
@@ -9,7 +10,7 @@
 | `excel_list_workbooks` | read | List every open Excel workbook across ALL running Excel instances: name, path, saved flag, sheets, visibility, and which one is active. Call this first. Returns an empty list (not an error) when Excel has no workbooks. |
 | `excel_workbook_info` | read | Detailed overview of one workbook: every sheet with its used range, visibility, tables, charts, pivot tables, shapes, protection and filters, plus defined names and calculation mode. |
 | `excel_open_workbook` | open | Open an existing workbook file in Excel (starts Excel if needed). Macros are disabled during opening. If the file is already open, returns it instead of opening twice. |
-| `excel_new_workbook` | open | Create a new empty workbook in Excel (starts Excel if needed). The workbook is unsaved until excel_save_as. |
+| `excel_new_workbook` | write | Create a new empty workbook in Excel (starts Excel if needed). The workbook is unsaved until excel_save_as. |
 | `excel_close_workbook` | destructive | Close an open workbook. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true (throws the changes away). Never quits Excel itself. |
 | `excel_save` | save | Save a workbook to its current file (Ctrl+S). A workbook that was never saved needs excel_save_as instead. |
 | `excel_save_as` | save | Save a workbook under a new name/format. Format follows the extension: .xlsx .xlsm .xlsb .xls .csv (UTF-8) .txt .html .ods. Refuses to replace an existing file unless overwrite=true. Afterwards the workbook is known by its NEW file name. |
@@ -35,7 +36,7 @@
 | `excel_filter_range` | write | Apply AutoFilter conditions (rows are hidden, not deleted) or clear them. |
 | `excel_remove_duplicates` | destructive | Delete duplicate rows from a block of data, keeping the first occurrence. Comparison is case-insensitive like Excel's own command. |
 | `excel_merge_cells` | write | Merge a range into one cell (only the top-left value survives) or unmerge it. |
-| `excel_manage_names` | write | List, add or delete defined names (named ranges / named formulas). |
+| `excel_manage_names` | write (readonly: list) | List, add or delete defined names (named ranges / named formulas). |
 | `excel_calculate` | write | Force recalculation and/or change the calculation mode (affects the whole Excel instance). |
 | `excel_create_from_template` | save | Make a new workbook as an exact copy of a sample file (all formatting, merged cells, column widths, conditional formats, formulas, named ranges, and macros are kept) and open it. The sample itself is never modified. Then clear the old data and write the new data. For .xlsm samples keep the .xlsm extension; macros stay disabled in the copy until the user enables them in Excel. |
 | `excel_autofill` | write | Do what dragging the fill handle does: extend a pattern from `source` over `dest` (which must contain `source`). Formulas adjust their relative references, numbers/dates continue as a series, formats are copied. Use it to carry a template row's formulas AND formatting down to new rows. |
@@ -46,12 +47,12 @@
 |---|---|---|
 | `excel_format_range` | write | Format a range. Only the properties you pass are changed. Colors: '#RRGGBB' or a name (red, lightblue, lightgreen, lightyellow, ...); fill_color='none' removes the fill. |
 | `excel_get_format` | read | Read the formatting of a range. A property is reported as 'mixed' when the cells of the range differ - narrow the range to see each value. |
-| `excel_conditional_format` | write | Add, list or clear conditional formatting ('highlight cells that ...'). |
-| `excel_data_validation` | write | Restrict what can be typed into cells (dropdown lists, number/date limits, custom rules), read the rule, or remove it. |
+| `excel_conditional_format` | write (readonly: list) | Add, list or clear conditional formatting ('highlight cells that ...'). |
+| `excel_data_validation` | write (readonly: get) | Restrict what can be typed into cells (dropdown lists, number/date limits, custom rules), read the rule, or remove it. |
 | `excel_add_hyperlink` | write | Turn a cell into a hyperlink - to a web/mail address or to another place in the workbook. |
-| `excel_manage_comments` | write | List, add/replace or delete cell notes (the yellow-sticker comments). |
+| `excel_manage_comments` | write (readonly: list) | List, add/replace or delete cell notes (the yellow-sticker comments). |
 | `excel_insert_image` | write | Insert a picture file (png/jpg/gif/bmp/emf) onto a sheet, anchored at a cell. |
-| `excel_sheet_view` | ui | Change how a sheet looks on screen: freeze panes, zoom, gridlines, row/column headings. |
+| `excel_sheet_view` | write | Change how a sheet looks on screen: freeze panes, zoom, gridlines, row/column headings. |
 | `excel_page_setup` | write | Print settings of a sheet (the needed printer driver must be available to Windows). |
 | `excel_render_range_image` | read | Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard. |
 
@@ -62,7 +63,7 @@
 | `word_list_documents` | read | List every open Word document across ALL running Word instances: name, path, saved flag, page/paragraph counts, and which one is active. Call this first. Returns an empty list (not an error) when Word has no documents. |
 | `word_get_structure` | read | Overview of a document: counts (pages, words, paragraphs, tables, images, comments, tracked changes, bookmarks, fields), the heading outline with paragraph numbers, a summary of every table, and sections. Use it to navigate a long document before reading parts of it. |
 | `word_open_document` | open | Open an existing document file in Word (starts Word if needed). Macros are disabled while opening. If the file is already open it is returned instead of opened twice. |
-| `word_new_document` | open | Create a new blank document in Word (starts Word if needed). The document is unsaved until word_save_as. |
+| `word_new_document` | write | Create a new blank document in Word (starts Word if needed). The document is unsaved until word_save_as. |
 | `word_close_document` | destructive | Close an open document. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true. Never quits Word itself. |
 | `word_save` | save | Save a document to its current file (Ctrl+S). A document that was never saved needs word_save_as instead. |
 | `word_save_as` | save | Save a document under a new name/format. Format follows the extension: .docx .doc .docm .rtf .txt .html .odt (use word_export_pdf for PDF). Refuses to replace an existing file unless overwrite=true. Afterwards the document is known by its NEW file name. |
@@ -85,17 +86,17 @@
 | Tool | Kind | What it does |
 |---|---|---|
 | `word_page_setup` | write | Page layout: orientation, paper size, margins, text columns. |
-| `word_headers_footers` | write | Read or set page headers/footers: text and automatic page numbers. |
-| `word_manage_toc` | write | Insert, refresh or remove a table of contents built from the Heading styles. |
-| `word_update_fields` | write | Refresh every field of the document: page numbers, total pages, table of contents, cross-references, dates. |
+| `word_headers_footers` | write (readonly: get) | Read or set page headers/footers: text and automatic page numbers. |
+| `word_manage_toc` | write (readonly: list) | Insert, refresh or remove a table of contents built from the Heading styles. |
+| `word_update_fields` | write | Refresh every field of the document, including headers/footers, footnotes and text boxes: page numbers, total pages, table of contents, cross-references, dates. Reports fields that could not be updated. |
 | `word_insert_image` | write | Insert a picture file (png/jpg/gif/bmp/emf) as its own paragraph. |
 | `word_insert_break` | write | Insert a page, section or column break. |
-| `word_manage_comments` | write | Review comments: list, add (on a paragraph or on found text), reply, resolve, delete. |
-| `word_track_changes` | write | Control 'Track Changes' and review tracked revisions. |
-| `word_manage_bookmarks` | write | List, add or delete bookmarks (named places you can later fill with word_insert_text(position='bookmark')). |
+| `word_manage_comments` | write (readonly: list) | Review comments: list, add (on a paragraph or on found text), reply, resolve, delete. |
+| `word_track_changes` | write (readonly: status, list) | Control 'Track Changes' and review tracked revisions. |
+| `word_manage_bookmarks` | write (readonly: list) | List, add or delete bookmarks (named places you can later fill with word_insert_text(position='bookmark')). |
 | `word_insert_hyperlink` | write | Make text a hyperlink: either link existing text (find_text) or append new linked `text` to the end of a paragraph. |
-| `word_manage_footnotes` | write | List, add or delete footnotes. |
-| `word_document_properties` | write | Read or set built-in document properties (File > Info): Title, Subject, Author, Keywords, Comments, Category, Company, Manager. |
+| `word_manage_footnotes` | write (readonly: list) | List, add or delete footnotes. |
+| `word_document_properties` | write (readonly: get) | Read or set built-in document properties (File > Info): Title, Subject, Author, Keywords, Comments, Category, Company, Manager. |
 | `word_render_page_image` | read | Render one page of a Word document exactly as laid out (fonts, tables, pictures, headers/footers) and return it as a PNG image - use it to visually verify a document. Needs the Pillow package. The user's document window is switched to Print Layout briefly and restored. |
 
 ### word_tables (6)
@@ -131,16 +132,16 @@
 
 | Tool | Kind | What it does |
 |---|---|---|
-| `excel_manage_tables` | write | Work with Excel tables (the structured 'Format as Table' objects with filter buttons and auto-growing ranges). |
-| `excel_create_pivot_table` | write | Create a PivotTable ('������� �������') from a data block or an Excel table. The first row of the source must contain unique header names. |
-| `excel_manage_pivot_tables` | write | List, refresh or delete pivot tables. |
+| `excel_manage_tables` | write (readonly: list) | Work with Excel tables (the structured 'Format as Table' objects with filter buttons and auto-growing ranges). |
+| `excel_create_pivot_table` | write | Create a PivotTable ('сводная таблица') from a data block or an Excel table. The first row of the source must contain unique header names. |
+| `excel_manage_pivot_tables` | write (readonly: list) | List, refresh or delete pivot tables. |
 | `excel_create_chart` | write | Create a chart from a data block. Include the header row and the label column in `source`: the first column becomes the category axis and each other column a series (use series_in_rows=true if the series are laid out in rows). |
-| `excel_manage_charts` | write | List, restyle, move, delete or export charts. |
+| `excel_manage_charts` | write (readonly: list, export_image) | List, restyle, move, delete or export charts. |
 | `excel_profile_range` | read | Statistical profile of a data block, column by column: types, empty/unique counts, min/max/mean/median/sum for numbers, date range, most frequent values, duplicates, formula counts. Use it to understand unfamiliar data before analysing or cleaning it. |
 | `excel_find_issues` | read | Audit a sheet/range for problems: error values, numbers stored as text, inconsistent formulas down a column, hard-coded numbers among formulas, stray spaces, blank rows/headers, duplicate headers, mixed types in a column, merged cells. |
 | `excel_pivot_info` | read | Describe a pivot table in detail: every field with its role (row/column/filter/data/unused), the items of each field and whether they are visible (hidden = filtered out), data fields with their function, and applied filters. Use it before filtering or restructuring. |
-| `excel_pivot_filter` | write | Filter a pivot table - hide/show rows (items) of a field, apply label/value/top-N filters, or clear filters. This is what the field's filter dropdown does in Excel. |
+| `excel_pivot_filter` | write (readonly: items) | Filter a pivot table - hide/show rows (items) of a field, apply label/value/top-N filters, or clear filters. This is what the field's filter dropdown does in Excel. |
 | `excel_pivot_fields` | write | Restructure a pivot table: add/move/remove fields, change how a value is aggregated, sort, group dates or numbers, add calculated fields, expand/collapse. |
 | `excel_pivot_options` | write | Layout and behaviour options of a pivot table. |
-| `excel_manage_slicers` | write | Create and drive slicers (clickable filter buttons, '�����') and date timelines for pivot tables and Excel tables. |
+| `excel_manage_slicers` | write (readonly: list) | Create and drive slicers (clickable filter buttons, 'срезы') and date timelines for pivot tables and Excel tables. |
 | `excel_describe_layout` | read | Produce a BLUEPRINT of a sheet so it can be re-created with new data: where the title/header block ends (frozen rows), merged header cells, every column (header text, width, hidden, number format, data type, typical values, the formula it contains), the KINDS of data rows (e.g. section rows vs item rows - grouped by how they actually look on screen incl. conditional formatting - with examples and code patterns), conditional-format rules in English with their colors, hidden rows, tables/charts/pivots/validation/macros. Read it, then build the analogue. |

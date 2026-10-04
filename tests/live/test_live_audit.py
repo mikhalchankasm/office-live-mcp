@@ -34,7 +34,7 @@ def _close(srv, *paths):
 
 
 def test_helper_operations_do_not_dirty_the_workbook_or_leave_scratch_objects(srv, wb, tmp):
-    """Перевод формул и снимок диапазона не добавляют листов/диаграмм в книгу и не подменяют флаг «сохранено»."""
+    """Перевод формул и снимок диапазона не оставляют в книге ни листов, ни диаграмм и не делают её «грязной»."""
     srv.call("excel_write_range", workbook=wb, sheet="Data", cells="A1", values=[["n", "v"], ["a", 1], ["b", 12]])
     srv.call("excel_conditional_format", workbook=wb, sheet="Data", cells="A2:B3", rule="formula", formula='=AND($B2>10,$A2<>"")', fill_color="#FFC000")
     path = os.path.join(tmp, "clean.xlsx")
@@ -47,6 +47,7 @@ def test_helper_operations_do_not_dirty_the_workbook_or_leave_scratch_objects(sr
     srv.call("excel_describe_layout", workbook=path, sheet="Data")
     after = srv.call("excel_workbook_info", workbook=path)
     assert after["saved"] is True, "read-only helpers must not make the workbook dirty"
+    assert srv.call("excel_manage_charts", workbook=path, action="list")["charts"] == []  # временная диаграмма снимка удалена
     assert after["sheets"] == before["sheets"]
     assert sorted(w["path"] + w["name"] for w in srv.call("excel_list_workbooks")["workbooks"]) == books_before  # временная книга закрыта
     srv.call("excel_write_range", workbook=path, sheet="Data", cells="D1", values=[[1]])

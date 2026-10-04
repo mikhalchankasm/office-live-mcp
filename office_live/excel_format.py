@@ -4,6 +4,9 @@ import io
 import json
 import os
 import re
+import shutil
+import sys
+import tempfile
 import time
 
 import pythoncom
@@ -321,7 +324,7 @@ def cf_rules_detail(app, wb, ws, limit: int = 60) -> list[dict]:
     finally:
         _restore_view(app, prev)
     english = delocalize_formulas(app, wb, formulas)
-    mapping = dict(zip(formulas, english))
+    mapping = dict(zip(formulas, english, strict=False))
     for item in items:
         f = item.pop("_f1", None)
         if f is not None:
@@ -644,7 +647,7 @@ def excel_manage_comments(workbook: str, sheet: str, action: str = "list", cells
         items = []
         for i in range(1, int(ws.Comments.Count) + 1):
             c = ws.Comments(i)
-            items.append({"cell": c.Parent.Address.replace("$", ""), "author": _safe(lambda: c.Author), "text": c.Text()})
+            items.append({"cell": c.Parent.Address.replace("$", ""), "author": _safe(lambda c=c: c.Author), "text": c.Text()})
         return {"workbook": wb.Name, "sheet": ws.Name, "notes": items}
     _, rng = get_range(wb, sheet, cells, empty_means_used=False)
     if act == "add":
@@ -825,35 +828,64 @@ def _is_blank_png(data: bytes) -> bool:
         return len(data) < 600
 
 
-def _copy_picture_png(app, rng, appearance: int) -> bytes:
-    """CopyPicture -> растровая картинка из буфера обмена -> PNG. appearance: 1 = как на экране, 2 = как при печати.
+def _copy_picture_png(app, wb, ws, rng, appearance: int) -> bytes:
+    """CopyPicture -> временная диаграмма-контейнер на листе -> Export PNG. appearance: 1 = как на экране, 2 = как при печати.
 
-    Никаких временных диаграмм/листов в книге пользователя: картинку забираем прямо из буфера обмена.
+    Единственный проверенный способ: вставка в диаграмму ДРУГОЙ книги даёт пустую картинку, а внешнее чтение буфера обмена
+    (ImageGrab) роняло Excel (исключение 0xC015000F). Поэтому на долю секунды на листе появляется диаграмма, которая тут же удаляется;
+    флаг «сохранено» возвращаем только если он был поднят до снимка (окно между чтением флага и возвратом — миллисекунды).
     """
-    from PIL import ImageGrab
-
-    rng.CopyPicture(appearance, 2)  # Appearance, Format=xlBitmap
+    was_saved = bool(wb.Saved)
+    tmpdir = tempfile.mkdtemp(prefix="office_live_")
+    png = os.path.join(tmpdir, "range.png")
+    holder, holder_name, removed = None, "(unnamed)", True
+    data = b""
     try:
-        image = None
-        for attempt in range(6):  # буфер может быть занят другой программой долю секунды
-            image = ImageGrab.grabclipboard()
-            if hasattr(image, "save"):
-                break
-            time.sleep(0.15 * (attempt + 1))
-        if not hasattr(image, "save"):
-            raise ToolError("Could not read the picture from the Windows clipboard (another program may be holding it); retry in a moment.")
-        buf = io.BytesIO()
-        image.convert("RGB").save(buf, "PNG")
-        return buf.getvalue()
+        rng.CopyPicture(appearance, 2)  # Appearance, Format=xlBitmap
+        holder = ws.ChartObjects().Add(float(rng.Left), float(rng.Top), float(rng.Width), float(rng.Height))
+        holder_name = str(holder.Name)
+        holder.Chart.Paste()
+        holder.Chart.Export(png, "PNG")
+        with open(png, "rb") as f:
+            data = f.read()
     finally:
+        if holder is not None:
+            try:
+                holder.Delete()
+            except pywintypes.com_error:
+                removed = False
         try:
             app.CutCopyMode = False
+            if was_saved and removed:
+                wb.Saved = True  # удалённая временная диаграмма не должна «пачкать» книгу
         except pywintypes.com_error:
             pass
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    if not removed:
+        raise ToolError(f"The snapshot was taken, but the temporary chart '{holder_name}' could not be removed from sheet '{ws.Name}'. Delete it manually.")
+    return data
+
+
+def _pause_autosave(wb) -> bool:
+    """True, если автосохранение было включено и мы его приостановили (вернуть после снимка)."""
+    try:
+        on = bool(wb.AutoSaveOn)
+    except (pywintypes.com_error, AttributeError):
+        return False
+    if not on:
+        return False
+    try:
+        wb.AutoSaveOn = False
+    except pywintypes.com_error:
+        raise ToolError(
+            "AutoSave is ON for this workbook and could not be paused: a snapshot places a temporary chart on the sheet, which would be synced to the cloud. "
+            "Turn AutoSave off and retry."
+        ) from None
+    return True
 
 
 def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
-    """Диапазон «как на экране» -> PNG. Кратко занимает буфер обмена; содержимое книги не изменяется.
+    """Диапазон «как на экране» -> PNG. Кратко занимает буфер обмена и на долю секунды ставит на лист временную диаграмму (она удаляется; содержимое книги не меняется).
 
     Экранный CopyPicture рисует только видимое: лист должен быть активным и диапазон прокручен в видимую область —
     поэтому временно активируем книгу/лист и прокручиваем (состояние пользователя потом возвращается). Если снимок
@@ -867,9 +899,10 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
     if float(rng.Width) < 1 or float(rng.Height) < 1:
         raise ToolError("The range is hidden or has zero size.")
     has_content = count_nonempty(app, rng) != 0
+    resume_autosave = _pause_autosave(wb)
     prev = _remember_view(app)
     restore_states = []
-    data, blank = b"", True
+    data, blank, last_error = b"", True, ""
     try:
         # свёрнутое или маленькое окно (приложения/книги) даёт пустой снимок — на время разворачиваем на весь экран,
         # после снимка возвращаем как было
@@ -892,19 +925,19 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
         for attempt in range(3):
             time.sleep(0.4 * (attempt + 1))  # дать окну перерисоваться после смены состояния/прокрутки
             try:
-                data = _copy_picture_png(app, rng, 1)
+                data = _copy_picture_png(app, wb, ws, rng, 1)
                 blank = _is_blank_png(data)
-            except pywintypes.com_error:
-                data, blank = b"", True
+            except pywintypes.com_error as exc:
+                data, blank, last_error = b"", True, com.com_error_text(exc)
             if not blank:
                 break
         if blank:
             try:
-                fallback = _copy_picture_png(app, rng, 2)  # «как при печати» (нужен принтер по умолчанию)
+                fallback = _copy_picture_png(app, wb, ws, rng, 2)  # «как при печати» (нужен принтер по умолчанию)
                 if fallback and not _is_blank_png(fallback):
                     data, blank = fallback, False
-            except pywintypes.com_error:
-                pass
+            except pywintypes.com_error as exc:
+                last_error = last_error or com.com_error_text(exc)
     finally:
         for obj, state in restore_states:
             try:
@@ -912,8 +945,13 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
             except pywintypes.com_error:
                 pass
         _restore_view(app, prev)
+        if resume_autosave:
+            try:
+                wb.AutoSaveOn = True
+            except pywintypes.com_error:
+                print(f"[office-live] could not turn AutoSave back on for {wb.Name}; ask the user to re-enable it", file=sys.stderr)
     if not data:
-        raise ToolError("Could not render the range (the workbook window must be visible and not minimized).")
+        raise ToolError("Could not render the range (the workbook window must be visible and not minimized)" + (f": {last_error}" if last_error else "."))
     if blank and has_content:
         raise ToolError("The rendered image is blank although the range has data: the workbook window is probably hidden or minimized. Make it visible and retry.")
     return data
@@ -921,7 +959,7 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
 
 @office_tool("excel_format", "read", title="Render range as image", unstructured=True)
 def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "", max_cells: int = 1500) -> list:
-    """Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard.
+    """Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content and its saved state are unchanged; AutoSave is paused meanwhile; clears Undo history).
 
     Args:
         workbook: exact name or '' for the active workbook.

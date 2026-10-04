@@ -521,7 +521,7 @@ def excel_create_chart(
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "chart": shape.Name, "type": key, "series": series, "position": {"left": left, "top": top, "width": float(width), "height": float(height)}}
 
 
-@office_tool("excel_analysis", "write", title="Manage charts", unstructured=True, read_actions=("list", "export_image"), destructive=True)
+@office_tool("excel_analysis", "write", title="Manage charts", unstructured=True, read_actions=("list", "export_image"), destructive=True, file_args=("export_path",))
 def excel_manage_charts(
     workbook: str,
     action: str = "list",

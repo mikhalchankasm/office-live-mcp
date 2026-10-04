@@ -172,7 +172,7 @@ def excel_pivot_info(workbook: str, pivot: str = "", max_items: int = 100) -> di
 # ================================================================== фильтры
 
 
-@office_tool("excel_analysis", "write", title="Filter pivot table", read_actions=("items",))
+@office_tool("excel_analysis", "write", title="Filter pivot table", read_actions=("list",))
 def excel_pivot_filter(
     workbook: str,
     field: str = "",
@@ -190,7 +190,7 @@ def excel_pivot_filter(
     Args:
         workbook: exact workbook name.
         field: the pivot field to filter (a row, column or filter field). May be empty only for action='clear' (clears all fields).
-        action: 'items' (choose which items are visible), 'label' (text filter on the item names), 'value' (filter by an aggregated number), 'top' (top/bottom N), 'clear'.
+        action: 'list' (read only: the field's items and which are visible), 'items' (choose which items are visible), 'label' (text filter on the item names), 'value' (filter by an aggregated number), 'top' (top/bottom N), 'clear'.
         pivot: pivot table name ('' if only one).
         items: for action='items' - the item names.
         mode: for action='items': 'only' = show only these items, 'hide' = hide these items, 'show' = make these visible too, 'all' = show every item.
@@ -218,6 +218,11 @@ def excel_pivot_filter(
     pf = _field(pt, field)
     if _safe_orient(pf) not in (1, 2, 3):
         raise ToolError(f"Field '{field}' is not on the row, column or filter axis; add it first with excel_pivot_fields(action='add').")
+
+    if act == "list":
+        pitems = _items(pf, 100000)
+        listed = [{"name": pi.Name, "visible": _item_visible(pi)} for pi in pitems[:300]]
+        return {"ok": True, "workbook": wb.Name, "field": field, "items": listed, "total_items": len(pitems), "hidden_items": sum(1 for pi in pitems if not _item_visible(pi)), **_summary(ws, pt)}
 
     if act == "items":
         m = mode.lower()
@@ -295,7 +300,7 @@ def excel_pivot_filter(
             ) from None
         visible = _displayed_items(pf)
         return {"ok": True, "workbook": wb.Name, "field": field, "filter": f"{act}:{op}", "visible_items": visible[:200], "visible_count": len(visible), **_summary(ws, pt)}
-    raise ToolError("action must be 'items', 'label', 'value', 'top' or 'clear'.")
+    raise ToolError("action must be 'list', 'items', 'label', 'value', 'top' or 'clear'.")
 
 
 def _number(v, what: str) -> float:
@@ -707,26 +712,32 @@ def _slicer_info(sc, max_items: int = 100) -> dict:
 
 
 def _find_slicer(wb, key: str):
-    """(кэш, срез или None). Срез возвращается, когда ключ — имя/подпись КОНКРЕТНОГО среза; для имени кэша или поля — None."""
-    seen = []
-    for k in range(1, int(wb.SlicerCaches.Count) + 1):
-        sc = wb.SlicerCaches(k)
-        seen.append(sc.Name)
-        if sc.Name.lower() == key.lower() or sc.SourceName.lower() == key.lower():
+    """(кэш, срез или None). Срез возвращается, когда ключ — имя/подпись КОНКРЕТНОГО среза; для имени кэша или поля — None.
+
+    Порядок: имя среза (уникально в книге) -> имя кэша -> подпись среза -> поле. Поле часто совпадает с именем
+    среза ('Region' при срезах 'Region' и 'Region2'), поэтому оно проверяется последним; неоднозначная подпись
+    или поле — ошибка, а не первый попавшийся объект.
+    """
+    k = key.lower()
+    caches = [wb.SlicerCaches(i) for i in range(1, int(wb.SlicerCaches.Count) + 1)]
+    pairs = [(sc, sl) for sc in caches for sl in _slicers_of(sc)]
+    for sc, sl in pairs:
+        if sl.Name.lower() == k:
+            return sc, sl
+    for sc in caches:
+        if sc.Name.lower() == k:
             return sc, None
-        try:
-            for j in range(1, int(sc.Slicers.Count) + 1):
-                sl = sc.Slicers(j)
-                if sl.Name.lower() == key.lower() or sl.Caption.lower() == key.lower():
-                    return sc, sl
-        except pywintypes.com_error:
-            pass
-    raise ToolError(f"Slicer '{key}' not found. Slicer caches: {seen}")
-
-
-def _find_cache(wb, key: str):
-    """Кэш среза по имени кэша, имени среза или полю."""
-    return _find_slicer(wb, key)[0]
+    by_caption = [(sc, sl) for sc, sl in pairs if sl.Caption.lower() == k]
+    if len(by_caption) == 1:
+        return by_caption[0]
+    if len(by_caption) > 1:
+        raise ToolError(f"Several slicers have the caption '{key}': {[sl.Name for _, sl in by_caption]}. Pass the slicer name.")
+    by_field = [sc for sc in caches if sc.SourceName.lower() == k]
+    if len(by_field) == 1:
+        return by_field[0], None
+    if len(by_field) > 1:
+        raise ToolError(f"Several slicer caches filter the field '{key}': {[sc.Name for sc in by_field]}. Pass the cache or slicer name.")
+    raise ToolError(f"Slicer '{key}' not found. Slicers: {[sl.Name for _, sl in pairs]}; slicer caches: {[sc.Name for sc in caches]}")
 
 
 def _slicers_of(sc) -> list:
@@ -759,9 +770,9 @@ def excel_manage_slicers(
     sheet: str = "",
     anchor_cell: str = "",
     caption: str = "",
-    width: float = 150,
-    height: float = 180,
-    columns: int = 1,
+    width: float | None = None,
+    height: float | None = None,
+    columns: int | None = None,
     style: str = "",
     items: list[str] | None = None,
     connect_pivots: list[str] | None = None,
@@ -774,14 +785,14 @@ def excel_manage_slicers(
 
     Args:
         workbook: exact workbook name.
-        action: 'list' | 'add' (needs field and pivot or table) | 'select' (choose items/date range) | 'clear' (reset the filter) | 'connect' (link more pivots to the slicer) | 'move' (reposition/resize/restyle) | 'delete'.
-        slicer: slicer or cache name or the field it filters (for select/clear/connect/move/delete).
+        action: 'list' | 'add' (needs field and pivot or table) | 'select' (choose items/date range) | 'clear' (reset the filter) | 'connect' (link more pivots to the slicer) | 'move' (reposition/resize/restyle; only the settings you pass change) | 'delete' (one slicer object) | 'delete_cache' (the slicer cache with ALL its slicers).
+        slicer: slicer name, cache name, slicer caption or the field it filters (for select/clear/connect/move/delete/delete_cache). A slicer name wins over a field of the same name.
         pivot: pivot table the slicer filters (for add; '' if the workbook has only one pivot and no table is given).
         table: Excel table name to slice instead of a pivot.
         field: field/column to slice by (for add).
         sheet: sheet to place the slicer on (default: the pivot's sheet).
         anchor_cell: top-left cell for the slicer (default: right of the pivot).
-        caption: slicer header text. width, height: size in points. columns: number of button columns.
+        caption: slicer header text. width, height: size in points (add: 150 x 180 by default). columns: number of button columns (add: 1 by default).
         style: slicer style, e.g. 'SlicerStyleLight1', 'SlicerStyleDark3', 'SlicerStyleOther1'.
         items: for select - the item names to keep selected (all others get deselected).
         connect_pivots: pivot table names to connect (they must share the same source data); for add also connected immediately.
@@ -793,10 +804,22 @@ def excel_manage_slicers(
     act = action.lower()
     if act == "list":
         return {"workbook": wb.Name, "slicers": [_slicer_info(wb.SlicerCaches(k)) for k in range(1, int(wb.SlicerCaches.Count) + 1)]}
+    if act not in ("add", "select", "clear", "connect", "move", "delete", "delete_cache"):
+        raise ToolError("action must be 'list', 'add', 'select', 'clear', 'connect', 'move', 'delete' or 'delete_cache'.")
+    if columns is not None and int(columns) < 1:
+        raise ToolError("columns must be 1 or more.")
+    for what, size in (("width", width), ("height", height)):
+        if size is not None and float(size) <= 0:
+            raise ToolError(f"{what} must be positive.")
 
     if act == "add":
         if not field:
             raise ToolError("'field' is required.")
+        levels = {"years": 0, "quarters": 1, "months": 2, "days": 3}
+        if kind.lower() == "timeline" and timeline_level and timeline_level.lower() not in levels:
+            raise ToolError("timeline_level must be years, quarters, months or days.")
+        width = 150 if width is None else width
+        height = 180 if height is None else height
         if table:
             src_ws, src = None, None
             for i in range(1, int(wb.Worksheets.Count) + 1):
@@ -819,6 +842,7 @@ def excel_manage_slicers(
         else:
             anchor = dest_ws.Cells(int(area.Row), int(area.Column) + int(area.Columns.Count) + 1)
         left, top = float(anchor.Left), float(anchor.Top)
+        extra_pivots = [find_pivot(wb, pname)[1] for pname in connect_pivots or []]  # ошибки имён — до создания среза
         if kind.lower() == "timeline":
             # Add2(Source, SourceField, Name, SlicerCacheType): xlTimeline = 2 (xlSlicer = 1); Name обязателен, иначе тип игнорируется
             sc = wb.SlicerCaches.Add2(src, field, f"Timeline_{field}", 2)
@@ -830,17 +854,13 @@ def excel_manage_slicers(
         shape = sl.Shape
         shape.Left, shape.Top, shape.Width, shape.Height = left, top, float(width), float(height)
         if kind.lower() == "timeline" and timeline_level:
-            levels = {"years": 0, "quarters": 1, "months": 2, "days": 3}
-            if timeline_level.lower() not in levels:
-                raise ToolError("timeline_level must be years, quarters, months or days.")
             sl.TimelineViewState.Level = levels[timeline_level.lower()]
         if kind.lower() != "timeline":
-            if int(columns) > 1:
+            if columns is not None and int(columns) != 1:
                 sl.NumberOfColumns = int(columns)
             if style:
                 sl.Style = style
-        for pname in connect_pivots or []:
-            _, pt2 = find_pivot(wb, pname)
+        for pt2 in extra_pivots:
             sc.PivotTables.AddPivotTable(pt2)
         out = _slicer_info(sc)
         return {"ok": True, "workbook": wb.Name, "slicer": sl.Name, **out}
@@ -882,23 +902,27 @@ def excel_manage_slicers(
     if act == "connect":
         if not connect_pivots:
             raise ToolError("'connect_pivots' is required.")
-        for pname in connect_pivots:
-            _, pt2 = find_pivot(wb, pname)
+        for pt2 in [find_pivot(wb, pname)[1] for pname in connect_pivots]:
             sc.PivotTables.AddPivotTable(pt2)
         return {"ok": True, "workbook": wb.Name, **_slicer_info(sc)}
 
     if act == "move":
         sl = _target_slicer(sc, picked, slicer)
         shape = sl.Shape
-        if anchor_cell:
+        anchor = None
+        if anchor_cell:  # всё разбираем до первого изменения
             ws2 = pick_sheet(wb, sheet) if sheet else None
             r, c, _, _ = parse_a1(anchor_cell)
             anchor = (ws2 or shape.TopLeftCell.Worksheet).Cells(r, c)
+        if anchor is not None:
             shape.Left, shape.Top = float(anchor.Left), float(anchor.Top)
-        shape.Width, shape.Height = float(width), float(height)
+        if width is not None:  # меняем только то, что передано: смена подписи не должна сбрасывать размер
+            shape.Width = float(width)
+        if height is not None:
+            shape.Height = float(height)
         if caption:
             sl.Caption = caption
-        if int(columns) > 1:
+        if columns is not None:
             sl.NumberOfColumns = int(columns)
         if style:
             sl.Style = style
@@ -906,13 +930,25 @@ def excel_manage_slicers(
 
     if act == "delete":
         siblings = _slicers_of(sc)
-        if picked is not None and len(siblings) > 1:
-            name = picked.Name  # назван конкретный срез, а у кэша есть другие — удаляем только его
+        if picked is None and len(siblings) > 1:
+            raise ToolError(
+                f"'{slicer}' is a slicer cache with several slicers: {[x.Name for x in siblings]}. Pass the name of the slicer to delete, "
+                "or use action='delete_cache' to remove the cache with all of them."
+            )
+        if len(siblings) > 1:
+            name = picked.Name  # у кэша есть другие срезы — удаляем только названный
             picked.Delete()
             return {"ok": True, "workbook": wb.Name, "deleted": name, "kept_slicers": [x.Name for x in _slicers_of(sc)]}
-        name = sc.Name
+        # единственный срез (или кэш без срезов): удаляем вместе с кэшем, чтобы не оставлять фильтр без кнопок
         removed = [x.Name for x in siblings]
+        cache_name = sc.Name
         sc.Delete()
-        return {"ok": True, "workbook": wb.Name, "deleted": name, "deleted_slicers": removed}
+        return {"ok": True, "workbook": wb.Name, "deleted": removed[0] if removed else cache_name, "deleted_cache": cache_name, "deleted_slicers": removed}
 
-    raise ToolError("action must be 'list', 'add', 'select', 'clear', 'connect', 'move' or 'delete'.")
+    if act == "delete_cache":
+        removed = [x.Name for x in _slicers_of(sc)]
+        cache_name = sc.Name
+        sc.Delete()
+        return {"ok": True, "workbook": wb.Name, "deleted_cache": cache_name, "deleted_slicers": removed}
+
+    raise ToolError("action must be 'list', 'add', 'select', 'clear', 'connect', 'move', 'delete' or 'delete_cache'.")

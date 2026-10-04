@@ -925,10 +925,11 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
     has_content = count_nonempty(app, rng) != 0
     suspend_events(app)  # activation of sheets must not run the user's SheetActivate macros
     resume_autosave = _pause_autosave(wb)
-    prev = _remember_view(app)
+    prev = None
     restore_states = []
     data, blank, last_error = b"", True, ""
-    try:
+    try:  # всё после паузы AutoSave — внутри try: любая ошибка (даже при запоминании вида) должна его вернуть
+        prev = _remember_view(app)
         # свёрнутое или маленькое окно (приложения/книги) даёт пустой снимок — на время разворачиваем на весь экран,
         # после снимка возвращаем как было
         try:
@@ -969,7 +970,8 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
                 obj.WindowState = state
             except pywintypes.com_error:
                 pass
-        _restore_view(app, prev)
+        if prev is not None:
+            _restore_view(app, prev)
         if resume_autosave:
             try:
                 wb.AutoSaveOn = True

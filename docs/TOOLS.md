@@ -140,7 +140,7 @@
 | `excel_profile_range` | read | Statistical profile of a data block, column by column: types, empty/unique counts, min/max/mean/median/sum for numbers, date range, most frequent values, duplicates, formula counts. Use it to understand unfamiliar data before analysing or cleaning it. |
 | `excel_find_issues` | read | Audit a sheet/range for problems: error values, numbers stored as text, inconsistent formulas down a column, hard-coded numbers among formulas, stray spaces, blank rows/headers, duplicate headers, mixed types in a column, merged cells. |
 | `excel_pivot_info` | read | Describe a pivot table in detail: every field with its role (row/column/filter/data/unused), the items of each field and whether they are visible (hidden = filtered out), data fields with their function, and applied filters. Use it before filtering or restructuring. |
-| `excel_pivot_filter` | write (readonly: items) | Filter a pivot table - hide/show rows (items) of a field, apply label/value/top-N filters, or clear filters. This is what the field's filter dropdown does in Excel. |
+| `excel_pivot_filter` | write (readonly: list) | Filter a pivot table - hide/show rows (items) of a field, apply label/value/top-N filters, or clear filters. This is what the field's filter dropdown does in Excel. |
 | `excel_pivot_fields` | write | Restructure a pivot table: add/move/remove fields, change how a value is aggregated, sort, group dates or numbers, add calculated fields, expand/collapse. |
 | `excel_pivot_options` | write | Layout and behaviour options of a pivot table. |
 | `excel_manage_slicers` | write (readonly: list) | Create and drive slicers (clickable filter buttons, 'срезы') and date timelines for pivot tables and Excel tables. |

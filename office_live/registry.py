@@ -53,6 +53,7 @@ class ToolInfo:
     registered: bool
     doc: str
     read_actions: tuple = ()  # действия многоактного инструмента, доступные и в режиме readonly
+    file_args: tuple = ()  # параметры-пути, запись в которые попадает в аудит даже у читающего действия
 
 
 CATALOG: dict[str, ToolInfo] = {}  # все объявленные инструменты (в т.ч. отключённые настройками) — для документации
@@ -176,7 +177,7 @@ def office_tool(
         settings = config.SETTINGS
         readonly_partial = bool(read_actions) and settings.readonly and group in settings.groups and kind not in config.READ_KINDS
         enabled = settings.enabled(group, kind) or readonly_partial
-        CATALOG[name] = ToolInfo(name, group, kind, enabled, (fn.__doc__ or "").strip(), tuple(read_actions or ()))
+        CATALOG[name] = ToolInfo(name, group, kind, enabled, (fn.__doc__ or "").strip(), tuple(read_actions or ()), tuple(file_args or ()))
         if not enabled:
             return fn
         sig = inspect.signature(fn)

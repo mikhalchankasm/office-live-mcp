@@ -10,6 +10,10 @@ OFFICE_LIVE_ALLOW_EVAL      1 — зарегистрировать office_run_py
 OFFICE_LIVE_AUDIT_LOG       путь к jsonl-журналу всех пишущих вызовов
 OFFICE_LIVE_STRICT_TARGET   1 — пишущие инструменты требуют явное имя книги/документа (без «активного»)
 OFFICE_LIVE_BUSY_TIMEOUT    секунды ожидания, пока Office «занят» (редактирование ячейки, диалог); по умолчанию 20
+OFFICE_LIVE_AUTOSAVE        block (по умолчанию) | allow — книги/документы с включённым AutoSave (OneDrive/SharePoint) сохраняются
+                            сами после каждой правки, поэтому по умолчанию пишущие инструменты на них отказывают
+OFFICE_LIVE_ENABLE_EVENTS   1 — не отключать события Excel (Worksheet_Change, BeforeSave…) на время пишущих вызовов
+OFFICE_LIVE_AUDIT_CONTENT   1 — писать в журнал фрагменты текстовых аргументов (по умолчанию длинные строки скрываются)
 """
 
 import os
@@ -39,6 +43,10 @@ READ_KINDS = frozenset({"read", "ui", "open"})
 ALL_KINDS = READ_KINDS | {"write", "destructive", "save"}
 
 
+class ConfigError(ValueError):
+    """Неверная настройка окружения: сервер не должен молча расширять права."""
+
+
 @dataclass(frozen=True)
 class Settings:
     mode: str = "full"
@@ -48,6 +56,9 @@ class Settings:
     audit_log: Path | None = None
     strict_target: bool = False
     busy_timeout: float = 20.0
+    autosave: str = "block"
+    enable_events: bool = False
+    audit_content: bool = False
 
     @property
     def readonly(self) -> bool:
@@ -77,6 +88,7 @@ def load(env=None) -> Settings:
 
     raw = (env.get("OFFICE_LIVE_TOOLSETS") or "all").strip().lower()
     groups: set[str] = set()
+    unknown: list[str] = []
     for token in (t.strip() for t in raw.replace(";", ",").split(",")):
         if not token:
             continue
@@ -85,9 +97,12 @@ def load(env=None) -> Settings:
         elif token in GROUPS:
             groups.add(token)
         else:
-            print(f"[office-live] неизвестный набор инструментов {token!r} пропущен", file=sys.stderr)
+            unknown.append(token)
+    if unknown:
+        print(f"[office-live] неизвестные наборы инструментов пропущены: {unknown}", file=sys.stderr)
     if not groups:
-        groups = set(GROUPS)
+        # опечатка в ограничивающей настройке не должна включать ВСЕ инструменты
+        raise ConfigError(f"OFFICE_LIVE_TOOLSETS={raw!r} не содержит ни одного известного набора. Допустимо: {sorted(PRESETS)} или {list(GROUPS)}.")
 
     dirs = []
     for part in (env.get("OFFICE_LIVE_ALLOWED_DIRS") or "").split(";"):
@@ -95,6 +110,9 @@ def load(env=None) -> Settings:
         if part:
             dirs.append(Path(os.path.abspath(os.path.expandvars(part))))
 
+    autosave = (env.get("OFFICE_LIVE_AUTOSAVE") or "block").strip().lower()
+    if autosave not in {"block", "allow"}:
+        raise ConfigError(f"OFFICE_LIVE_AUTOSAVE={autosave!r}: допустимо block или allow.")
     audit = (env.get("OFFICE_LIVE_AUDIT_LOG") or "").strip().strip('"')
     try:
         timeout = float(env.get("OFFICE_LIVE_BUSY_TIMEOUT") or 20)
@@ -109,6 +127,9 @@ def load(env=None) -> Settings:
         audit_log=Path(audit) if audit else None,
         strict_target=_flag(env.get("OFFICE_LIVE_STRICT_TARGET")),
         busy_timeout=max(0.0, timeout),
+        autosave=autosave,
+        enable_events=_flag(env.get("OFFICE_LIVE_ENABLE_EVENTS")),
+        audit_content=_flag(env.get("OFFICE_LIVE_AUDIT_CONTENT")),
     )
 
 

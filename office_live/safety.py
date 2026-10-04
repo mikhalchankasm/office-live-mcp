@@ -33,6 +33,20 @@ def _inside(path: str, root: str) -> bool:
         return False
 
 
+def _real(path: str) -> str:
+    """Нормализованный путь с разрешёнными симлинками/junction (иначе ссылка внутри разрешённой папки ведёт наружу)."""
+    return os.path.normcase(os.path.realpath(path))
+
+
+def doc_allowed(path: str, settings=None) -> bool:
+    """Открытый документ входит в зону доступа? Без OFFICE_LIVE_ALLOWED_DIRS — да; несохранённый (без пути) — да."""
+    cfg = settings or config.SETTINGS
+    if not cfg.allowed_dirs or not path:
+        return True
+    real = _real(path)
+    return any(_inside(real, _real(str(d))) for d in cfg.allowed_dirs)
+
+
 def check_path(path: str, purpose: str = "read", exts: set | None = None, settings=None) -> str:
     """Возвращает нормализованный абсолютный путь или бросает ToolError.
 
@@ -46,16 +60,16 @@ def check_path(path: str, purpose: str = "read", exts: set | None = None, settin
     norm = os.path.normcase(full)
 
     if cfg.allowed_dirs:
-        allowed = [os.path.normcase(str(d)) for d in cfg.allowed_dirs]
-        if not any(_inside(norm, a) for a in allowed):
+        if not doc_allowed(full, cfg):
             raise ToolError(
                 f"Path is outside the allowed directories (OFFICE_LIVE_ALLOWED_DIRS): {full}. "
                 f"Allowed: {[str(d) for d in cfg.allowed_dirs]}"
             )
 
     if purpose == "write":
+        real = _real(full)
         for bad in _deny_dirs():
-            if _inside(norm, bad):
+            if _inside(norm, bad) or _inside(real, _real(bad)):
                 raise ToolError(f"Writing into a system/startup directory is not allowed: {full}")
         ext = os.path.splitext(full)[1].lstrip(".").lower()
         if exts is not None and ext not in exts:

@@ -11,6 +11,7 @@
      (в том числе из трейсбека исключения), потом gc.collect(), и только затем CoUninitialize().
 """
 
+import contextlib
 import gc
 import sys
 import threading
@@ -130,6 +131,21 @@ def _retry(call):
             delay = min(delay * 1.6, 1.0)
 
 
+def _diagnose_attribute_error(o, name: str, exc: AttributeError):
+    """CDispatch превращает ЛЮБОЙ сбой GetIDsOfNames в AttributeError, в том числе «приложение занято» и «приложение закрыто».
+
+    Выясняем настоящую причину: если это занятость — пробрасываем com_error (его повторит _retry), иначе остаётся AttributeError.
+    """
+    try:
+        o._oleobj_.GetIDsOfNames(0, name)
+    except pywintypes.com_error as com_exc:
+        if is_busy(com_exc) or is_dead(com_exc):
+            raise com_exc from None
+    except AttributeError:
+        pass
+    raise exc
+
+
 def _raw(x):
     return object.__getattribute__(x, "_o") if isinstance(x, Proxy) else x
 
@@ -168,12 +184,26 @@ class Proxy:
         o = object.__getattribute__(self, "_o")
         if name.startswith("_"):
             return getattr(o, name)
-        return _wrap(_retry(lambda: getattr(o, name)))
+
+        def fetch():
+            try:
+                return getattr(o, name)
+            except AttributeError as exc:
+                _diagnose_attribute_error(o, name, exc)
+
+        return _wrap(_retry(fetch))
 
     def __setattr__(self, name, value):
         o = object.__getattribute__(self, "_o")
         value = _raw(value)
-        _retry(lambda: setattr(o, name, value))
+
+        def store():
+            try:
+                setattr(o, name, value)
+            except AttributeError as exc:
+                _diagnose_attribute_error(o, name, exc)
+
+        _retry(store)
 
     def __call__(self, *args, **kwargs):
         if kwargs:
@@ -304,29 +334,71 @@ def primary_app(kind: str, launch: bool = False):
     return apps(kind, launch)[0]
 
 
+@contextlib.contextmanager
+def macros_disabled(app):
+    """Макросы и автозапуск отключены на время открытия файла. Не удалось отключить — файл не открываем."""
+    try:
+        old = app.AutomationSecurity
+        app.AutomationSecurity = 3  # msoAutomationSecurityForceDisable
+    except pywintypes.com_error as exc:
+        raise ToolError(
+            "Could not disable macros before opening the file (Application.AutomationSecurity), so it was not opened: " + com_error_text(exc)
+        ) from None
+    try:
+        yield
+    finally:
+        try:
+            app.AutomationSecurity = old
+        except pywintypes.com_error:
+            pass
+
+
 # ------------------------------------------------------------------ запуск инструмента
 
-_CTX = {"tool": None, "kind": None}
+_CTX = {"tool": None, "kind": None, "cleanup": [], "targets": []}
 
 
 def current_kind() -> str | None:
     return _CTX["kind"]
 
 
-def run_com(fn, args=(), kwargs=None, tool: str | None = None, kind: str | None = None):
-    """Выполняет fn в COM-контексте текущего потока и возвращает результат; ошибки -> ToolError."""
+def add_cleanup(fn) -> None:
+    """Действие, которое run_com выполнит в конце вызова ДО освобождения COM (например, вернуть EnableEvents)."""
+    _CTX["cleanup"].append(fn)
+
+
+def note_target(text: str) -> None:
+    """Запоминает фактически выбранный объект (книга/документ) для журнала аудита."""
+    if text not in _CTX["targets"]:
+        _CTX["targets"].append(text)
+
+
+def run_com(fn, args=(), kwargs=None, tool: str | None = None, kind: str | None = None, meta: dict | None = None):
+    """Выполняет fn в COM-контексте текущего потока и возвращает результат; ошибки -> ToolError.
+
+    meta (если передан) получает {"targets": [...]} — какие объекты вызов реально выбрал (для аудита).
+    """
     message = None
     result = None
     with LOCK:
         pythoncom.CoInitialize()
         _CTX["tool"], _CTX["kind"] = tool, kind
+        _CTX["cleanup"], _CTX["targets"] = [], []
         try:
             try:
                 result = fn(*args, **(kwargs or {}))
             except Exception as exc:  # noqa: BLE001 — все ошибки превращаем в ToolError ниже, после очистки COM
                 message = translate(exc)
             finally:
+                for undo in reversed(_CTX["cleanup"]):  # вернуть состояние приложения (события и т. п.), пока COM жив
+                    try:
+                        undo()
+                    except Exception as exc:  # noqa: BLE001
+                        print(f"[office-live] cleanup failed: {exc}", file=sys.stderr)
+                if meta is not None:
+                    meta["targets"] = list(_CTX["targets"])
                 _CTX["tool"] = _CTX["kind"] = None
+                _CTX["cleanup"], _CTX["targets"] = [], []
         finally:
             # трейсбек исключения уже отпущен (except завершён) — освобождаем прокси ДО CoUninitialize
             gc.collect()

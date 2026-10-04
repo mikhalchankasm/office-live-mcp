@@ -8,7 +8,7 @@ import os
 import pythoncom
 import pywintypes
 
-from . import com, config
+from . import com, config, safety
 from .errors import ToolError
 from .util import clean_word_text
 
@@ -40,8 +40,12 @@ HIGHLIGHTS = {
 # ------------------------------------------------------------------ документы
 
 
+def _strict_write() -> bool:
+    return bool(config.SETTINGS.strict_target and com.current_kind() in WRITE_KINDS)
+
+
 def _need_explicit(name: str):
-    if not name and config.SETTINGS.strict_target and com.current_kind() in WRITE_KINDS:
+    if _strict_write() and not (name or "").strip():
         raise ToolError("Document name is required for write operations (OFFICE_LIVE_STRICT_TARGET is on). Call word_list_documents first.")
 
 
@@ -49,11 +53,39 @@ def _same_path(a: str, b: str) -> bool:
     return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
 
 
+def document_path(doc) -> str:
+    try:
+        return doc.FullName if doc.Path else ""
+    except pywintypes.com_error:
+        return ""
+
+
+def document_allowed(doc) -> bool:
+    return safety.doc_allowed(document_path(doc))
+
+
+def _guard_document(app, doc, allow_autosave: bool = False):
+    com.note_target(f"document:{document_path(doc) or doc.Name}")
+    if com.current_kind() in WRITE_KINDS and not allow_autosave and config.SETTINGS.autosave == "block":
+        try:
+            auto = bool(doc.AutoSaveOn)
+        except (pywintypes.com_error, AttributeError):
+            auto = False
+        if auto:
+            raise ToolError(
+                f"AutoSave is ON for {doc.Name}: every change would be saved to the cloud file immediately, before the user can review it. "
+                "Ask the user to turn AutoSave off for this document (or start the server with OFFICE_LIVE_AUTOSAVE=allow)."
+            )
+    return app, doc
+
+
 def all_documents(launch: bool = False) -> list:
     pairs = []
     for app in com.apps("word", launch):
         for i in range(1, app.Documents.Count + 1):
-            pairs.append((app, app.Documents(i)))
+            d = app.Documents(i)
+            if document_allowed(d):
+                pairs.append((app, d))
     return pairs
 
 
@@ -67,38 +99,51 @@ def active_document(app):
         return None
 
 
-def pick_document(name: str = "", launch: bool = False):
-    """(app, document): точное имя / полный путь / уникальная подстрока / '' = активный."""
+def pick_document(name: str = "", launch: bool = False, allow_autosave: bool = False):
+    """(app, document): точное имя / полный путь / уникальная подстрока / '' = активный.
+
+    В строгом режиме для пишущих инструментов — только точное имя или полный путь.
+    """
     _need_explicit(name)
+    strict = _strict_write()
+    name = (name or "").strip()
     apps = com.apps("word", launch)
-    pairs = []
+    pairs, outside = [], 0
     for app in apps:
         for i in range(1, app.Documents.Count + 1):
-            pairs.append((app, app.Documents(i)))
+            d = app.Documents(i)
+            if document_allowed(d):
+                pairs.append((app, d))
+            else:
+                outside += 1
     if not pairs:
-        raise ToolError("Word has no open documents. Use word_open_document or word_new_document.")
+        note = f" ({outside} open document(s) are outside OFFICE_LIVE_ALLOWED_DIRS)" if outside else ""
+        raise ToolError("Word has no open documents" + note + ". Use word_open_document or word_new_document.")
     if not name:
         for app in apps:
             d = active_document(app)
             if d is not None:
-                return app, d
-        return pairs[0]
-    low = name.strip().lower()
+                if not document_allowed(d):
+                    raise ToolError("The active document is outside OFFICE_LIVE_ALLOWED_DIRS; pass the name of an allowed document.")
+                return _guard_document(app, d, allow_autosave)
+        return _guard_document(*pairs[0], allow_autosave)
+    low = name.lower()
     has_sep = "\\" in name or "/" in name
     infos = [(a, d, d.Name) for a, d in pairs]
     exact = [(a, d) for a, d, n in infos if n.lower() == low]
     if not exact and has_sep:
         exact = [(a, d) for a, d, n in infos if d.Path and _same_path(d.FullName, name)]
     if len(exact) == 1:
-        return exact[0]
+        return _guard_document(*exact[0], allow_autosave)
     if len(exact) > 1:
         raise ToolError(f"Document name '{name}' exists in several Word instances; pass the full path. Candidates: {[d.FullName for _, d in exact]}")
-    subs = [(a, d) for a, d, n in infos if low in n.lower()]
-    if len(subs) == 1:
-        return subs[0]
     names = [n for _, _, n in infos]
-    if subs:
-        raise ToolError(f"Document name '{name}' is ambiguous. Open documents: {names}")
+    if not strict:
+        subs = [(a, d) for a, d, n in infos if low in n.lower()]
+        if len(subs) == 1:
+            return _guard_document(*subs[0], allow_autosave)
+        if subs:
+            raise ToolError(f"Document name '{name}' is ambiguous. Open documents: {names}")
     raise ToolError(f"Document '{name}' not found. Open documents: {names}")
 
 

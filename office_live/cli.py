@@ -146,10 +146,15 @@ def _read_json(path: Path) -> dict:
 
 
 def _backup(path: Path) -> Path | None:
-    """Копия рядом с файлом: <имя>.bak-ГГГГММДД-ЧЧММСС (прежняя копия не затирается)."""
+    """Копия рядом с файлом: <имя>.bak-ГГГГММДД-ЧЧММСС[-N]. Прежняя копия не затирается, даже если две записи случились в одну секунду."""
     if not path.exists():
         return None
-    target = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = path.with_name(f"{path.name}.bak-{stamp}")
+    n = 1
+    while target.exists():
+        n += 1
+        target = path.with_name(f"{path.name}.bak-{stamp}-{n}")
     shutil.copy2(path, target)
     return target
 
@@ -208,7 +213,9 @@ def _json_target(client: str) -> tuple[Path | None, list[str], bool]:
 
 _TOML_HEADER = re.compile(r"^\s*\[\[?[^\[\]=\n]*\]\]?\s*(?:#.*)?$")
 _NAME_RE = re.escape(SERVER_NAME)
-_OURS = re.compile(rf"""^\s*\[\s*mcp_servers\s*\.\s*(?:"{_NAME_RE}"|'{_NAME_RE}'|{_NAME_RE})\s*(?:\.[^\]]*)?\]\s*(?:#.*)?$""")
+_OURS = re.compile(
+    rf"""^\s*\[\s*(?:"mcp_servers"|'mcp_servers'|mcp_servers)\s*\.\s*(?:"{_NAME_RE}"|'{_NAME_RE}'|{_NAME_RE})\s*(?:\.[^\]]*)?\]\s*(?:#.*)?$"""
+)
 
 
 def _strip_toml_tables(text: str) -> str:
@@ -222,19 +229,85 @@ def _strip_toml_tables(text: str) -> str:
     return "".join(out).rstrip("\n") + ("\n" if out else "")
 
 
+class UnreadableConfig(ValueError):
+    """Существующую запись office-live не удалось прочитать: молча затирать её настройки нельзя."""
+
+
+_KEY = r"""(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))"""  # один компонент ключа (без точек)
+_KV = re.compile(r"""^\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_.-]+))\s*=\s*(.+?)\s*$""")  # ключ в строке значения; точки — составной ключ env.A
+
+
+def _header_parts(line: str) -> list[str]:
+    """'[ mcp_servers."office-live".env ] # c' -> ['mcp_servers', 'office-live', 'env']."""
+    inner = line.split("#", 1)[0].strip()
+    inner = inner.strip("[]").strip() if inner.startswith("[") else inner
+    return [m.group(1) or m.group(2) or m.group(3) for m in re.finditer(rf"\s*{_KEY}\s*(?:\.|$)", inner)]
+
+
+def _toml_string(raw: str) -> str:
+    """Значение TOML-строки: "…" (с экранированием) или '…' (буквальная); иначе — отказ."""
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] == "'" and raw[-1] == "'":
+        return raw[1:-1]
+    if len(raw) >= 2 and raw[0] == '"' and raw[-1] == '"':
+        return json.loads(raw)  # экранирование \\ \" \n у базовых строк TOML совпадает с JSON для наших значений
+    raise UnreadableConfig(f"unsupported value {raw[:40]!r}")
+
+
+def _toml_env_fallback(text: str) -> dict:
+    """env записи office-live без tomllib (Python 3.10): таблица [mcp_servers.office-live.env], ключи env.X = ... и env = { ... }.
+
+    Бросает UnreadableConfig, если внутри нашей записи есть то, что разобрать не удаётся, — тогда настройки не теряем молча.
+    """
+    env: dict = {}
+    section: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if _TOML_HEADER.match(line):
+            section = _header_parts(line)
+            continue
+        if section[:2] != ["mcp_servers", SERVER_NAME]:
+            continue
+        sub = section[2:]
+        m = _KV.match(line)
+        if not m:
+            raise UnreadableConfig(f"cannot parse line {stripped[:40]!r}")
+        key, value = m.group(1) or m.group(2) or m.group(3), re.sub(r"\s+#[^'\"]*$", "", m.group(4))
+        if sub == ["env"]:
+            env[key] = _toml_string(value)
+        elif not sub and key.startswith("env."):
+            env[key[4:]] = _toml_string(value)
+        elif not sub and key == "env":
+            body = value.strip()
+            if not (body.startswith("{") and body.endswith("}")):
+                raise UnreadableConfig("env is not an inline table")
+            for pair in re.finditer(rf"{_KEY}\s*=\s*(\"(?:[^\"\\]|\\.)*\"|'[^']*')", body[1:-1]):
+                env[pair.group(1) or pair.group(2) or pair.group(3)] = _toml_string(pair.group(4))
+    return env
+
+
 def _toml_env(text: str) -> dict:
-    """env уже установленной записи office-live в config.toml ({} если нет или файл не разобрать)."""
+    """env уже установленной записи office-live в config.toml. Нет записи — {}; не удалось прочитать — UnreadableConfig."""
+    if not any(_OURS.match(line) for line in text.splitlines()) and "office-live" not in text:
+        return {}
     try:
         import tomllib
-
+    except ImportError:  # Python 3.10
+        return _toml_env_fallback(text)
+    try:
         node = tomllib.loads(text).get("mcp_servers", {}).get(SERVER_NAME, {})
-        return {str(k): str(v) for k, v in (node.get("env") or {}).items()}
-    except Exception:  # noqa: BLE001 — старый Python без tomllib или нестандартный файл: настройки просто не переносим
-        return {}
+    except tomllib.TOMLDecodeError as exc:
+        raise UnreadableConfig(f"invalid TOML: {exc}") from None
+    return {str(k): str(v) for k, v in (node.get("env") or {}).items()}
 
 
 def _existing_env(client: str, path: Path | None, keys: list[str], scope: str = "user") -> dict:
-    """Переменные окружения уже подключённой записи — чтобы повторная установка не снимала ограничения молча."""
+    """Переменные окружения уже подключённой записи — чтобы повторная установка не снимала ограничения молча.
+
+    Нет записи — {}. Запись есть, но прочитать её настройки нельзя — UnreadableConfig (а не пустой словарь).
+    """
     try:
         if client == "codex":
             return _toml_env(path.read_text(encoding="utf-8")) if path and path.exists() else {}
@@ -247,8 +320,10 @@ def _existing_env(client: str, path: Path | None, keys: list[str], scope: str = 
         for k in keys:
             node = node.get(k, {}) if isinstance(node, dict) else {}
         return {str(k): str(v) for k, v in ((node.get(SERVER_NAME) or {}).get("env") or {}).items()}
-    except Exception:  # noqa: BLE001
-        return {}
+    except UnreadableConfig:
+        raise
+    except (OSError, ValueError, AttributeError) as exc:  # битый JSON, нечитаемый файл, неожиданная структура
+        raise UnreadableConfig(f"{type(exc).__name__}: {exc}") from None
 
 
 def _claude_code_entry(scope: str) -> dict | None:
@@ -265,8 +340,8 @@ def _claude_code_entry(scope: str) -> dict | None:
             if os.path.normcase(os.path.normpath(key)) == here:
                 return ((value or {}).get("mcpServers") or {}).get(SERVER_NAME)
         return None
-    except Exception:  # noqa: BLE001
-        return None
+    except (OSError, ValueError, AttributeError) as exc:
+        raise UnreadableConfig(f"{type(exc).__name__}: {exc}") from None
 
 
 def _merge_env(previous: dict, explicit: dict, reset: bool, full: bool) -> dict:
@@ -317,9 +392,19 @@ def config_cmd(args) -> int:
         path, keys, typed = (Path(ns.path) if ns.path else Path.home() / ".codex" / "config.toml") if ns.client == "codex" else None, [], False
     else:
         path, keys, typed = _json_target(ns.client)
-    if ns.path and path is not None:
-        path = Path(ns.path)
-    previous = _existing_env(ns.client, path, keys, ns.scope) if ns.write else {}
+    if ns.path and ns.client != "claude-code":
+        path = Path(ns.path)  # для generic путь задаётся только здесь
+    try:
+        previous = _existing_env(ns.client, path, keys, ns.scope) if ns.write else {}
+    except UnreadableConfig as exc:
+        if not ns.reset:
+            print(
+                f"Cannot read the settings of the existing {SERVER_NAME} entry ({exc}). Nothing was changed. "
+                "Fix the file, or pass --reset to replace the entry and drop its settings.",
+                file=sys.stderr,
+            )
+            return 1
+        previous = {}
     env = _merge_env(previous, explicit, ns.reset, ns.full)
     kept = {k: v for k, v in env.items() if k in previous and k not in explicit}
     if kept and ns.write:
@@ -332,7 +417,10 @@ def config_cmd(args) -> int:
             if not shutil.which("claude"):
                 print("The 'claude' CLI was not found on PATH.", file=sys.stderr)
                 return 1
-            old = _claude_code_entry(ns.scope)
+            try:
+                old = _claude_code_entry(ns.scope)
+            except UnreadableConfig:
+                old = None
             subprocess.call(["claude", "mcp", "remove", SERVER_NAME, "-s", ns.scope], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # повторная установка заменяет запись
             rc = subprocess.call(parts, stdout=subprocess.DEVNULL if ns.quiet else None)
             if rc != 0 and old:

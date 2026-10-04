@@ -126,7 +126,7 @@ def _append_field(hf, code: int):
     hf.Range.Fields.Add(rr, code)
 
 
-@office_tool("word_layout", "write", title="Headers and footers")
+@office_tool("word_layout", "write", title="Headers and footers", read_actions=("get",), destructive=True)
 def word_headers_footers(
     document: str,
     action: str = "get",
@@ -140,6 +140,7 @@ def word_headers_footers(
     of_label: str = " of ",
     font_size: float | None = None,
     different_first_page: bool | None = None,
+    break_link: bool = False,
 ) -> dict:
     """Read or set page headers/footers: text and automatic page numbers.
 
@@ -155,6 +156,7 @@ def word_headers_footers(
         page_label, of_label: wording around the numbers ('Стр. ' / ' из ' for Russian).
         font_size: points.
         different_first_page: enable a separate first-page header/footer.
+        break_link: for sections 2+ whose header/footer is 'linked to previous': unlink it before editing (otherwise a single-section edit is refused, because it would also change the previous section).
     """
     app, doc = pick_document(document)
     act = action.lower()
@@ -162,30 +164,58 @@ def word_headers_footers(
         out = []
         for i, sec in enumerate(_sections(doc, section), start=1 if int(section) == 0 else int(section)):
             item = {"section": i, "different_first_page": bool(sec.PageSetup.DifferentFirstPageHeaderFooter)}
+            linked = []
             for k in ("header", "footer"):
                 for name, typ in HF_TYPES.items():
-                    t = clean_word_text(_hf(sec, k, typ).Range.Text).strip()
+                    hf = _hf(sec, k, typ)
+                    t = clean_word_text(hf.Range.Text).strip()
                     if t:
                         item[f"{k}_{name}"] = t
+                    if i > 1 and bool(hf.LinkToPrevious):
+                        linked.append(f"{k}_{name}")
+            if linked:
+                item["linked_to_previous"] = linked  # показывает текст предыдущего раздела
             out.append(item)
         return {"document": doc.Name, "sections": out}
+    # --- всё проверяем ДО первого изменения документа
+    if act not in ("set", "clear"):
+        raise ToolError("action must be 'get', 'set' or 'clear'.")
     if kind not in ("header", "footer"):
         raise ToolError("kind must be 'header' or 'footer'.")
     if which not in HF_TYPES:
         raise ToolError("which must be 'primary', 'first_page' or 'even'.")
     if alignment.lower() not in ALIGNMENTS:
         raise ToolError("alignment must be left, center, right or justify.")
-    for sec in _sections(doc, section):
+    pn = page_numbers.lower()
+    if act == "set" and pn not in ("none", "page", "page_of_total"):
+        raise ToolError("page_numbers must be 'none', 'page' or 'page_of_total'.")
+    if font_size is not None and not 1 <= float(font_size) <= 1638:
+        raise ToolError("font_size must be between 1 and 1638 points.")
+    first = 1 if int(section) == 0 else int(section)
+    targets = []
+    for offset, sec in enumerate(_sections(doc, section)):
+        index = first + offset
+        hf = _hf(sec, kind, HF_TYPES[which])
+        linked = index > 1 and bool(hf.LinkToPrevious)
+        if linked and int(section) != 0 and not break_link:
+            raise ToolError(
+                f"The {kind} of section {index} is linked to the previous section: changing it would change section {index - 1} too. "
+                "Pass break_link=true to make it independent first, or section=1 / section=0 to edit the whole chain."
+            )
+        if linked and int(section) == 0:
+            continue  # наследует предыдущий раздел, который правится этим же вызовом
+        targets.append((index, sec, hf, linked))
+    changed = []
+    for index, sec, hf, linked in targets:
+        if linked:
+            hf.LinkToPrevious = False
         if different_first_page is not None:
             sec.PageSetup.DifferentFirstPageHeaderFooter = bool(different_first_page)
-        hf = _hf(sec, kind, HF_TYPES[which])
         if act == "clear":
             hf.Range.Text = ""
+            changed.append(index)
             continue
-        if act != "set":
-            raise ToolError("action must be 'get', 'set' or 'clear'.")
         hf.Range.Text = ""
-        pn = page_numbers.lower()
         if text:
             _append_text(hf, text + ("  " if pn != "none" else ""))
         if pn == "page":
@@ -195,18 +225,22 @@ def word_headers_footers(
             _append_field(hf, 33)
             _append_text(hf, of_label)
             _append_field(hf, 26)  # wdFieldNumPages
-        elif pn != "none":
-            raise ToolError("page_numbers must be 'none', 'page' or 'page_of_total'.")
         hf.Range.ParagraphFormat.Alignment = ALIGNMENTS[alignment.lower()]
         if font_size is not None:
             hf.Range.Font.Size = float(font_size)
-    return {"ok": True, "document": doc.Name, "action": act, "kind": kind, "section": section, "which": which}
+        changed.append(index)
+    out = {"ok": True, "document": doc.Name, "action": act, "kind": kind, "section": section, "which": which, "sections_changed": changed}
+    if which == "first_page" and not all(bool(s2.PageSetup.DifferentFirstPageHeaderFooter) for _, s2, _, _ in targets):
+        out["warning"] = "'different first page' is off in some of these sections, so the first-page text is not shown there; pass different_first_page=true."
+    if which == "even":
+        out["note"] = "Even-page headers/footers appear only when 'different odd and even pages' is enabled in the page setup."
+    return out
 
 
 # ================================================================== оглавление и поля
 
 
-@office_tool("word_layout", "write", title="Table of contents")
+@office_tool("word_layout", "write", title="Table of contents", read_actions=("list",), destructive=True)
 def word_manage_toc(
     document: str,
     action: str = "insert",
@@ -255,14 +289,33 @@ def word_manage_toc(
 
 @office_tool("word_layout", "write", title="Update fields")
 def word_update_fields(document: str) -> dict:
-    """Refresh every field of the document: page numbers, total pages, table of contents, cross-references, dates."""
+    """Refresh every field of the document, including headers/footers, footnotes and text boxes: page numbers, total pages, table of contents, cross-references, dates. Reports fields that could not be updated.
+
+    Args:
+        document: exact document name (required).
+    """
     app, doc = pick_document(document)
-    n = int(doc.Fields.Count)
-    doc.Fields.Update()
+    total, failed = 0, []
+    by_story: dict[str, int] = {}
+    for first in doc.StoryRanges:  # основной текст, колонтитулы, сноски, текстовые поля — каждая «история» отдельно
+        rng = first
+        while rng is not None:
+            n = int(rng.Fields.Count)
+            if n:
+                total += n
+                by_story[str(int(rng.StoryType))] = by_story.get(str(int(rng.StoryType)), 0) + n
+                bad = int(rng.Fields.Update())  # 0 — всё обновлено, иначе номер первого поля с ошибкой
+                if bad:
+                    failed.append({"story": int(rng.StoryType), "first_failed_field": bad})
+            rng = rng.NextStoryRange
     for i in range(1, int(doc.TablesOfContents.Count) + 1):
         doc.TablesOfContents(i).Update()
     doc.Repaginate()
-    return {"ok": True, "document": doc.Name, "fields_updated": n, "pages": int(doc.ComputeStatistics(2))}
+    out = {"ok": not failed, "document": doc.Name, "fields_updated": total, "fields_by_story": by_story, "pages": int(doc.ComputeStatistics(2))}
+    if failed:
+        out["failed"] = failed
+        out["warning"] = "Some fields could not be updated (broken reference or source); check them in the document."
+    return out
 
 
 # ================================================================== картинки и разрывы
@@ -360,7 +413,7 @@ def _target_range(doc, paragraph: int, find_text: str, occurrence: int = 1):
     raise ToolError("Pass `paragraph` or `find_text` to say where.")
 
 
-@office_tool("word_layout", "write", title="Comments")
+@office_tool("word_layout", "write", title="Comments", read_actions=("list",), destructive=True)
 def word_manage_comments(
     document: str,
     action: str = "list",
@@ -424,7 +477,7 @@ def word_manage_comments(
     raise ToolError("action must be 'list', 'add', 'reply', 'resolve' or 'delete'.")
 
 
-@office_tool("word_layout", "write", title="Track changes")
+@office_tool("word_layout", "write", title="Track changes", read_actions=("status", "list"), destructive=True)
 def word_track_changes(document: str, action: str = "status", index: int = 0, author: str = "") -> dict:
     """Control 'Track Changes' and review tracked revisions.
 
@@ -469,7 +522,7 @@ def word_track_changes(document: str, action: str = "status", index: int = 0, au
     raise ToolError("action must be 'status', 'enable', 'disable', 'list', 'accept', 'reject', 'accept_all' or 'reject_all'.")
 
 
-@office_tool("word_layout", "write", title="Bookmarks")
+@office_tool("word_layout", "write", title="Bookmarks", read_actions=("list",), destructive=True)
 def word_manage_bookmarks(document: str, action: str = "list", name: str = "", paragraph: int = 0, find_text: str = "", occurrence: int = 1) -> dict:
     """List, add or delete bookmarks (named places you can later fill with word_insert_text(position='bookmark')).
 
@@ -531,7 +584,7 @@ def word_insert_hyperlink(document: str, url: str, find_text: str = "", paragrap
     return {"ok": True, "document": doc.Name, "link": url, "hyperlinks": int(doc.Hyperlinks.Count)}
 
 
-@office_tool("word_layout", "write", title="Footnotes")
+@office_tool("word_layout", "write", title="Footnotes", read_actions=("list",), destructive=True)
 def word_manage_footnotes(document: str, action: str = "list", text: str = "", find_text: str = "", paragraph: int = 0, occurrence: int = 1, index: int = 0) -> dict:
     """List, add or delete footnotes.
 
@@ -563,7 +616,7 @@ def word_manage_footnotes(document: str, action: str = "list", text: str = "", f
     raise ToolError("action must be 'list', 'add' or 'delete'.")
 
 
-@office_tool("word_layout", "write", title="Document properties")
+@office_tool("word_layout", "write", title="Document properties", read_actions=("get",))
 def word_document_properties(document: str, action: str = "get", properties: dict | None = None) -> dict:
     """Read or set built-in document properties (File > Info): Title, Subject, Author, Keywords, Comments, Category, Company, Manager.
 

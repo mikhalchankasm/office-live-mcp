@@ -11,7 +11,7 @@ from .registry import office_tool
 from .safety import WORD_EXTS, check_path
 from .util import clean_word_text, cm_to_points, color_to_hex, parse_color, to_word_text, truncate
 from .wd_common import (
-    ALIGNMENTS, HIGHLIGHTS, active_document, all_documents, check_paragraph, ensure_free_anchor, escape_find, find_all,
+    ALIGNMENTS, HIGHLIGHTS, active_document, all_documents, document_allowed, check_paragraph, ensure_free_anchor, escape_find, find_all,
     para_count, paragraph_index_at, paragraphs_range, pick_document, resolve_style, story_ranges,
 )
 
@@ -52,6 +52,8 @@ def word_list_documents() -> dict:
             active = act_name
         for i in range(1, app.Documents.Count + 1):
             d = app.Documents(i)
+            if not document_allowed(d):
+                continue  # вне OFFICE_LIVE_ALLOWED_DIRS: даже имя не показываем
             docs.append({
                 "name": d.Name, "path": d.Path or None, "saved": bool(d.Saved), "read_only": bool(d.ReadOnly),
                 "paragraphs": para_count(d), "tables": int(d.Tables.Count), "active": idx == 0 and d.Name == act_name,
@@ -120,27 +122,16 @@ def word_open_document(path: str, read_only: bool = False) -> dict:
             if d.Path and os.path.normcase(os.path.abspath(d.FullName)) == os.path.normcase(full):
                 return {"ok": True, "already_open": True, "document": d.Name, "path": d.FullName}
     app = com.primary_app("word", launch=True)
-    old_sec = None
     try:
-        old_sec = app.AutomationSecurity
-        app.AutomationSecurity = 3
-    except pywintypes.com_error:
-        pass
-    try:
-        # Open(FileName, ConfirmConversions, ReadOnly, AddToRecentFiles, PasswordDocument): пароль-пустышка не даёт зависнуть на диалоге
-        doc = app.Documents.Open(full, False, bool(read_only or config.SETTINGS.readonly), False, "__office_live_no_password__")
+        with com.macros_disabled(app):
+            # Open(FileName, ConfirmConversions, ReadOnly, AddToRecentFiles, PasswordDocument): пароль-пустышка не даёт зависнуть на диалоге
+            doc = app.Documents.Open(full, False, bool(read_only or config.SETTINGS.readonly), False, "__office_live_no_password__")
     except pywintypes.com_error as exc:
         raise ToolError(f"Word could not open {full}: {com.com_error_text(exc)} (password-protected or corrupt file?)") from None
-    finally:
-        if old_sec is not None:
-            try:
-                app.AutomationSecurity = old_sec
-            except pywintypes.com_error:
-                pass
     return {"ok": True, "already_open": False, "document": doc.Name, "path": doc.FullName, "read_only": bool(doc.ReadOnly), "paragraphs": para_count(doc)}
 
 
-@office_tool("word_core", "open", title="New document")
+@office_tool("word_core", "write", title="New document")
 def word_new_document(text: str = "") -> dict:
     """Create a new blank document in Word (starts Word if needed). The document is unsaved until word_save_as.
 
@@ -165,13 +156,14 @@ def word_close_document(document: str, save: bool = False, discard: bool = False
     """
     if not document:
         raise ToolError("'document' is required for closing.")
-    app, doc = pick_document(document)
+    app, doc = pick_document(document, allow_autosave=True)
     name = doc.Name
     saved_first = False
     if not doc.Saved:
         if save:
             if not doc.Path:
                 raise ToolError(f"{name} has never been saved; use word_save_as first or pass discard=true.")
+            check_path(doc.FullName, "write")  # зона доступа и запретные каталоги — и для сохранения уже открытого документа
             doc.Save()
             saved_first = True
         elif not discard:
@@ -188,11 +180,12 @@ def word_save(document: str = "") -> dict:
     Args:
         document: exact name or '' for the active document.
     """
-    app, doc = pick_document(document)
+    app, doc = pick_document(document, allow_autosave=True)
     if not doc.Path:
         raise ToolError(f"{doc.Name} has never been saved - use word_save_as with a path.")
     if doc.ReadOnly:
         raise ToolError(f"{doc.Name} is open read-only; use word_save_as to write a copy.")
+    check_path(doc.FullName, "write")  # зона доступа и запретные каталоги
     doc.Save()
     return {"ok": True, "document": doc.Name, "path": doc.FullName, "saved": bool(doc.Saved)}
 
@@ -206,7 +199,7 @@ def word_save_as(document: str, path: str, overwrite: bool = False) -> dict:
         path: destination full path with extension.
         overwrite: allow replacing an existing file.
     """
-    app, doc = pick_document(document)
+    app, doc = pick_document(document, allow_autosave=True)
     full = check_path(path, "write", WORD_EXTS - {"pdf"})
     if os.path.exists(full) and not overwrite:
         raise ToolError(f"File already exists: {full}. Pass overwrite=true to replace it.")
@@ -236,7 +229,7 @@ def word_export_pdf(document: str, path: str, overwrite: bool = False) -> dict:
         path: destination .pdf path.
         overwrite: allow replacing an existing file.
     """
-    app, doc = pick_document(document)
+    app, doc = pick_document(document, allow_autosave=True)
     if not doc.Path:
         # Word обнуляет имя НЕсохранённого документа после экспорта в PDF — поэтому требуем сначала сохранить
         raise ToolError(f"{doc.Name} has never been saved. Save it with word_save_as first, then export to PDF.")

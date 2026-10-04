@@ -14,8 +14,8 @@ from .excel_format import render_range_png
 from .registry import office_tool
 from .safety import WORD_EXTS, check_path
 from .util import a1_cell, clean_word_text, smart_number, to_com_grid, to_grid
-from .wd_common import pick_document
-from .word_core import fill_placeholders
+from .wd_common import all_documents, pick_document
+from .word_core import _word_running, fill_placeholders
 from .word_layout import insert_picture
 from .word_tables import build_table, get_table, table_grid
 from .xl_common import (
@@ -409,17 +409,17 @@ def bridge_excel_to_word_documents(
     """
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells)
+    n_rows = int(rng.Rows.Count)
+    if n_rows < 2:
+        raise ToolError("The data block has no rows below the header.")
+    if n_rows - 1 > int(max_documents):  # до чтения данных
+        raise ToolError(f"{n_rows - 1} rows exceed max_documents={max_documents}. Raise the limit or narrow the range.")
     text = read_grid(rng, "text")
     headers = [str(h).strip() for h in text[0]]
     body = text[1:]
-    if not body:
-        raise ToolError("The data block has no rows below the header.")
-    if len(body) > int(max_documents):
-        raise ToolError(f"{len(body)} rows exceed max_documents={max_documents}. Raise the limit or narrow the range.")
     if filename_column and filename_column not in headers:
         raise ToolError(f"filename_column '{filename_column}' is not a header. Headers: {headers}")
     out_dir = check_path(output_dir, "write")
-    os.makedirs(out_dir, exist_ok=True)
     if os.path.isfile(template):
         tpl_path = check_path(template, "read")
     else:
@@ -427,33 +427,69 @@ def bridge_excel_to_word_documents(
         if not tdoc.Path:
             raise ToolError("The template document has never been saved; save it with word_save_as first.")
         tpl_path = tdoc.FullName
-    wapp = com.primary_app("word", launch=True)
-    created, skipped, leftovers = [], [], set()
+
+    # --- предварительная проверка ВСЕХ результатов: имена, коллизии, перезапись, открытые файлы — до создания первого документа
+    plan, used, renamed, blank_rows = [], set(), [], 0
     for idx, row in enumerate(body, start=1):
+        if not any(str(c).strip() for c in row):
+            blank_rows += 1
+            continue
         values = {h: row[j] for j, h in enumerate(headers) if h}
         stem = _safe_filename(values.get(filename_column, ""), f"document_{idx:03d}") if filename_column else f"document_{idx:03d}"
-        target = os.path.join(out_dir, stem + ".docx")
-        if os.path.exists(target) and not overwrite:
-            skipped.append(os.path.basename(target))
-            continue
-        check_path(target, "write", WORD_EXTS)
-        d = wapp.Documents.Add(tpl_path)
-        try:
-            res = fill_placeholders(d, values, left_delimiter, right_delimiter, "all")
-            leftovers.update(res["unfilled_placeholders"])
-            before = wapp.DisplayAlerts
-            wapp.DisplayAlerts = 0
-            try:
-                d.SaveAs2(target, 16)
-            finally:
-                wapp.DisplayAlerts = before
-            if export_pdf:
-                d.ExportAsFixedFormat(os.path.splitext(target)[0] + ".pdf", 17, False, 0, 0, 0, 0, 0)
-            created.append(os.path.basename(target))
-        finally:
-            d.Close(0)
-    return {
-        "ok": True, "output_dir": out_dir, "documents_created": len(created), "files": created[:50],
-        "skipped_existing": skipped[:50], "unfilled_placeholders": sorted(leftovers),
-    }
+        if stem.lower() in used:  # разные строки дали одинаковое имя файла — не затираем, а различаем номером строки
+            unique = f"{stem}_{idx:03d}"
+            renamed.append({"row": idx, "wanted": stem, "used": unique})
+            stem = unique
+        used.add(stem.lower())
+        docx = check_path(os.path.join(out_dir, stem + ".docx"), "write", WORD_EXTS)
+        pdf = check_path(os.path.splitext(docx)[0] + ".pdf", "write", {"pdf"}) if export_pdf else None
+        plan.append((idx, values, docx, pdf))
+    if not plan:
+        raise ToolError("Every row below the header is empty; nothing to generate.")
+    existing = [p for _, _, d, pdf in plan for p in (d, pdf) if p and os.path.exists(p)]
+    if existing and not overwrite:
+        raise ToolError(f"{len(existing)} output file(s) already exist (e.g. {existing[:3]}). Pass overwrite=true or choose another output_dir. Nothing was created.")
+    if existing:
+        open_now = {os.path.normcase(os.path.abspath(d.FullName)) for _, d in all_documents() if d.Path} if _word_running() else set()
+        busy = [p for p in existing if os.path.normcase(os.path.abspath(p)) in open_now]
+        if busy:
+            raise ToolError(f"These files are open in Word and cannot be overwritten: {busy[:5]}. Close them first. Nothing was created.")
+    os.makedirs(out_dir, exist_ok=True)
 
+    wapp = com.primary_app("word", launch=True)
+    created, pdfs, leftovers = [], [], set()
+    for idx, values, docx, pdf in plan:
+        try:
+            with com.macros_disabled(wapp):
+                d = wapp.Documents.Add(tpl_path)
+            try:
+                res = fill_placeholders(d, values, left_delimiter, right_delimiter, "all")
+                leftovers.update(res["unfilled_placeholders"])
+                before = wapp.DisplayAlerts
+                wapp.DisplayAlerts = 0
+                try:
+                    d.SaveAs2(docx, 16)
+                finally:
+                    wapp.DisplayAlerts = before
+                created.append(os.path.basename(docx))
+                if pdf:
+                    d.ExportAsFixedFormat(pdf, 17, False, 0, 0, 0, 0, 0)
+                    pdfs.append(os.path.basename(pdf))
+            finally:
+                d.Close(0)
+        except Exception as exc:  # noqa: BLE001 — говорим точно, что успело появиться на диске
+            raise ToolError(
+                f"Stopped at data row {idx} ({os.path.basename(docx)}): {com.translate(exc)}. "
+                f"Created before the failure: {len(created)} document(s) {created[:20]}" + (f" and {len(pdfs)} PDF(s)" if pdf else "") + "."
+            ) from None
+    out = {
+        "ok": True, "output_dir": out_dir, "documents_created": len(created), "files": created[:50],
+        "unfilled_placeholders": sorted(leftovers),
+    }
+    if pdfs:
+        out["pdf_files"] = pdfs[:50]
+    if renamed:
+        out["renamed_for_uniqueness"] = renamed[:50]
+    if blank_rows:
+        out["skipped_blank_rows"] = blank_rows
+    return out

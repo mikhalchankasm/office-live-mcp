@@ -2,6 +2,7 @@
 
 import pywintypes
 
+from . import com
 from .errors import ToolError
 from .registry import office_tool
 from .util import clean_word_text, cm_to_points, parse_color, to_com_grid, to_word_text
@@ -113,8 +114,18 @@ def build_table(doc, data, position="end", paragraph=0, style="Table Grid", head
     rows, cols = len(grid), len(grid[0])
     if rows * cols > 5000:
         raise ToolError("Table is too large for one call (5000 cells max); create it in parts with word_write_table.")
+    # --- все параметры проверяем ДО вставки: ошибка не должна оставлять в документе полуготовую таблицу
     if autofit not in _AUTOFIT:
         raise ToolError("autofit must be 'window', 'content' or 'fixed'.")
+    if alignment and alignment.lower() not in ALIGNMENTS:
+        raise ToolError("alignment must be left, center, right or justify.")
+    if header_row and header_fill:
+        parse_color(header_fill)
+    if column_widths_cm and len(column_widths_cm) > cols:
+        raise ToolError(f"column_widths_cm has {len(column_widths_cm)} widths but the table has {cols} columns.")
+    for j in right_align_cols or []:
+        if not 1 <= int(j) <= cols:
+            raise ToolError(f"right-aligned column {j} is outside 1..{cols}.")
     anchor = ensure_free_anchor(doc, position, paragraph, separate_from_table=True, table_index=table_index)
     # текст -> строки с табами -> ConvertToTable: на порядок быстрее, чем заполнять ячейки по одной
     # переводы строк внутри ячейки ConvertToTable принимает за границу строки таблицы — прячем их за маркером и возвращаем после
@@ -131,31 +142,42 @@ def build_table(doc, data, position="end", paragraph=0, style="Table Grid", head
             cells.append(t)
         lines.append("\t".join(cells))
     anchor.Text = "\r".join(lines)
-    tbl = anchor.ConvertToTable(1, rows, cols)  # wdSeparateByTabs
-    for r, c, t in multiline:
-        tbl.Cell(r, c).Range.Text = t.replace("\n", "\r")  # абзацы внутри ячейки
-    used_style = apply_table_style(doc, tbl, style) if style else None
-    tbl.AutoFitBehavior(_AUTOFIT[autofit])
-    if column_widths_cm:
-        for j, w in enumerate(column_widths_cm, start=1):
-            if j <= cols:
-                tbl.Columns(j).Width = cm_to_points(w)
-    if font_size is not None:
-        tbl.Range.Font.Size = float(font_size)
-    if alignment:
-        if alignment.lower() not in ALIGNMENTS:
-            raise ToolError("alignment must be left, center, right or justify.")
-        tbl.Range.ParagraphFormat.Alignment = ALIGNMENTS[alignment.lower()]
-    for j in right_align_cols or []:
-        for r in range(2 if header_row else 1, rows + 1):
-            tbl.Cell(r, j).Range.ParagraphFormat.Alignment = 2  # числа — по правому краю
-    if header_row:
-        hr = tbl.Rows(1)
-        hr.HeadingFormat = True
-        hr.Range.Font.Bold = True
-        if header_fill:
-            hr.Shading.BackgroundPatternColor = parse_color(header_fill)
+    try:
+        tbl = anchor.ConvertToTable(1, rows, cols)  # wdSeparateByTabs
+    except Exception:
+        try:
+            anchor.Text = ""  # убрать вставленный текст, если таблица не получилась
+        except Exception:  # noqa: BLE001
+            pass
+        raise
     t_start = int(tbl.Range.Start)
+    try:
+        for r, c, t in multiline:
+            tbl.Cell(r, c).Range.Text = t.replace("\n", "\r")  # абзацы внутри ячейки
+        used_style = apply_table_style(doc, tbl, style) if style else None
+        tbl.AutoFitBehavior(_AUTOFIT[autofit])
+        if column_widths_cm:
+            for j, w in enumerate(column_widths_cm, start=1):
+                tbl.Columns(j).Width = cm_to_points(w)
+        if font_size is not None:
+            tbl.Range.Font.Size = float(font_size)
+        if alignment:
+            tbl.Range.ParagraphFormat.Alignment = ALIGNMENTS[alignment.lower()]
+        for j in right_align_cols or []:
+            for r in range(2 if header_row else 1, rows + 1):
+                tbl.Cell(r, j).Range.ParagraphFormat.Alignment = 2  # числа — по правому краю
+        if header_row:
+            hr = tbl.Rows(1)
+            hr.HeadingFormat = True
+            hr.Range.Font.Bold = True
+            if header_fill:
+                hr.Shading.BackgroundPatternColor = parse_color(header_fill)
+    except Exception as exc:  # noqa: BLE001 — таблица уже в документе: говорим, что именно осталось сделанным
+        index = next((i for i in range(1, int(doc.Tables.Count) + 1) if int(doc.Tables(i).Range.Start) == t_start), int(doc.Tables.Count))
+        raise ToolError(
+            f"The table was inserted (table {index}, {rows}x{cols}) but a later formatting step failed: {com.translate(exc)}. "
+            "Fix it with word_format_table / word_modify_table or delete the table."
+        ) from None
     index = next((i for i in range(1, int(doc.Tables.Count) + 1) if int(doc.Tables(i).Range.Start) == t_start), int(doc.Tables.Count))
     return {"ok": True, "document": doc.Name, "table": index, "rows": rows, "columns": cols, "style_used": used_style}
 
@@ -218,14 +240,16 @@ def word_write_table(
     rows, cols = _dims(tbl)
     if cols is None:
         raise ToolError("The table has merged cells with uneven columns; write single cells via word_modify_table/cell edits or use a simpler table.")
+    if int(start_row) < 1 or int(start_col) < 1:
+        raise ToolError("start_row and start_col are 1-based.")
+    if int(start_col) - 1 + len(grid[0]) > cols:
+        raise ToolError(f"Data is {len(grid[0])} columns wide from column {start_col}, but the table has {cols} columns.")
     need_rows = int(start_row) - 1 + len(grid)
     if need_rows > rows:
         if not add_rows:
             raise ToolError(f"Data needs {need_rows} rows but the table has {rows}; pass add_rows=true.")
         for _ in range(need_rows - rows):
             tbl.Rows.Add()
-    if int(start_col) - 1 + len(grid[0]) > cols:
-        raise ToolError(f"Data is {len(grid[0])} columns wide from column {start_col}, but the table has {cols} columns.")
     written = 0
     for i, row in enumerate(grid):
         for j, v in enumerate(row):
@@ -239,7 +263,7 @@ def word_write_table(
 # ================================================================== структура
 
 
-@office_tool("word_tables", "write", title="Modify table structure")
+@office_tool("word_tables", "write", title="Modify table structure", destructive=True)
 def word_modify_table(
     document: str,
     table_index: int,
@@ -266,6 +290,30 @@ def word_modify_table(
     app, doc = pick_document(document)
     tbl = get_table(doc, table_index)
     act = action.lower()
+    n_rows, n_cols = _dims(tbl)
+    if act in ("add_rows", "add_columns", "delete_rows", "delete_columns") and not 1 <= int(count) <= 1000:
+        raise ToolError("count must be between 1 and 1000.")
+    if act == "add_rows" and position and not 1 <= int(position) <= n_rows:
+        raise ToolError(f"position {position} is outside the table (1..{n_rows} rows).")
+    if act == "add_columns" and position and (n_cols is None or not 1 <= int(position) <= n_cols):
+        raise ToolError(f"position {position} is outside the table ({n_cols} columns; tables with merged cells are not supported here).")
+    if act == "delete_columns":
+        if n_cols is None:
+            raise ToolError("The table has merged cells with uneven columns; deleting columns is not supported for it.")
+        if position and int(position) + int(count) - 1 > n_cols:
+            raise ToolError(f"The table has only {n_cols} columns.")
+        if position and int(position) == 1 and int(count) >= n_cols:
+            raise ToolError("That would delete every column; use action='delete_table' instead.")
+    if act == "delete_rows" and position and int(position) == 1 and int(count) >= n_rows:
+        raise ToolError("That would delete every row; use action='delete_table' instead.")
+    if act in ("merge_cells", "split_cell"):
+        for name, v, limit in (("row", row, n_rows), ("to_row", to_row if act == "merge_cells" else 0, n_rows)):
+            if v and not 1 <= int(v) <= limit:
+                raise ToolError(f"{name}={v} is outside the table ({n_rows} rows).")
+        if n_cols is not None:
+            for name, v in (("col", col), ("to_col", to_col if act == "merge_cells" else 0)):
+                if v and not 1 <= int(v) <= n_cols:
+                    raise ToolError(f"{name}={v} is outside the table ({n_cols} columns).")
     if act == "add_rows":
         for k in range(int(count)):
             if position:
@@ -371,73 +419,129 @@ def word_format_table(
     c1, c2 = int(col_from) or 1, int(col_to) or cols
     if not (1 <= r1 <= r2 <= rows) or not (1 <= c1 <= c2 <= cols):
         raise ToolError(f"Cell block out of range; the table is {rows}x{cols}.")
+    # --- все параметры проверяем и переводим ДО первого изменения
+    if alignment and alignment.lower() not in ALIGNMENTS:
+        raise ToolError("alignment must be left, center, right or justify.")
+    if vertical_alignment and vertical_alignment.lower() not in _VALIGN:
+        raise ToolError("vertical_alignment must be top, center or bottom.")
+    if font_size is not None and not 1 <= float(font_size) <= 1638:
+        raise ToolError("font_size must be between 1 and 1638 points.")
+    font_rgb = parse_color(font_color) if font_color else None
+    fill_value = None if fill_color is None else (-16777216 if fill_color.lower() == "none" else parse_color(fill_color))  # wdColorAutomatic
+    border_choice = line_style = line_width = border_rgb = None
+    if borders is not None:
+        border_choice = borders.lower()
+        if border_choice not in _BORDER_CHOICES:
+            raise ToolError(f"borders must be one of {sorted(_BORDER_CHOICES)}")
+        if border_style.lower() not in _LINE_STYLES or _LINE_STYLES[border_style.lower()] == 0:
+            raise ToolError("border_style must be single, dotted, dashed or double.")
+        line_style, line_width, border_rgb = _LINE_STYLES[border_style.lower()], _line_width(border_width_pt), parse_color(border_color)
+    wants_text = any(v is not None for v in (font_name, font_size, font_rgb, bold, italic)) or bool(alignment)
+    if not (style or wants_text or fill_value is not None or vertical_alignment or cell_padding_cm is not None or borders is not None):
+        raise ToolError("Nothing to apply: pass at least one formatting parameter.")
+
+    whole = (r1, c1, r2, c2) == (1, 1, rows, cols)
     applied = []
     if style:
         apply_table_style(doc, tbl, style)
         applied.append(f"style={style}")
-    block = doc.Range(int(tbl.Cell(r1, c1).Range.Start), int(tbl.Cell(r2, c2).Range.End))
-    font = block.Font
-    if font_name:
-        font.Name = font_name
-        applied.append("font_name")
-    if font_size is not None:
-        font.Size = float(font_size)
-        applied.append("font_size")
-    if font_color:
-        font.Color = parse_color(font_color)
-        applied.append("font_color")
-    if bold is not None:
-        font.Bold = bool(bold)
-        applied.append("bold")
-    if italic is not None:
-        font.Italic = bool(italic)
-        applied.append("italic")
-    if alignment:
-        if alignment.lower() not in ALIGNMENTS:
-            raise ToolError("alignment must be left, center, right or justify.")
-        block.ParagraphFormat.Alignment = ALIGNMENTS[alignment.lower()]
-        applied.append("alignment")
-    for r in range(r1, r2 + 1):
-        for c in range(c1, c2 + 1):
-            cell = tbl.Cell(r, c)
-            if fill_color is not None:
-                cell.Shading.BackgroundPatternColor = -16777216 if fill_color.lower() == "none" else parse_color(fill_color)  # wdColorAutomatic
-            if vertical_alignment:
-                if vertical_alignment.lower() not in _VALIGN:
-                    raise ToolError("vertical_alignment must be top, center or bottom.")
-                cell.VerticalAlignment = _VALIGN[vertical_alignment.lower()]
-    if fill_color is not None:
-        applied.append("fill_color")
-    if vertical_alignment:
-        applied.append("vertical_alignment")
+    if wants_text:
+        # Непрерывный Range от первой до последней ячейки блока захватил бы и соседние ячейки строк — форматируем ячейка за ячейкой
+        targets = [tbl.Range] if whole else [tbl.Cell(r, c).Range for r in range(r1, r2 + 1) for c in range(c1, c2 + 1)]
+        for rg in targets:
+            font = rg.Font
+            if font_name:
+                font.Name = font_name
+            if font_size is not None:
+                font.Size = float(font_size)
+            if font_rgb is not None:
+                font.Color = font_rgb
+            if bold is not None:
+                font.Bold = bool(bold)
+            if italic is not None:
+                font.Italic = bool(italic)
+            if alignment:
+                rg.ParagraphFormat.Alignment = ALIGNMENTS[alignment.lower()]
+        applied += [n for n, v in (("font_name", font_name), ("font_size", font_size), ("font_color", font_rgb), ("bold", bold), ("italic", italic), ("alignment", alignment)) if v not in (None, "")]
+    if fill_value is not None or vertical_alignment:
+        for r in range(r1, r2 + 1):
+            for c in range(c1, c2 + 1):
+                cell = tbl.Cell(r, c)
+                if fill_value is not None:
+                    cell.Shading.BackgroundPatternColor = fill_value
+                if vertical_alignment:
+                    cell.VerticalAlignment = _VALIGN[vertical_alignment.lower()]
+        if fill_value is not None:
+            applied.append("fill_color")
+        if vertical_alignment:
+            applied.append("vertical_alignment")
     if cell_padding_cm is not None:
         pad = cm_to_points(cell_padding_cm)
         tbl.TopPadding = tbl.BottomPadding = tbl.LeftPadding = tbl.RightPadding = pad
         applied.append("cell_padding_cm")
     if borders is not None:
-        b = borders.lower()
-        if border_style.lower() not in _LINE_STYLES or _LINE_STYLES[border_style.lower()] == 0:
-            raise ToolError("border_style must be single, dotted, dashed or double.")
-        edges = {
-            "all": list(_BORDER_IDS), "outline": ["top", "left", "bottom", "right"], "inside": ["inside_horizontal", "inside_vertical"],
-            "top": ["top"], "bottom": ["bottom"], "left": ["left"], "right": ["right"], "none": list(_BORDER_IDS),
-        }
-        if b not in edges:
-            raise ToolError(f"borders must be one of {sorted(edges)}")
-        if b == "none":
-            tbl.Borders.Enable = False
-        else:
-            tbl.Borders.Enable = True
-            width = _line_width(border_width_pt)
-            for name in edges[b]:
-                br = tbl.Borders(_BORDER_IDS[name])
-                br.LineStyle = _LINE_STYLES[border_style.lower()]
-                br.LineWidth = width
-                br.Color = parse_color(border_color)
-        applied.append(f"borders={b}")
-    if not applied:
-        raise ToolError("Nothing to apply: pass at least one formatting parameter.")
+        _apply_borders(tbl, border_choice, (r1, c1, r2, c2), whole, line_style, line_width, border_rgb)
+        applied.append(f"borders={border_choice}")
     return {"ok": True, "document": doc.Name, "table": int(table_index), "block": [r1, c1, r2, c2], "applied": applied}
+
+
+_BORDER_CHOICES = {"all", "outline", "inside", "top", "bottom", "left", "right", "none"}
+
+
+def _block_edges(choice: str, r: int, c: int, block: tuple) -> list[str]:
+    """Какие границы ячейки (r, c) относятся к выбору `choice` для блока (r1, c1, r2, c2)."""
+    r1, c1, r2, c2 = block
+    if choice in ("all", "none"):
+        return ["top", "left", "bottom", "right"]
+    edges = []
+    if choice == "outline":
+        for name, hit in (("top", r == r1), ("left", c == c1), ("bottom", r == r2), ("right", c == c2)):
+            if hit:
+                edges.append(name)
+    elif choice == "inside":
+        for name, hit in (("top", r > r1), ("left", c > c1), ("bottom", r < r2), ("right", c < c2)):
+            if hit:
+                edges.append(name)
+    elif choice == "top" and r == r1:
+        edges.append("top")
+    elif choice == "bottom" and r == r2:
+        edges.append("bottom")
+    elif choice == "left" and c == c1:
+        edges.append("left")
+    elif choice == "right" and c == c2:
+        edges.append("right")
+    return edges
+
+
+def _apply_borders(tbl, choice: str, block: tuple, whole: bool, line_style: int | None, line_width: int | None, rgb: int | None):
+    """Границы только там, где просили: для всего стола — через tbl.Borders (без Enable=True, который включил бы и внутренние),
+    для блока — по границам его ячеек, не затрагивая остальную таблицу."""
+    r1, c1, r2, c2 = block
+    if whole:
+        if choice == "none":
+            tbl.Borders.Enable = False
+            return
+        names = {
+            "all": list(_BORDER_IDS), "outline": ["top", "left", "bottom", "right"], "inside": ["inside_horizontal", "inside_vertical"],
+            "top": ["top"], "bottom": ["bottom"], "left": ["left"], "right": ["right"],
+        }[choice]
+        for name in names:
+            br = tbl.Borders(_BORDER_IDS[name])
+            br.LineStyle = line_style
+            br.LineWidth = line_width
+            br.Color = rgb
+        return
+    for r in range(r1, r2 + 1):
+        for c in range(c1, c2 + 1):
+            cell = tbl.Cell(r, c)
+            for name in _block_edges(choice, r, c, block):
+                br = cell.Borders(_BORDER_IDS[name])
+                if choice == "none":
+                    br.LineStyle = 0
+                else:
+                    br.LineStyle = line_style
+                    br.LineWidth = line_width
+                    br.Color = rgb
 
 
 def _line_width(points: float) -> int:

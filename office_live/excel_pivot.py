@@ -225,7 +225,7 @@ def excel_pivot_filter(
             raise ToolError("mode must be 'only', 'hide', 'show' or 'all'.")
         pitems = _items(pf, 100000)
         names = [pi.Name for pi in pitems]
-        index = {n.lower(): pi for n, pi in zip(names, pitems)}
+        index = {n.lower(): pi for n, pi in zip(names, pitems, strict=False)}
         wanted = []
         if m != "all":
             if not items:
@@ -260,7 +260,7 @@ def excel_pivot_filter(
                     keep = {n.lower() for n in (str(i) for i in items)}
                     for pi in wanted:
                         pi.Visible = True
-                    for n, pi in zip(names, pitems):
+                    for n, pi in zip(names, pitems, strict=False):
                         if n.lower() not in keep:
                             pi.Visible = False
         visible = _displayed_items(pf)

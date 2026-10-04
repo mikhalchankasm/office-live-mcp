@@ -118,7 +118,7 @@ def word_open_document(path: str, read_only: bool = False) -> dict:
     if not os.path.isfile(full):
         raise ToolError(f"File not found: {full}")
     if _word_running():
-        for app, d in all_documents():
+        for _, d in all_documents():
             if d.Path and os.path.normcase(os.path.abspath(d.FullName)) == os.path.normcase(full):
                 return {"ok": True, "already_open": True, "document": d.Name, "path": d.FullName}
     app = com.primary_app("word", launch=True)

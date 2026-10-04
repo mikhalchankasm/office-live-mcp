@@ -401,4 +401,4 @@ def test_proxy_keeps_real_attribute_errors():
 
     plain._oleobj_ = Ole()
     with pytest.raises(AttributeError):
-        com.Proxy(plain).NoSuchProperty
+        getattr(com.Proxy(plain), "NoSuchProperty")  # noqa: B009 — проверяем именно доступ к атрибуту

@@ -96,7 +96,7 @@ def bridge_word_table_to_excel(
     numbers = texts = 0
     pct_cols = {}
     out = []
-    for i, row in enumerate(text_grid):
+    for row in text_grid:
         out_row = []
         for j, cell in enumerate(row):
             s = "" if cell is None else str(cell)

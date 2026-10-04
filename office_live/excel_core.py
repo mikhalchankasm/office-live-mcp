@@ -173,7 +173,7 @@ def excel_open_workbook(path: str, read_only: bool = False) -> dict:
     full = check_path(path, "read")
     if not os.path.isfile(full):
         raise ToolError(f"File not found: {full}")
-    for app, wb in (all_workbooks() if _excel_running() else []):
+    for _, wb in (all_workbooks() if _excel_running() else []):
         if wb.Path and os.path.normcase(os.path.abspath(wb.FullName)) == os.path.normcase(full):
             return {"ok": True, "already_open": True, "workbook": wb.Name, "path": wb.FullName, "sheets": _sheet_list(wb)}
     app = com.primary_app("excel", launch=True)
@@ -708,7 +708,7 @@ def excel_replace(
         # Символы * ? ~ в What — шаблоны Excel, а нужен буквальный поиск; форматы поиска/замены из диалога пользователя сбрасываем.
         rng.Replace(_wildcard_escape(find), replace, 1 if whole_cell else 2, 1, bool(match_case), False, False, False)
         after = to_grid(rng.Formula)
-        changed = sum(1 for r0, r1 in zip(before, after) for x, y in zip(r0, r1) if x != y)
+        changed = sum(1 for r0, r1 in zip(before, after, strict=False) for x, y in zip(r0, r1, strict=False) if x != y)
     out = {
         "ok": True, "workbook": wb.Name, "sheet": ws.Name, "scope": addr_of(rng),
         "cells_matching": cells_hit, "occurrences": occ, "cells_changed": changed,
@@ -1182,7 +1182,7 @@ def excel_copy_range(
         data = src.Value if w == "values" else src.Formula
         if transpose:
             rows_data = [list(r) for r in data] if isinstance(data, tuple) and data and isinstance(data[0], tuple) else ([list(data)] if isinstance(data, tuple) else [[data]])
-            data = tuple(tuple(r) for r in zip(*rows_data))
+            data = tuple(tuple(r) for r in zip(*rows_data, strict=False))
         if w == "values":
             dest.Value = data
         else:

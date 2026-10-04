@@ -234,7 +234,7 @@ def color_to_hex(colorref) -> str | None:
         return None
     if v < 0:
         return None
-    return "#%02X%02X%02X" % (v & 0xFF, (v >> 8) & 0xFF, (v >> 16) & 0xFF)
+    return f"#{v & 0xFF:02X}{(v >> 8) & 0xFF:02X}{(v >> 16) & 0xFF:02X}"
 
 
 # ------------------------------------------------------------------ значения Excel

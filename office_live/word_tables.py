@@ -315,13 +315,13 @@ def word_modify_table(
                 if v and not 1 <= int(v) <= n_cols:
                     raise ToolError(f"{name}={v} is outside the table ({n_cols} columns).")
     if act == "add_rows":
-        for k in range(int(count)):
+        for _ in range(int(count)):
             if position:
                 tbl.Rows.Add(tbl.Rows(int(position)))
             else:
                 tbl.Rows.Add()
     elif act == "add_columns":
-        for k in range(int(count)):
+        for _ in range(int(count)):
             if position:
                 tbl.Columns.Add(tbl.Columns(int(position)))
             else:

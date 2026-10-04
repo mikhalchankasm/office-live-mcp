@@ -614,7 +614,18 @@ def setup_cmd(args) -> int:
     return 1 if failed else 0
 
 
+def _utf8_output() -> None:
+    """Вывод в файл/канал по умолчанию идёт в кодировке ANSI (cp1252 в CI, cp1251 у пользователя) и падает на
+    кириллице в описаниях инструментов; консоль Windows печатает Юникод и так. Поэтому вывод CLI — всегда UTF-8."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def run(cmd: str, args: list[str]) -> int:
+    _utf8_output()
     if cmd == "doctor":
         return doctor()
     if cmd == "tools":

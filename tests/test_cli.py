@@ -197,3 +197,18 @@ def test_vscode_entry_has_stdio_type(fake_home, tmp_path, monkeypatch):
     assert cli.run("setup", ["--yes", "--clients", "vscode"]) == 0
     entry = _servers(tmp_path / ".vscode" / "mcp.json", ["servers"])["office-live"]
     assert entry["type"] == "stdio"
+
+
+def test_tools_json_survives_redirection_in_an_ansi_code_page(tmp_path):
+    """CI: `tools --json > tools.json` падал с UnicodeEncodeError на кириллице в описаниях (вывод шёл в cp1252)."""
+    import os
+    import subprocess
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONIOENCODING", "PYTHONUTF8")}
+    env["PYTHONIOENCODING"] = "cp1252"  # как у перенаправленного вывода на английской Windows
+    root = Path(__file__).resolve().parent.parent
+    out = subprocess.run([sys.executable, "-m", "office_live", "tools", "--json"], cwd=root, env=env, capture_output=True, timeout=120)
+    assert out.returncode == 0, out.stderr.decode("utf-8", "replace")[-500:]
+    tools = json.loads(out.stdout.decode("utf-8"))
+    assert any("срезы" in t["description"] for t in tools)

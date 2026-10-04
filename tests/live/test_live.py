@@ -7,58 +7,13 @@
 
 import base64
 import os
-import tempfile
 
 import pytest
 
+from tests.live.conftest import assert_real_picture, read
 from tests.live.mcpclient import Stdio, ToolFailed
-from tests.live.office_cleanup import quit_word_if_idle
 
 pytestmark = pytest.mark.live
-
-
-@pytest.fixture(scope="session")
-def srv():
-    c = Stdio()
-    yield c
-    c.close()
-    quit_word_if_idle()
-
-
-def _is_ours(name, original, path):
-    """Наш файл: исходное имя черновика или файл во временной папке тестов (имя меняется после Save As)."""
-    return name == original or (path and "ol_pytest_" in path)
-
-
-@pytest.fixture
-def wb(srv):
-    name = srv.call("excel_new_workbook", sheets=["Data"])["workbook"]
-    yield name
-    for w in srv.call("excel_list_workbooks")["workbooks"]:
-        if _is_ours(w["name"], name, w["path"]):
-            srv.call("excel_close_workbook", workbook=w["path"] + "\\" + w["name"] if w["path"] else w["name"], discard=True)
-
-
-@pytest.fixture
-def doc(srv):
-    name = srv.call("word_new_document")["document"]
-    yield name
-    for d in srv.call("word_list_documents")["documents"]:
-        if _is_ours(d["name"], name, d["path"]):
-            srv.call("word_close_document", document=d["path"] + "\\" + d["name"] if d["path"] else d["name"], discard=True)
-
-
-@pytest.fixture
-def tmp():
-    d = tempfile.mkdtemp(prefix="ol_pytest_")
-    yield d
-    import shutil
-
-    shutil.rmtree(d, ignore_errors=True)
-
-
-def read(srv, wb, cells, sheet="Data", **kw):
-    return srv.call("excel_read_range", workbook=wb, sheet=sheet, cells=cells, **kw)["values"]
 
 
 # ================================================================== Excel
@@ -447,7 +402,10 @@ def test_audit_log_records_writes_not_reads(tmp):
     rows = [json.loads(line) for line in open(log, encoding="utf-8")]
     tools = [r["tool"] for r in rows]
     assert "excel_write_range" in tools and "excel_read_range" not in tools
-    refused = next(r for r in rows if r["tool"] == "excel_delete_sheet")
+    write_rows = [r for r in rows if r["tool"] == "excel_write_range"]
+    assert [r["phase"] for r in write_rows] == ["start", "end"]  # след остаётся ДО выполнения и после него
+    assert write_rows[1]["ok"] is True and any(name in t for t in write_rows[1]["targets"])  # реально выбранная книга
+    refused = next(r for r in rows if r["tool"] == "excel_delete_sheet" and r["phase"] == "end")
     assert refused["ok"] is False and "confirm" in refused["error"]
 
 
@@ -461,7 +419,7 @@ def test_render_works_when_another_sheet_is_active(srv, wb):
     srv.call("excel_format_range", workbook=wb, sheet="Data", cells="A1:B1", bold=True, fill_color="#1F4E78", font_color="white")
     res = srv.raw_call("excel_render_range_image", {"workbook": wb, "sheet": "Data", "cells": "A1:B3"})
     png = base64.b64decode(next(c for c in res["content"] if c["type"] == "image")["data"])
-    assert png[:8] == b"\x89PNG\r\n\x1a\n" and len(png) > 2500  # не пустая картинка
+    assert_real_picture(png)  # не пустая картинка
     # пользовательский вид восстановлен: активным остался лист Other
     assert srv.call("excel_list_workbooks")["active_sheet"] == "Other"
 
@@ -553,7 +511,7 @@ def test_render_survives_a_minimized_workbook_window():
         c.call("office_run_python", workbook=name, code="wb.Windows(1).WindowState = -4140")  # xlMinimized
         res = c.raw_call("excel_render_range_image", {"workbook": name, "sheet": "Data", "cells": "A1:B3"})
         png = base64.b64decode(next(i for i in res["content"] if i["type"] == "image")["data"])
-        assert len(png) > 2000
+        assert_real_picture(png)
         state = c.call("office_run_python", workbook=name, code="result = wb.Windows(1).WindowState")["result"]
         assert state == -4140  # состояние окна возвращено как было
     finally:

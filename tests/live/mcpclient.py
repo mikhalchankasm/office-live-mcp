@@ -2,6 +2,7 @@
 
 import json
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -28,7 +29,9 @@ class Stdio:
             text=True, encoding="utf-8",
         )
         self.stderr_lines = []
+        self._lines: queue.Queue = queue.Queue()
         threading.Thread(target=self._drain, daemon=True).start()
+        threading.Thread(target=self._read_stdout, daemon=True).start()
         self._id = 0
         init = self.rpc("initialize", {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "live-test", "version": "1"}})
         self.server_info = init["result"]
@@ -38,11 +41,17 @@ class Stdio:
         for line in self.proc.stderr:
             self.stderr_lines.append(line.rstrip())
 
+    def _read_stdout(self):
+        for line in self.proc.stdout:
+            self._lines.put(line)
+        self._lines.put(None)  # конец потока: сервер закрыл stdout
+
     def _send(self, msg):
         self.proc.stdin.write(json.dumps(msg) + "\n")
         self.proc.stdin.flush()
 
-    def rpc(self, method, params=None):
+    def rpc(self, method, params=None, timeout=180.0):
+        """Отправляет запрос и ждёт ответ не дольше timeout секунд (зависший сервер не должен вешать весь прогон)."""
         self._id += 1
         rid = self._id
         msg = {"jsonrpc": "2.0", "id": rid, "method": method}
@@ -50,9 +59,15 @@ class Stdio:
             msg["params"] = params
         self._send(msg)
         while True:
-            line = self.proc.stdout.readline()
-            if not line:
-                raise RuntimeError("server closed stdout; stderr:\n" + "\n".join(self.stderr_lines[-20:]))
+            try:
+                line = self._lines.get(timeout=timeout)
+            except queue.Empty:
+                self.proc.kill()
+                tail = "\n".join(self.stderr_lines[-20:])
+                raise TimeoutError(f"no answer to {method} within {timeout:.0f}s; server stderr:\n{tail}") from None
+            if line is None:
+                tail = "\n".join(self.stderr_lines[-20:])
+                raise RuntimeError(f"server closed stdout; stderr:\n{tail}")
             data = json.loads(line)
             if data.get("id") == rid:
                 return data

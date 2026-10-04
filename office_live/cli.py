@@ -3,9 +3,12 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 SERVER_NAME = "office-live"
@@ -140,11 +143,34 @@ def _read_json(path: Path) -> dict:
     return {}
 
 
-def _write_json_with_backup(path: Path, data: dict) -> None:
+def _backup(path: Path) -> Path | None:
+    """Копия рядом с файлом: <имя>.bak-ГГГГММДД-ЧЧММСС (прежняя копия не затирается)."""
+    if not path.exists():
+        return None
+    target = path.with_name(f"{path.name}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    shutil.copy2(path, target)
+    return target
+
+
+def _atomic_write(path: Path, text: str) -> None:
+    """Запись через временный файл и os.replace: при сбое настройки клиента не остаются обрезанными."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists():
-        shutil.copy2(path, path.with_suffix(path.suffix + ".bak"))
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    fd, tmp = tempfile.mkstemp(prefix=path.name + ".", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _write_json_with_backup(path: Path, data: dict) -> None:
+    _backup(path)
+    _atomic_write(path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _toml_escape(s: str) -> str:
@@ -178,38 +204,125 @@ def _json_target(client: str) -> tuple[Path | None, list[str], bool]:
     return root.joinpath(*parts), keys, typed
 
 
+_TOML_HEADER = re.compile(r"^\s*\[\[?[^\[\]=\n]*\]\]?\s*(?:#.*)?$")
+_OURS = re.compile(
+    r"""^\s*\[\s*mcp_servers\s*\.\s*(?:"%(n)s"|'%(n)s'|%(n)s)\s*(?:\.[^\]]*)?\]\s*(?:#.*)?$""" % {"n": re.escape(SERVER_NAME)}
+)
+
+
 def _strip_toml_tables(text: str) -> str:
-    """Удаляет таблицы [mcp_servers.office-live] и [mcp_servers.office-live.env] из TOML (построчно: массивы в значениях не мешают)."""
+    """Удаляет таблицы [mcp_servers.office-live] и все вложенные ([...env], кавычки, пробелы, комментарий после заголовка)."""
     out, skipping = [], False
     for line in text.splitlines(keepends=True):
-        stripped = line.strip()
-        if stripped.startswith("["):
-            skipping = stripped in (f"[mcp_servers.{SERVER_NAME}]", f"[mcp_servers.{SERVER_NAME}.env]")
+        if _TOML_HEADER.match(line):
+            skipping = bool(_OURS.match(line))
         if not skipping:
             out.append(line)
     return "".join(out).rstrip("\n") + ("\n" if out else "")
 
 
+def _toml_env(text: str) -> dict:
+    """env уже установленной записи office-live в config.toml ({} если нет или файл не разобрать)."""
+    try:
+        import tomllib
+
+        node = tomllib.loads(text).get("mcp_servers", {}).get(SERVER_NAME, {})
+        return {str(k): str(v) for k, v in (node.get("env") or {}).items()}
+    except Exception:  # noqa: BLE001 — старый Python без tomllib или нестандартный файл: настройки просто не переносим
+        return {}
+
+
+def _existing_env(client: str, path: Path | None, keys: list[str], scope: str = "user") -> dict:
+    """Переменные окружения уже подключённой записи — чтобы повторная установка не снимала ограничения молча."""
+    try:
+        if client == "codex":
+            return _toml_env(path.read_text(encoding="utf-8")) if path and path.exists() else {}
+        if client == "claude-code":
+            entry = _claude_code_entry(scope)
+            return dict((entry or {}).get("env") or {})
+        if not path or not path.exists():
+            return {}
+        node = _read_json(path)
+        for k in keys:
+            node = node.get(k, {}) if isinstance(node, dict) else {}
+        return {str(k): str(v) for k, v in ((node.get(SERVER_NAME) or {}).get("env") or {}).items()}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _claude_code_entry(scope: str) -> dict | None:
+    """Запись office-live из конфигурации Claude Code для области scope (читаем файлы, claude CLI не вызываем)."""
+    try:
+        if scope == "project":
+            data = _read_json(Path.cwd() / ".mcp.json")
+            return (data.get("mcpServers") or {}).get(SERVER_NAME)
+        data = _read_json(Path.home() / ".claude.json")
+        if scope == "user":
+            return (data.get("mcpServers") or {}).get(SERVER_NAME)
+        here = os.path.normcase(os.path.normpath(os.getcwd()))
+        for key, value in (data.get("projects") or {}).items():
+            if os.path.normcase(os.path.normpath(key)) == here:
+                return ((value or {}).get("mcpServers") or {}).get(SERVER_NAME)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _merge_env(previous: dict, explicit: dict, reset: bool, full: bool) -> dict:
+    """Прежние настройки + явно заданные сейчас. reset — начать с нуля; full — явно вернуть режим full."""
+    env = {} if reset else dict(previous)
+    env.update(explicit)
+    if full:
+        env.pop("OFFICE_LIVE_MODE", None)
+    return env
+
+
 def config_cmd(args) -> int:
     p = argparse.ArgumentParser(prog="office-live-mcp config", description="Print (or with --write, install) the MCP server entry for an agent.")
     p.add_argument("client", choices=["claude-code", "claude-desktop", "cursor", "vscode", "codex", "zcode", "generic"])
-    p.add_argument("--write", action="store_true", help="modify the client's config file (a .bak copy is kept); an existing office-live entry is replaced")
+    p.add_argument("--write", action="store_true", help="modify the client's config file (a dated .bak copy is kept); an existing office-live entry is replaced, its OFFICE_LIVE_* settings are kept")
     p.add_argument("--readonly", action="store_true", help="start the server in read-only mode")
+    p.add_argument("--full", action="store_true", help="explicitly return to full mode (removes a previously set OFFICE_LIVE_MODE)")
     p.add_argument("--toolsets", default="", help="OFFICE_LIVE_TOOLSETS value, e.g. 'core' or 'excel_core,excel_format'")
     p.add_argument("--allowed-dirs", default="", help="OFFICE_LIVE_ALLOWED_DIRS value (';'-separated)")
+    p.add_argument("--env", action="append", default=[], metavar="OFFICE_LIVE_X=value", help="any other OFFICE_LIVE_* setting (repeatable), e.g. OFFICE_LIVE_AUTOSAVE=allow")
+    p.add_argument("--reset", action="store_true", help="forget the settings of the existing entry instead of keeping them")
     p.add_argument("--path", default="", help="override the config file location")
     p.add_argument("--scope", default="user", choices=["user", "local", "project"], help="claude-code only: user = all projects (default), local = this project only, project = shared .mcp.json")
     p.add_argument("--quiet", action="store_true", help="do not print the configuration snippet")
     ns = p.parse_args(args)
+    if ns.readonly and ns.full:
+        print("--readonly and --full contradict each other.", file=sys.stderr)
+        return 2
     say = (lambda *a, **k: None) if ns.quiet else print
-    env = {}
+    explicit: dict = {}
     if ns.readonly:
-        env["OFFICE_LIVE_MODE"] = "readonly"
+        explicit["OFFICE_LIVE_MODE"] = "readonly"
     if ns.toolsets:
-        env["OFFICE_LIVE_TOOLSETS"] = ns.toolsets
+        explicit["OFFICE_LIVE_TOOLSETS"] = ns.toolsets
     if ns.allowed_dirs:
-        env["OFFICE_LIVE_ALLOWED_DIRS"] = ns.allowed_dirs
+        explicit["OFFICE_LIVE_ALLOWED_DIRS"] = ns.allowed_dirs
+    for item in ns.env:
+        key, sep, value = item.partition("=")
+        if not sep or not key.startswith("OFFICE_LIVE_"):
+            print(f"--env expects OFFICE_LIVE_NAME=value, got {item!r}.", file=sys.stderr)
+            return 2
+        explicit[key] = value
     cmd, a = _server_command()
+
+    if ns.client == "generic":
+        path, keys, typed = None, ["mcpServers"], False
+    elif ns.client in ("claude-code", "codex"):
+        path, keys, typed = (Path(ns.path) if ns.path else Path.home() / ".codex" / "config.toml") if ns.client == "codex" else None, [], False
+    else:
+        path, keys, typed = _json_target(ns.client)
+    if ns.path and path is not None:
+        path = Path(ns.path)
+    previous = _existing_env(ns.client, path, keys, ns.scope) if ns.write else {}
+    env = _merge_env(previous, explicit, ns.reset, ns.full)
+    kept = {k: v for k, v in env.items() if k in previous and k not in explicit}
+    if kept and ns.write:
+        print(f"Kept the existing settings of the entry: {kept} (use --reset to drop them).")
 
     if ns.client == "claude-code":
         parts = ["claude", "mcp", "add", "--scope", ns.scope, SERVER_NAME] + [x for k, v in env.items() for x in ("-e", f"{k}={v}")] + ["--", cmd] + a
@@ -218,8 +331,13 @@ def config_cmd(args) -> int:
             if not shutil.which("claude"):
                 print("The 'claude' CLI was not found on PATH.", file=sys.stderr)
                 return 1
+            old = _claude_code_entry(ns.scope)
             subprocess.call(["claude", "mcp", "remove", SERVER_NAME, "-s", ns.scope], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # повторная установка заменяет запись
-            return subprocess.call(parts, stdout=subprocess.DEVNULL if ns.quiet else None)
+            rc = subprocess.call(parts, stdout=subprocess.DEVNULL if ns.quiet else None)
+            if rc != 0 and old:
+                restored = subprocess.call(["claude", "mcp", "add-json", "--scope", ns.scope, SERVER_NAME, json.dumps(old)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print("The new entry could not be added; the previous one was " + ("restored." if restored == 0 else "NOT restored - re-add it manually."), file=sys.stderr)
+            return rc
         return 0
 
     if ns.client == "codex":
@@ -228,20 +346,13 @@ def config_cmd(args) -> int:
             block += f"[mcp_servers.{SERVER_NAME}.env]\n" + "".join(f'{k} = "{_toml_escape(v)}"\n' for k, v in env.items())
         say(block)
         if ns.write:
-            path = Path(ns.path) if ns.path else Path.home() / ".codex" / "config.toml"
             text = path.read_text(encoding="utf-8") if path.exists() else ""
-            path.parent.mkdir(parents=True, exist_ok=True)
-            if path.exists():
-                shutil.copy2(path, path.with_suffix(".toml.bak"))
+            _backup(path)
             base = _strip_toml_tables(text) if text else ""
-            path.write_text(base + ("\n" if base else "") + block, encoding="utf-8")
+            _atomic_write(path, base + ("\n" if base else "") + block)
             print(f"Written to {path}")
         return 0
 
-    if ns.client == "generic":
-        path, keys, typed = None, ["mcpServers"], False
-    else:
-        path, keys, typed = _json_target(ns.client)
     entry = _json_server_entry(env, typed)
     snippet: dict = {}
     node = snippet
@@ -253,7 +364,6 @@ def config_cmd(args) -> int:
         if ns.client == "generic" and not ns.path:
             print("Pass --path with --write for the generic client.", file=sys.stderr)
             return 1
-        path = Path(ns.path) if ns.path else path
         data = _read_json(path)
         node = data
         for k in keys[:-1]:
@@ -287,10 +397,10 @@ def _remove_client(client: str) -> str:
         return "удалено" if rc == 0 else "записи не было"
     if client == "codex":
         path = Path.home() / ".codex" / "config.toml"
-        if not path.exists() or f"[mcp_servers.{SERVER_NAME}]" not in path.read_text(encoding="utf-8"):
+        if not path.exists() or not any(_OURS.match(line) for line in path.read_text(encoding="utf-8").splitlines()):
             return "записи не было"
-        shutil.copy2(path, path.with_suffix(".toml.bak"))
-        path.write_text(_strip_toml_tables(path.read_text(encoding="utf-8")), encoding="utf-8")
+        _backup(path)
+        _atomic_write(path, _strip_toml_tables(path.read_text(encoding="utf-8")))
         return "удалено"
     path, keys, _ = _json_target(client)
     if not path or not path.exists():
@@ -343,6 +453,8 @@ def setup_cmd(args) -> int:
     p = argparse.ArgumentParser(prog="office-live-mcp setup", description="Подключить сервер к ИИ-агентам на этом компьютере (диалог).")
     p.add_argument("--clients", default=None, help="claude-code,claude-desktop,cursor,codex,zcode,vscode | detected | all | none")
     p.add_argument("--readonly", action="store_true", help="режим «только чтение»")
+    p.add_argument("--full", action="store_true", help="явно вернуть полный режим (снять ранее заданный «только чтение»)")
+    p.add_argument("--reset", action="store_true", help="не переносить настройки уже подключённой записи (по умолчанию они сохраняются)")
     p.add_argument("--toolsets", default="", help="OFFICE_LIVE_TOOLSETS, например core")
     p.add_argument("--allowed-dirs", default="", help="OFFICE_LIVE_ALLOWED_DIRS, каталоги через ';'")
     p.add_argument("--yes", action="store_true", help="без вопросов: берём --clients (по умолчанию — обнаруженные агенты)")
@@ -357,8 +469,11 @@ def setup_cmd(args) -> int:
         print("\nКакой доступ дать агентам?")
         print("  1 - полный: читать и менять открытые Excel/Word (рекомендуется)")
         print("  2 - только чтение: агент смотрит документы, но ничего не меняет")
-        if _ask("Выбор [1]: ", "1") == "2":
+        choice = _ask("Выбор [1]: ", "1")
+        if choice == "2":
             ns.readonly = True
+        elif choice == "1":
+            ns.full = True
     if ns.clients is None:
         if interactive:
             print("\nГде подключить?" + (" (✓ — найдено на этом компьютере)" if any(detected.values()) else ""))
@@ -394,6 +509,10 @@ def setup_cmd(args) -> int:
         extra = ["--quiet"]
         if ns.readonly:
             extra.append("--readonly")
+        if ns.full:
+            extra.append("--full")
+        if ns.reset:
+            extra.append("--reset")
         if ns.toolsets:
             extra += ["--toolsets", ns.toolsets]
         if ns.allowed_dirs:

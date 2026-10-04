@@ -54,7 +54,7 @@
 | `excel_insert_image` | write | Insert a picture file (png/jpg/gif/bmp/emf) onto a sheet, anchored at a cell. |
 | `excel_sheet_view` | write | Change how a sheet looks on screen: freeze panes, zoom, gridlines, row/column headings. |
 | `excel_page_setup` | write | Print settings of a sheet (the needed printer driver must be available to Windows). |
-| `excel_render_range_image` | read | Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard. |
+| `excel_render_range_image` | read | Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content is unchanged, but Excel marks the workbook as modified and the Undo history is cleared; AutoSave is paused meanwhile). |
 
 ### word_core (20)
 

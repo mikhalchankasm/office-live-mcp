@@ -5,6 +5,7 @@
 """
 
 import tempfile
+import uuid
 
 import pytest
 
@@ -21,9 +22,12 @@ def srv():
     quit_word_if_idle(started_by_tests=not word_was_running)
 
 
+RUN_TAG = f"ol_pytest_{uuid.uuid4().hex[:8]}"  # уникальна для этого запуска: файлы других запусков и пользователя не совпадут
+
+
 def _is_ours(name, original, path):
-    """Наш файл: исходное имя черновика или файл во временной папке тестов (имя меняется после Save As)."""
-    return name == original or (path and "ol_pytest_" in path)
+    """Наш файл: исходное имя черновика или файл в временной папке ЭТОГО запуска (имя меняется после Save As)."""
+    return name == original or (bool(path) and RUN_TAG in path)
 
 
 @pytest.fixture
@@ -46,7 +50,7 @@ def doc(srv):
 
 @pytest.fixture
 def tmp():
-    d = tempfile.mkdtemp(prefix="ol_pytest_")
+    d = tempfile.mkdtemp(prefix=RUN_TAG + "_")
     yield d
     import shutil
 

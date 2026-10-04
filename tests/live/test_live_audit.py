@@ -3,6 +3,7 @@
 Запуск:  set OFFICE_LIVE_LIVE_TESTS=1 && .venv\\Scripts\\python -m pytest tests/live -q
 """
 
+import json
 import os
 
 import pytest
@@ -33,8 +34,8 @@ def _close(srv, *paths):
 # ================================================================== скрытые изменения и побочные эффекты
 
 
-def test_helper_operations_do_not_dirty_the_workbook_or_leave_scratch_objects(srv, wb, tmp):
-    """Перевод формул и снимок диапазона не оставляют в книге ни листов, ни диаграмм и не делают её «грязной»."""
+def test_helper_operations_leave_no_scratch_objects_and_never_hide_a_change(srv, wb, tmp):
+    """Перевод формул не делает книгу «грязной»; снимок оставляет книгу изменённой (флаг не подменяется), но без лишних объектов."""
     srv.call("excel_write_range", workbook=wb, sheet="Data", cells="A1", values=[["n", "v"], ["a", 1], ["b", 12]])
     srv.call("excel_conditional_format", workbook=wb, sheet="Data", cells="A2:B3", rule="formula", formula='=AND($B2>10,$A2<>"")', fill_color="#FFC000")
     path = os.path.join(tmp, "clean.xlsx")
@@ -43,15 +44,14 @@ def test_helper_operations_do_not_dirty_the_workbook_or_leave_scratch_objects(sr
     assert before["saved"] is True
     books_before = sorted(w["path"] + w["name"] for w in srv.call("excel_list_workbooks")["workbooks"])
     srv.call("excel_conditional_format", workbook=path, sheet="Data", action="list")  # английский текст формулы — через временную книгу
-    srv.raw_call("excel_render_range_image", {"workbook": path, "sheet": "Data", "cells": "A1:B3"})
     srv.call("excel_describe_layout", workbook=path, sheet="Data")
+    assert srv.call("excel_workbook_info", workbook=path)["saved"] is True, "formula translation must not make the workbook dirty"
+    srv.raw_call("excel_render_range_image", {"workbook": path, "sheet": "Data", "cells": "A1:B3"})
     after = srv.call("excel_workbook_info", workbook=path)
-    assert after["saved"] is True, "read-only helpers must not make the workbook dirty"
-    assert srv.call("excel_manage_charts", workbook=path, action="list")["charts"] == []  # временная диаграмма снимка удалена
+    assert after["saved"] is False  # временная диаграмма пометила книгу изменённой; сервер этого не маскирует
+    assert srv.call("excel_manage_charts", workbook=path, action="list")["charts"] == []  # а сама диаграмма удалена
     assert after["sheets"] == before["sheets"]
     assert sorted(w["path"] + w["name"] for w in srv.call("excel_list_workbooks")["workbooks"]) == books_before  # временная книга закрыта
-    srv.call("excel_write_range", workbook=path, sheet="Data", cells="D1", values=[[1]])
-    assert srv.call("excel_workbook_info", workbook=path)["saved"] is False  # а настоящая правка флаг ставит
 
 
 def test_readonly_server_exposes_listing_actions_but_refuses_changes(srv, wb):
@@ -97,6 +97,28 @@ def test_allowed_dirs_apply_to_already_open_documents(srv, tmp):
     finally:
         guarded.close()
         _close(srv, a_path, b_path)
+
+
+def test_selection_and_active_names_of_a_forbidden_workbook_are_not_revealed(srv, tmp):
+    inside, outside = os.path.join(tmp, "inside"), os.path.join(tmp, "outside")
+    os.makedirs(inside)
+    os.makedirs(outside)
+    secret_path, ok_path = os.path.join(outside, "secret.xlsx"), os.path.join(inside, "ok.xlsx")
+    ok = srv.call("excel_new_workbook", sheets=["S"])["workbook"]
+    srv.call("excel_save_as", workbook=ok, path=ok_path)
+    secret = srv.call("excel_new_workbook", sheets=["Hidden"])["workbook"]
+    srv.call("excel_write_range", workbook=secret, sheet="Hidden", cells="A1", values=[["PRIVATE"]])
+    srv.call("excel_save_as", workbook=secret, path=secret_path)
+    srv.call("excel_select_range", workbook="secret.xlsx", sheet="Hidden", cells="A1")  # секретная книга стала активной
+    guarded = Stdio(env={"OFFICE_LIVE_ALLOWED_DIRS": inside})
+    try:
+        sel = guarded.call("excel_get_selection")
+        assert sel["workbook"] is None and "PRIVATE" not in json.dumps(sel, ensure_ascii=False)
+        listing = guarded.call("excel_list_workbooks")
+        assert listing["active_workbook"] is None and "secret" not in json.dumps(listing, ensure_ascii=False).lower() and "Hidden" not in json.dumps(listing)
+    finally:
+        guarded.close()
+        _close(srv, secret_path, ok_path)
 
 
 def test_save_and_close_respect_the_write_path_checks(srv, wb, tmp):

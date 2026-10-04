@@ -26,18 +26,48 @@ MCP-сервер, который позволяет **любому ИИ-аген
 
 ## Установка
 
+### Одним кликом (рекомендуется — в том числе для коллег)
+
+1. Скопируйте папку проекта на компьютер: `git clone <адрес репозитория>` или архив **без** папки `.venv` (окружение привязано
+   к компьютеру и не переносится). Путь может содержать пробелы.
+2. Дважды щёлкните **`install.cmd`** (из терминала — `.\install.cmd`; голое `install.cmd` Windows может не найти в текущей папке).
+3. Установщик найдёт Python 3.10+, создаст `.venv` рядом с проектом (права администратора не нужны), поставит зависимости,
+   покажет диагностику Excel/Word и спросит:
+   * какой доступ дать агентам — **полный** или **только чтение**;
+   * к каким агентам подключить: отмечает найденные на компьютере (Claude Code, Claude Desktop, Cursor, Codex, ZCode;
+     VS Code — по номеру, его конфиг лежит в папке проекта).
+4. Перезапустите агента и напишите ему, например: «покажи, какие книги открыты в Excel».
+
+Что нужно на компьютере: Windows 10/11, настольные Excel/Word (проверено на Microsoft 365), Python 3.10+
+(нет — `winget install Python.Python.3.13` или python.org с галочкой «Add python.exe to PATH»), доступ к PyPI.
+
+Полезно знать:
+
+* Всё работает **локально**: агент сам запускает сервер как подпроцесс на этом же компьютере, портов и облака нет. То, что
+  агент прочитал из документов, попадает в контекст модели — для конфиденциальных файлов выбирайте «только чтение» и/или `--allowed-dirs`.
+* Записи в конфигурации агентов содержат абсолютные пути этого компьютера — готовый конфиг от коллеги копировать нельзя, на каждом ПК
+  запускается свой `install.cmd`. Повторный запуск безопасен: записи заменяются, чужие серверы в конфигах не затрагиваются
+  (перед записью остаётся копия `.bak`).
+* Без вопросов (для скриптов): `.\install.cmd --yes --clients claude-code,cursor --readonly`.
+* Обновление: `git pull` и перезапуск агента (если менялся `requirements.txt` — ещё раз `install.cmd`).
+* Отключить сервер от агентов: `.venv\Scripts\python -m office_live setup --remove`.
+
+### Вручную
+
 ```bat
 cd C:\path\to\office-live-mcp
 C:\Python313\python.exe -m venv .venv
-.venv\Scripts\pip install -e .
+.venv\Scripts\pip install -r requirements.txt
 .venv\Scripts\python -m office_live doctor
+.venv\Scripts\python -m office_live setup
 ```
 
-`doctor` проверяет Python, зависимости, установленные и запущенные Excel/Word и текущие настройки.
+`doctor` проверяет Python, зависимости, установленные и запущенные Excel/Word и текущие настройки; `setup` — тот же диалог
+подключения, что и в установщике (`--yes --clients …` для работы без вопросов).
 
-### Подключение агента
+### Подключение агента вручную
 
-Команда печатает готовый фрагмент конфигурации; с `--write` — записывает его (рядом остаётся копия `.bak`):
+Обычно достаточно `setup`/`install.cmd`. Команда `config` печатает готовый фрагмент конфигурации для одного агента; с `--write` — записывает его (рядом остаётся копия `.bak`, существующая запись `office-live` заменяется):
 
 ```bat
 .venv\Scripts\python -m office_live config claude-code            :: печатает команду `claude mcp add ...`
@@ -172,7 +202,7 @@ excel_render_range_image · excel_find_issues    проверить глазам
 
 ```bat
 .venv\Scripts\pip install -e .[dev]
-.venv\Scripts\python -m pytest tests                                   :: 72 юнит-теста, Office не нужен
+.venv\Scripts\python -m pytest tests                                   :: 81 юнит-тест, Office не нужен
 set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live   :: 34 живых теста с реальными Excel и Word
 ```
 
@@ -182,9 +212,10 @@ set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live   :: 3
 ## Структура проекта
 
 ```
+install.cmd                установщик в один клик (venv + зависимости + подключение агентов)
 server.py                  совместимая точка входа (python server.py)
 office_live/
-  app.py                   сборка сервера; __main__.py / cli.py — doctor, tools, config
+  app.py                   сборка сервера; __main__.py / cli.py — setup, doctor, tools, config
   config.py · safety.py    настройки (env), проверка путей
   com.py                   COM-слой: прокси с повторами, поиск всех экземпляров, перевод ошибок, run_com
   registry.py              декоратор @office_tool: группы, режимы, аннотации (readOnly/destructive), аудит

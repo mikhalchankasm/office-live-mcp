@@ -202,15 +202,17 @@ def word_headers_footers(
                 f"The {kind} of section {index} is linked to the previous section: changing it would change section {index - 1} too. "
                 "Pass break_link=true to make it independent first, or section=1 / section=0 to edit the whole chain."
             )
-        if linked and int(section) == 0:
-            continue  # наследует предыдущий раздел, который правится этим же вызовом
-        targets.append((index, sec, hf, linked))
+        inherits = linked and int(section) == 0  # наследует предыдущий раздел, который правится этим же вызовом
+        targets.append((index, sec, hf, linked, inherits))
+    if different_first_page is not None:  # свойство страницы относится к каждому указанному разделу, даже если текст он наследует
+        for _, sec, _, _, _ in targets:
+            sec.PageSetup.DifferentFirstPageHeaderFooter = bool(different_first_page)
     changed = []
-    for index, sec, hf, linked in targets:
+    for index, _sec, hf, linked, inherits in targets:
+        if inherits:
+            continue
         if linked:
             hf.LinkToPrevious = False
-        if different_first_page is not None:
-            sec.PageSetup.DifferentFirstPageHeaderFooter = bool(different_first_page)
         if act == "clear":
             hf.Range.Text = ""
             changed.append(index)
@@ -230,7 +232,7 @@ def word_headers_footers(
             hf.Range.Font.Size = float(font_size)
         changed.append(index)
     out = {"ok": True, "document": doc.Name, "action": act, "kind": kind, "section": section, "which": which, "sections_changed": changed}
-    if which == "first_page" and not all(bool(s2.PageSetup.DifferentFirstPageHeaderFooter) for _, s2, _, _ in targets):
+    if which == "first_page" and not all(bool(t[1].PageSetup.DifferentFirstPageHeaderFooter) for t in targets):
         out["warning"] = "'different first page' is off in some of these sections, so the first-page text is not shown there; pass different_first_page=true."
     if which == "even":
         out["note"] = "Even-page headers/footers appear only when 'different odd and even pages' is enabled in the page setup."

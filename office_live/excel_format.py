@@ -20,7 +20,7 @@ from .safety import IMAGE_EXTS, check_path
 from .util import a1_cell, cm_to_points, color_to_hex, parse_a1, parse_color, quote_sheet
 from .xl_common import (
     addr_of, bounds, count_nonempty, delocalize_formulas, get_range, localize_formula, number_format_for_read,
-    number_format_for_write, pick_sheet, pick_workbook,
+    number_format_for_write, pick_sheet, pick_workbook, suspend_events,
 )
 
 # ------------------------------------------------------------------ словари значений
@@ -103,13 +103,47 @@ def excel_format_range(
     """
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
+    # --- чистые проверки и переводы значений — ДО первого изменения: ошибка в аргументах не оставит полуотформатированный диапазон
+    if not any(v is not None for v in (style, bold, italic, underline, strikethrough, font_size, font_color, fill_color, number_format,
+                                        horizontal_alignment, vertical_alignment, wrap_text, shrink_to_fit, indent, text_rotation, borders)) and not font_name:
+        raise ToolError("Nothing to apply: pass at least one formatting parameter.")
+    h_code = v_code = None
+    if horizontal_alignment is not None:
+        if horizontal_alignment.lower() not in H_ALIGN:
+            raise ToolError(f"horizontal_alignment must be one of {sorted(H_ALIGN)}")
+        h_code = H_ALIGN[horizontal_alignment.lower()]
+    if vertical_alignment is not None:
+        if vertical_alignment.lower() not in V_ALIGN:
+            raise ToolError(f"vertical_alignment must be one of {sorted(V_ALIGN)}")
+        v_code = V_ALIGN[vertical_alignment.lower()]
+    font_rgb = parse_color(font_color) if font_color is not None else None
+    fill_none = fill_color is not None and fill_color.strip().lower() == "none"
+    fill_rgb = parse_color(fill_color) if fill_color is not None and not fill_none else None
+    if font_size is not None and not 1 <= float(font_size) <= 409:
+        raise ToolError("font_size must be between 1 and 409 points.")
+    if indent is not None and not 0 <= int(indent) <= 250:
+        raise ToolError("indent must be between 0 and 250.")
+    if text_rotation is not None and not -90 <= int(text_rotation) <= 90:
+        raise ToolError("text_rotation must be between -90 and 90 degrees.")
+    border_plan = _border_plan(rng, borders.lower(), border_style.lower(), border_color) if borders is not None else None
+
     applied = []
+    # Стиль и формат числа Excel может отвергнуть только при применении — делаем их первыми, чтобы отказ не оставил частичного оформления
     if style is not None:
         try:
             rng.Style = style
         except pywintypes.com_error:
-            raise ToolError(f"Cell style '{style}' not found (style names depend on the Excel UI language).") from None
+            raise ToolError(f"Cell style '{style}' not found (style names depend on the Excel UI language). Nothing was changed.") from None
         applied.append(f"style={style}")
+    if number_format is not None:
+        try:
+            rng.NumberFormat = number_format_for_write(app, number_format, NUMBER_FORMATS)
+        except pywintypes.com_error:
+            raise ToolError(
+                f"Excel rejected number_format '{number_format}'. Use codes like '0', '0.00', '#,##0.00', '0.0%', 'dd.mm.yyyy', '@' or a shortcut ({sorted(NUMBER_FORMATS)})."
+                + (f" Already applied: {applied}." if applied else " Nothing was changed.")
+            ) from None
+        applied.append(f"number_format={number_format}")
     font = rng.Font
     if bold is not None:
         font.Bold = bool(bold)
@@ -129,33 +163,21 @@ def excel_format_range(
     if font_size is not None:
         font.Size = float(font_size)
         applied.append(f"font_size={font_size}")
-    if font_color is not None:
-        font.Color = parse_color(font_color)
+    if font_rgb is not None:
+        font.Color = font_rgb
         applied.append(f"font_color={font_color}")
     if fill_color is not None:
-        if fill_color.strip().lower() == "none":
+        if fill_none:
             rng.Interior.ColorIndex = -4142
         else:
-            rng.Interior.Color = parse_color(fill_color)
+            rng.Interior.Color = fill_rgb
         applied.append(f"fill_color={fill_color}")
-    if number_format is not None:
-        try:
-            rng.NumberFormat = number_format_for_write(app, number_format, NUMBER_FORMATS)
-        except pywintypes.com_error:
-            raise ToolError(f"Excel rejected number_format '{number_format}'. Use codes like '0', '0.00', '#,##0.00', '0.0%', 'dd.mm.yyyy', '@' or a shortcut ({sorted(NUMBER_FORMATS)}).") from None
-        applied.append(f"number_format={number_format}")
-    if horizontal_alignment is not None:
-        key = horizontal_alignment.lower()
-        if key not in H_ALIGN:
-            raise ToolError(f"horizontal_alignment must be one of {sorted(H_ALIGN)}")
-        rng.HorizontalAlignment = H_ALIGN[key]
-        applied.append(f"horizontal_alignment={key}")
-    if vertical_alignment is not None:
-        key = vertical_alignment.lower()
-        if key not in V_ALIGN:
-            raise ToolError(f"vertical_alignment must be one of {sorted(V_ALIGN)}")
-        rng.VerticalAlignment = V_ALIGN[key]
-        applied.append(f"vertical_alignment={key}")
+    if h_code is not None:
+        rng.HorizontalAlignment = h_code
+        applied.append(f"horizontal_alignment={horizontal_alignment.lower()}")
+    if v_code is not None:
+        rng.VerticalAlignment = v_code
+        applied.append(f"vertical_alignment={vertical_alignment.lower()}")
     if wrap_text is not None:
         rng.WrapText = bool(wrap_text)
         applied.append(f"wrap_text={wrap_text}")
@@ -168,31 +190,35 @@ def excel_format_range(
     if text_rotation is not None:
         rng.Orientation = int(text_rotation)
         applied.append(f"text_rotation={text_rotation}")
-    if borders is not None:
-        _apply_borders(rng, borders.lower(), border_style.lower(), border_color)
+    if border_plan is not None:
+        _apply_border_plan(rng, border_plan)
         applied.append(f"borders={borders}")
-    if not applied:
-        raise ToolError("Nothing to apply: pass at least one formatting parameter.")
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "applied": applied}
 
 
-def _apply_borders(rng, which: str, style: str, color: str):
+def _border_plan(rng, which: str, style: str, color: str) -> tuple:
+    """Проверяет параметры границ и возвращает (границы, режим, линия, толщина, цвет) — без обращений к документу, кроме размеров."""
     r1, c1, r2, c2 = bounds(rng)
     multi_rows, multi_cols = r2 > r1, c2 > c1
+    inside = (["inside_vertical"] if multi_cols else []) + (["inside_horizontal"] if multi_rows else [])
     groups = {
-        "all": ["left", "top", "bottom", "right"] + (["inside_vertical"] if multi_cols else []) + (["inside_horizontal"] if multi_rows else []),
+        "all": ["left", "top", "bottom", "right"] + inside,
         "outline": ["left", "top", "bottom", "right"],
-        "inside": (["inside_vertical"] if multi_cols else []) + (["inside_horizontal"] if multi_rows else []),
+        "inside": inside,
         "top": ["top"], "bottom": ["bottom"], "left": ["left"], "right": ["right"],
-        "none": ["left", "top", "bottom", "right"] + (["inside_vertical"] if multi_cols else []) + (["inside_horizontal"] if multi_rows else []),
+        "none": ["left", "top", "bottom", "right"] + inside,
     }
     if which not in groups:
         raise ToolError(f"borders must be one of {sorted(groups)}")
     if style not in BORDER_STYLES:
         raise ToolError(f"border_style must be one of {sorted(BORDER_STYLES)}")
     line, weight = BORDER_STYLES[style]
-    col = parse_color(color)
-    for edge in groups[which]:
+    return groups[which], which, line, weight, parse_color(color)
+
+
+def _apply_border_plan(rng, plan: tuple):
+    edges, which, line, weight, col = plan
+    for edge in edges:
         b = rng.Borders(EDGES[edge])
         if which == "none":
             b.LineStyle = -4142
@@ -832,10 +858,10 @@ def _copy_picture_png(app, wb, ws, rng, appearance: int) -> bytes:
     """CopyPicture -> временная диаграмма-контейнер на листе -> Export PNG. appearance: 1 = как на экране, 2 = как при печати.
 
     Единственный проверенный способ: вставка в диаграмму ДРУГОЙ книги даёт пустую картинку, а внешнее чтение буфера обмена
-    (ImageGrab) роняло Excel (исключение 0xC015000F). Поэтому на долю секунды на листе появляется диаграмма, которая тут же удаляется;
-    флаг «сохранено» возвращаем только если он был поднят до снимка (окно между чтением флага и возвратом — миллисекунды).
+    (ImageGrab) роняло Excel (исключение 0xC015000F). Поэтому на долю секунды на листе появляется диаграмма, которая тут же удаляется.
+    Флаг «сохранено» НЕ возвращаем: удаление диаграммы не доказывает, что рядом не появилось настоящее изменение (пользователь,
+    надстройка), а скрыть его значило бы потерять правку при закрытии без вопроса. Цена — книга после снимка помечена как изменённая.
     """
-    was_saved = bool(wb.Saved)
     tmpdir = tempfile.mkdtemp(prefix="office_live_")
     png = os.path.join(tmpdir, "range.png")
     holder, holder_name, removed = None, "(unnamed)", True
@@ -856,8 +882,6 @@ def _copy_picture_png(app, wb, ws, rng, appearance: int) -> bytes:
                 removed = False
         try:
             app.CutCopyMode = False
-            if was_saved and removed:
-                wb.Saved = True  # удалённая временная диаграмма не должна «пачкать» книгу
         except pywintypes.com_error:
             pass
         shutil.rmtree(tmpdir, ignore_errors=True)
@@ -899,6 +923,7 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
     if float(rng.Width) < 1 or float(rng.Height) < 1:
         raise ToolError("The range is hidden or has zero size.")
     has_content = count_nonempty(app, rng) != 0
+    suspend_events(app)  # activation of sheets must not run the user's SheetActivate macros
     resume_autosave = _pause_autosave(wb)
     prev = _remember_view(app)
     restore_states = []
@@ -957,9 +982,9 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
     return data
 
 
-@office_tool("excel_format", "read", title="Render range as image", unstructured=True)
+@office_tool("excel_format", "read", title="Render range as image", unstructured=True, read_only=False)
 def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "", max_cells: int = 1500) -> list:
-    """Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content and its saved state are unchanged; AutoSave is paused meanwhile; clears Undo history).
+    """Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content is unchanged, but Excel marks the workbook as modified and the Undo history is cleared; AutoSave is paused meanwhile).
 
     Args:
         workbook: exact name or '' for the active workbook.

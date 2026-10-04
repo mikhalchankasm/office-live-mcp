@@ -227,39 +227,67 @@ def inspect_xlsx(path: str, peek_rows: int = 6, include_vba_source: bool = False
     return info
 
 
-def _unescape(s: str) -> str:
-    return s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"').replace("&apos;", "'").replace("&amp;", "&")
+W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+
+
+def _wval(el: ET.Element) -> str | None:
+    """Значение атрибута w:val при любом префиксе пространства имён."""
+    return el.get(f"{{{W_NS}}}val")
+
+
+def _scan_document(z: zipfile.ZipFile, peek_paragraphs: int) -> dict:
+    """Один потоковый проход по word/document.xml: считаем по локальным именам {пространство имён}p/tbl/…, а не по префиксу `w:`."""
+    _check_size(z, "word/document.xml")
+    counts = {"p": 0, "tbl": 0, "sectPr": 0, "field": 0, "ins": 0, "del": 0}
+    styles: dict[str, int] = {}
+    peek: list[dict] = []
+    texts: list[str] = []
+    with z.open("word/document.xml") as f:
+        for _, el in ET.iterparse(f, events=("end",)):
+            if el.tag.startswith(f"{{{W_NS}}}"):
+                name = el.tag.rsplit("}", 1)[-1]
+                if name == "p":
+                    counts["p"] += 1
+                    text = "".join(t.text or "" for t in el.iter(f"{{{W_NS}}}t"))
+                    if text:
+                        texts.append(text)
+                    ps = el.find(f"{{{W_NS}}}pPr/{{{W_NS}}}pStyle")
+                    style = _wval(ps) if ps is not None else None
+                    if style:
+                        styles[style] = styles.get(style, 0) + 1
+                    if text.strip() and len(peek) < peek_paragraphs:
+                        peek.append({"style": style, "text": text[:120]})
+                    el.clear()  # абзац обработан — не держим дерево большого документа в памяти
+                elif name in ("tbl", "sectPr", "ins", "del"):
+                    counts[name] += 1
+                elif name in ("fldSimple", "instrText"):
+                    counts["field"] += 1
+    return {"counts": counts, "styles": styles, "peek": peek, "text": "\n".join(texts)}
 
 
 def inspect_docx(path: str, peek_paragraphs: int = 8, include_vba_source: bool = False, vba_module: str = "") -> dict:
     with zipfile.ZipFile(path) as z:
         names = z.namelist()
         info: dict = {"kind": "word", "path": path, "parts": len(names), "has_vba": "word/vbaProject.bin" in names}
-        doc = _read_part(z, "word/document.xml").decode("utf-8", "replace")
-        paragraphs = re.findall(r"<w:p[ >].*?</w:p>", doc, re.S)
-        info["paragraphs"] = len(paragraphs)
-        info["tables"] = len(re.findall(r"<w:tbl>", doc))
+        scan = _scan_document(z, peek_paragraphs)
+        counts = scan["counts"]
+        info["paragraphs"] = counts["p"]
+        info["tables"] = counts["tbl"]
         info["images"] = len([n for n in names if n.startswith("word/media/")])
-        info["sections"] = len(re.findall(r"<w:sectPr", doc))
-        info["fields"] = len(re.findall(r"<w:fldSimple|<w:instrText", doc))
-        info["tracked_changes"] = {"insertions": len(re.findall(r"<w:ins ", doc)), "deletions": len(re.findall(r"<w:del ", doc))}
+        info["sections"] = counts["sectPr"]
+        info["fields"] = counts["field"]
+        info["tracked_changes"] = {"insertions": counts["ins"], "deletions": counts["del"]}
         info["headers"] = len([n for n in names if n.startswith("word/header")])
         info["footers"] = len([n for n in names if n.startswith("word/footer")])
-        info["comments"] = len(re.findall(r"<w:comment ", _read_part(z, "word/comments.xml").decode("utf-8", "replace"))) if "word/comments.xml" in names else 0
-        styles: dict[str, int] = {}
-        for s in re.findall(r'<w:pStyle w:val="([^"]+)"', doc):
-            styles[s] = styles.get(s, 0) + 1
-        info["paragraph_styles_used"] = dict(sorted(styles.items(), key=lambda kv: -kv[1])[:20])
-        peek = []
-        for p in paragraphs:
-            text = "".join(re.findall(r"<w:t[^>]*>(.*?)</w:t>", p, re.S))
-            if text.strip():
-                sty = re.search(r'<w:pStyle w:val="([^"]+)"', p)
-                peek.append({"style": sty.group(1) if sty else None, "text": _unescape(text)[:120]})
-                if len(peek) >= peek_paragraphs:
-                    break
-        info["peek"] = peek
-        placeholders = sorted({m for m in re.findall(r"\{\{\s*([^{}<]{1,60}?)\s*\}\}", re.sub(r"<[^>]+>", "", doc))})
+        comments = 0
+        if "word/comments.xml" in names:
+            _check_size(z, "word/comments.xml")
+            with z.open("word/comments.xml") as f:
+                comments = sum(1 for _, el in ET.iterparse(f, events=("end",)) if el.tag == f"{{{W_NS}}}comment")
+        info["comments"] = comments
+        info["paragraph_styles_used"] = dict(sorted(scan["styles"].items(), key=lambda kv: -kv[1])[:20])
+        info["peek"] = scan["peek"]
+        placeholders = sorted(set(re.findall(r"\{\{\s*([^{}<]{1,60}?)\s*\}\}", scan["text"])))
         if placeholders:
             info["placeholders"] = placeholders
         if info["has_vba"]:

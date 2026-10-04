@@ -280,16 +280,19 @@ def excel_pivot_filter(
             df = _data_field(pt, data_field)
         if act != "top" and op in ("between", "not_between") and value2 is None:
             raise ToolError("value2 is required for between/not_between.")
-        pf.ClearAllFilters()
         if act == "label":
             operands = [str(value1)] + ([str(value2)] if value2 is not None else [])
-        else:  # значения и N — числа
+        else:  # значения и N — числа; разбираем ДО сброса прежних фильтров
             operands = [_number(value1, "value1")] + ([_number(value2, "value2")] if value2 is not None else [])
+        pf.ClearAllFilters()
         try:
             # PivotFilters.Add2(Type, DataField, Value1, Value2): для текстовых фильтров DataField = None (Missing здесь не принимается)
             pf.PivotFilters.Add2(table[op], df, *operands)
         except pywintypes.com_error as exc:
-            raise ToolError("Excel rejected the filter (check the operator against the field type and the operands): " + com.com_error_text(exc)) from None
+            raise ToolError(
+                "Excel rejected the filter (check the operator against the field type and the operands): " + com.com_error_text(exc)
+                + f". The previous filters of field '{field}' have been cleared."
+            ) from None
         visible = _displayed_items(pf)
         return {"ok": True, "workbook": wb.Name, "field": field, "filter": f"{act}:{op}", "visible_items": visible[:200], "visible_count": len(visible), **_summary(ws, pt)}
     raise ToolError("action must be 'items', 'label', 'value', 'top' or 'clear'.")
@@ -703,21 +706,46 @@ def _slicer_info(sc, max_items: int = 100) -> dict:
     return info
 
 
-def _find_cache(wb, key: str):
-    """Кэш среза по имени кэша, имени среза или полю."""
+def _find_slicer(wb, key: str):
+    """(кэш, срез или None). Срез возвращается, когда ключ — имя/подпись КОНКРЕТНОГО среза; для имени кэша или поля — None."""
     seen = []
     for k in range(1, int(wb.SlicerCaches.Count) + 1):
         sc = wb.SlicerCaches(k)
         seen.append(sc.Name)
         if sc.Name.lower() == key.lower() or sc.SourceName.lower() == key.lower():
-            return sc
+            return sc, None
         try:
             for j in range(1, int(sc.Slicers.Count) + 1):
-                if sc.Slicers(j).Name.lower() == key.lower() or sc.Slicers(j).Caption.lower() == key.lower():
-                    return sc
+                sl = sc.Slicers(j)
+                if sl.Name.lower() == key.lower() or sl.Caption.lower() == key.lower():
+                    return sc, sl
         except pywintypes.com_error:
             pass
     raise ToolError(f"Slicer '{key}' not found. Slicer caches: {seen}")
+
+
+def _find_cache(wb, key: str):
+    """Кэш среза по имени кэша, имени среза или полю."""
+    return _find_slicer(wb, key)[0]
+
+
+def _slicers_of(sc) -> list:
+    try:
+        return [sc.Slicers(j) for j in range(1, int(sc.Slicers.Count) + 1)]
+    except pywintypes.com_error:
+        return []
+
+
+def _target_slicer(sc, sl, key: str):
+    """Срез для move: назван конкретно -> он; иначе единственный срез кэша; иначе просим назвать срез."""
+    if sl is not None:
+        return sl
+    all_slicers = _slicers_of(sc)
+    if len(all_slicers) == 1:
+        return all_slicers[0]
+    if not all_slicers:
+        raise ToolError(f"'{key}' has no slicer objects to change.")
+    raise ToolError(f"Several slicers share the cache of '{key}': {[x.Name for x in all_slicers]}. Pass the name of the one to change.")
 
 
 @office_tool("excel_analysis", "write", title="Slicers and timelines", read_actions=("list",), destructive=True)
@@ -819,7 +847,7 @@ def excel_manage_slicers(
 
     if not slicer:
         raise ToolError("'slicer' (name or field) is required.")
-    sc = _find_cache(wb, slicer)
+    sc, picked = _find_slicer(wb, slicer)
 
     if act == "select":
         if kind.lower() == "timeline" or date_from or date_to:
@@ -860,7 +888,7 @@ def excel_manage_slicers(
         return {"ok": True, "workbook": wb.Name, **_slicer_info(sc)}
 
     if act == "move":
-        sl = sc.Slicers(1)
+        sl = _target_slicer(sc, picked, slicer)
         shape = sl.Shape
         if anchor_cell:
             ws2 = pick_sheet(wb, sheet) if sheet else None
@@ -877,8 +905,14 @@ def excel_manage_slicers(
         return {"ok": True, "workbook": wb.Name, **_slicer_info(sc)}
 
     if act == "delete":
+        siblings = _slicers_of(sc)
+        if picked is not None and len(siblings) > 1:
+            name = picked.Name  # назван конкретный срез, а у кэша есть другие — удаляем только его
+            picked.Delete()
+            return {"ok": True, "workbook": wb.Name, "deleted": name, "kept_slicers": [x.Name for x in _slicers_of(sc)]}
         name = sc.Name
+        removed = [x.Name for x in siblings]
         sc.Delete()
-        return {"ok": True, "workbook": wb.Name, "deleted": name}
+        return {"ok": True, "workbook": wb.Name, "deleted": name, "deleted_slicers": removed}
 
     raise ToolError("action must be 'list', 'add', 'select', 'clear', 'connect', 'move' or 'delete'.")

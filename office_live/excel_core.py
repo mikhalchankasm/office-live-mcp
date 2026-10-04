@@ -14,7 +14,7 @@ from .util import (
     parse_color, quote_sheet, to_com_grid, to_grid,
 )
 from .xl_common import (
-    addr_of, all_workbooks, workbook_allowed, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
+    addr_of, all_workbooks, workbook_allowed, suspend_events, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
     pick_sheet, pick_workbook, preview, read_grid, ref_label, sheet_is_empty, sheet_names, sub_range,
     validate_sheet_name,
 )
@@ -75,8 +75,9 @@ def excel_list_workbooks() -> dict:
     active_workbook = active_sheet = None
     for idx, app in enumerate(apps):
         act = app.ActiveWorkbook
-        act_name = act.Name if act is not None else None
-        if idx == 0 and act is not None:
+        act_allowed = act is not None and workbook_allowed(act)  # название запрещённой книги не раскрываем и как «активной»
+        act_name = act.Name if act_allowed else None
+        if idx == 0 and act_allowed:
             active_workbook = act_name
             sh = app.ActiveSheet
             active_sheet = sh.Name if sh is not None else None
@@ -203,6 +204,7 @@ def excel_new_workbook(sheets: list[str] | None = None) -> dict:
         sheets: optional sheet names to create (the first default sheet is renamed, the rest are added).
     """
     app = com.primary_app("excel", launch=True)
+    suspend_events(app)
     wb = app.Workbooks.Add()
     if sheets:
         for nm in sheets:
@@ -453,6 +455,8 @@ def excel_get_selection(max_cells: int = 200) -> dict:
     wb = app.ActiveWorkbook
     if wb is None:
         return {"workbook": None, "selection": None}
+    if not workbook_allowed(wb):
+        return {"workbook": None, "selection": None, "note": "The active workbook is outside the folders this server may use; the user has to activate another workbook."}
     ws = app.ActiveSheet
     sel = app.Selection
     out = {"workbook": wb.Name, "sheet": ws.Name if ws is not None else None}
@@ -1245,14 +1249,17 @@ def excel_sort_range(
     data_r1 = r1 + (1 if has_header else 0)
     if data_r1 > r2:
         raise ToolError("The block has no data rows to sort.")
-    sort = ws.Sort
-    sort.SortFields.Clear()
-    used = []
-    for k in keys:
+    plan = []
+    for k in keys:  # все ключи проверяем ДО очистки прежних полей сортировки
         col = _resolve_column(ws, rng, k.get("column"), header_names, has_header)
         order = str(k.get("order", "asc")).lower()
         if order not in ("asc", "desc"):
             raise ToolError("order must be 'asc' or 'desc'.")
+        plan.append((col, order))
+    sort = ws.Sort
+    sort.SortFields.Clear()
+    used = []
+    for col, order in plan:
         key_range = sub_range(ws, data_r1, c1 + col - 1, r2, c1 + col - 1)
         sort.SortFields.Add(key_range, 0, 1 if order == "asc" else 2)  # Add(Key, SortOn=values, Order)
         used.append({"column": col_letter(c1 + col - 1), "order": order})
@@ -1304,10 +1311,8 @@ def excel_filter_range(
     ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
     r1, c1, r2, c2 = bounds(rng)
     header_names = to_grid(sub_range(ws, r1, c1, r1, c2).Value)[0] if has_header else []
-    if ws.AutoFilterMode:
-        ws.AutoFilterMode = False
-    applied = []
-    for f in filters:
+    prepared = []
+    for f in filters:  # все условия разбираем и проверяем ДО снятия прежнего фильтра
         col = _resolve_column(ws, rng, f.get("column"), header_names, has_header)
         crit = f.get("criteria")
         op = f.get("operator")
@@ -1320,9 +1325,19 @@ def excel_filter_range(
         elif crit is not None:
             crit = str(crit)
         crit2 = f.get("criteria2")
-        # AutoFilter(Field, Criteria1, Operator, Criteria2)
-        rng.AutoFilter(col, crit, op_code or 1, None if crit2 is None else str(crit2))  # Operator типизирован: None нельзя, по умолчанию xlAnd=1
-        applied.append({"column": col_letter(c1 + col - 1), "criteria": f.get("criteria")})
+        prepared.append((col, crit, op_code or 1, None if crit2 is None else str(crit2), f.get("criteria")))  # Operator типизирован: None нельзя, по умолчанию xlAnd=1
+    if ws.AutoFilterMode:
+        ws.AutoFilterMode = False
+    applied = []
+    for col, crit, op_code, crit2, shown in prepared:
+        try:
+            rng.AutoFilter(col, crit, op_code, crit2)  # AutoFilter(Field, Criteria1, Operator, Criteria2)
+        except pywintypes.com_error as exc:
+            raise ToolError(
+                f"Excel rejected the filter on column {col_letter(c1 + col - 1)}: {com.com_error_text(exc)}. The previous filter had been removed"
+                + (f"; already applied before the failure: {applied}" if applied else "") + "."
+            ) from None
+        applied.append({"column": col_letter(c1 + col - 1), "criteria": shown})
     visible = 0
     try:
         body = sub_range(ws, r1 + (1 if has_header else 0), c1, r2, c2)
@@ -1362,7 +1377,7 @@ def excel_remove_duplicates(workbook: str, sheet: str, cells: str, columns: list
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "block": addr_of(rng), "duplicate_rows_removed": dupes, "key_columns": [col_letter(c1 + c - 1) for c in cols]}
 
 
-@office_tool("excel_core", "write", title="Merge / unmerge cells")
+@office_tool("excel_core", "write", title="Merge / unmerge cells", destructive=True)
 def excel_merge_cells(workbook: str, sheet: str, cells: str, unmerge: bool = False, across: bool = False) -> dict:
     """Merge a range into one cell (only the top-left value survives) or unmerge it.
 

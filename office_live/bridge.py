@@ -20,7 +20,7 @@ from .word_layout import insert_picture
 from .word_tables import build_table, get_table, table_grid
 from .xl_common import (
     addr_of, bounds, count_nonempty, error_cells, get_range, pick_sheet, pick_workbook, preview, read_grid, sheet_names,
-    validate_sheet_name,
+    suspend_events, validate_sheet_name,
 )
 
 
@@ -42,6 +42,7 @@ def _excel_for_write(workbook: str, create_workbook: bool):
         if not create_workbook:
             raise
         app = com.primary_app("excel", launch=True)
+        suspend_events(app)
         return app, app.Workbooks.Add()
 
 
@@ -381,6 +382,23 @@ def _safe_filename(s: str, fallback: str) -> str:
     return s[:80] or fallback
 
 
+def _unique_stem(stem: str, idx: int, used: set, renamed: list) -> str:
+    """Имя файла без коллизий: совпавшее имя различаем номером строки, а если и оно занято — добавляем счётчик.
+
+    Сравнение без учёта регистра (Windows). `used` пополняется окончательным именем; renamed — отчёт о переименованиях.
+    """
+    wanted = stem
+    if stem.lower() in used:
+        stem = f"{wanted}_{idx:03d}"
+        counter = 2
+        while stem.lower() in used:
+            stem = f"{wanted}_{idx:03d}_{counter}"
+            counter += 1
+        renamed.append({"row": idx, "wanted": wanted, "used": stem})
+    used.add(stem.lower())
+    return stem
+
+
 @office_tool("bridge", "save", title="Excel rows -> Word documents (mail merge)")
 def bridge_excel_to_word_documents(
     workbook: str,
@@ -436,11 +454,7 @@ def bridge_excel_to_word_documents(
             continue
         values = {h: row[j] for j, h in enumerate(headers) if h}
         stem = _safe_filename(values.get(filename_column, ""), f"document_{idx:03d}") if filename_column else f"document_{idx:03d}"
-        if stem.lower() in used:  # разные строки дали одинаковое имя файла — не затираем, а различаем номером строки
-            unique = f"{stem}_{idx:03d}"
-            renamed.append({"row": idx, "wanted": stem, "used": unique})
-            stem = unique
-        used.add(stem.lower())
+        stem = _unique_stem(stem, idx, used, renamed)
         docx = check_path(os.path.join(out_dir, stem + ".docx"), "write", WORD_EXTS)
         pdf = check_path(os.path.splitext(docx)[0] + ".pdf", "write", {"pdf"}) if export_pdf else None
         plan.append((idx, values, docx, pdf))

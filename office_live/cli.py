@@ -218,11 +218,52 @@ _OURS = re.compile(
 )
 
 
+def _toml_lines(text: str):
+    """(строка, начинается ли она вне многострочной строки и вне незакрытого массива/inline-таблицы).
+
+    Заголовком таблицы может быть только такая строка: '[mcp_servers.office-live]' внутри строки в тройных кавычках (пример в
+    developer_instructions) или строка '[1, 2]' внутри многострочного массива — это значения, а не таблицы.
+    """
+    in_ml, depth = None, 0
+    for line in text.splitlines(keepends=True):
+        yield line, in_ml is None and depth == 0
+        i, n = 0, len(line)
+        while i < n:
+            if in_ml:
+                if in_ml == '"""' and line[i] == "\\":
+                    i += 2
+                elif line.startswith(in_ml, i):
+                    in_ml, i = None, i + 3
+                else:
+                    i += 1
+                continue
+            c = line[i]
+            if c == "#":
+                break
+            if line.startswith('"""', i) or line.startswith("'''", i):
+                in_ml, i = line[i:i + 3], i + 3
+            elif c in "\"'":
+                j = i + 1
+                while j < n and line[j] != c:
+                    j += 2 if (c == '"' and line[j] == "\\") else 1
+                i = j + 1
+            else:
+                if c in "[{":
+                    depth += 1
+                elif c in "]}":
+                    depth = max(depth - 1, 0)
+                i += 1
+
+
+def _has_our_table(text: str) -> bool:
+    return any(start and _OURS.match(line) for line, start in _toml_lines(text))
+
+
 def _strip_toml_tables(text: str) -> str:
     """Удаляет таблицы [mcp_servers.office-live] и все вложенные ([...env], кавычки, пробелы, комментарий после заголовка)."""
     out, skipping = [], False
-    for line in text.splitlines(keepends=True):
-        if _TOML_HEADER.match(line):
+    for line, start in _toml_lines(text):
+        if start and _TOML_HEADER.match(line):
             skipping = bool(_OURS.match(line))
         if not skipping:
             out.append(line)
@@ -235,7 +276,7 @@ class UnreadableConfig(ValueError):
 
 def _toml_env(text: str) -> dict:
     """env уже установленной записи office-live в config.toml. Нет записи — {}; не удалось прочитать — UnreadableConfig."""
-    if not any(_OURS.match(line) for line in text.splitlines()) and "office-live" not in text:
+    if not _has_our_table(text) and "office-live" not in text:
         return {}
     toml = _toml_module()
     if toml is None:  # самодельный разбор TOML уже терял ограничения на допустимом синтаксисе — лучше честный отказ
@@ -249,26 +290,47 @@ def _toml_env(text: str) -> dict:
     return {str(k): str(v) for k, v in (node.get("env") or {}).items()}
 
 
-def _toml_rewrite_problem(old_text: str, new_text: str, env: dict) -> str:
-    """Проверка построчной замены записи: результат должен разбираться и содержать ровно нашу запись с этим env.
+def _toml_rewrite_problem(old_text: str, new_text: str, env: dict | None) -> str:
+    """Проверка построчной замены: результат разбирается, всё вне записи office-live не изменилось, а сама запись —
+    ровно новая с этим env (env=None — записи быть не должно, это удаление). Пустая строка — замена безопасна.
 
-    Если исходный файл и сам не разбирался (замена с --reset поверх битого файла), сравнивать не с чем — пропускаем.
+    Без парсера TOML проверить нечем (Python 3.10 без tomli) — тогда замена идёт без проверки, как и раньше.
     """
     toml = _toml_module()
     if toml is None:
         return ""
     try:
-        toml.loads(old_text)
-    except toml.TOMLDecodeError:
-        return ""
-    try:
-        node = toml.loads(new_text).get("mcp_servers", {}).get(SERVER_NAME, {})
+        new = toml.loads(new_text)
     except toml.TOMLDecodeError as exc:
         return f"the result would not be valid TOML ({exc})"
-    got = {str(k): str(v) for k, v in (node.get("env") or {}).items()} if isinstance(node, dict) and isinstance(node.get("env") or {}, dict) else None
-    if got != {str(k): str(v) for k, v in env.items()}:
-        return "the existing entry is written in a form this installer cannot replace line by line"
+    try:
+        old = toml.loads(old_text) if old_text else {}
+    except toml.TOMLDecodeError as exc:
+        return f"the existing file is not valid TOML ({exc}); fix it first"
+    servers = new.get("mcp_servers")
+    node = servers.get(SERVER_NAME) if isinstance(servers, dict) else None
+    if env is None:
+        if node is not None:
+            return f"the {SERVER_NAME} entry is written in a form this installer cannot remove line by line"
+    else:
+        got = {str(k): str(v) for k, v in (node.get("env") or {}).items()} if isinstance(node, dict) and isinstance(node.get("env") or {}, dict) else None
+        if got != {str(k): str(v) for k, v in env.items()}:
+            return "the existing entry is written in a form this installer cannot replace line by line"
+    if _without_our_entry(old) != _without_our_entry(new):
+        return "the rewrite would also change other settings in the file"
     return ""
+
+
+def _without_our_entry(doc: dict) -> dict:
+    doc = dict(doc)
+    servers = doc.get("mcp_servers")
+    if isinstance(servers, dict):
+        servers = {k: v for k, v in servers.items() if k != SERVER_NAME}
+        if servers:
+            doc["mcp_servers"] = servers
+        else:
+            doc.pop("mcp_servers")
+    return doc
 
 
 def _toml_module():
@@ -475,10 +537,15 @@ def _remove_client(client: str) -> str:
         return "удалено" if rc == 0 else "записи не было"
     if client == "codex":
         path = Path.home() / ".codex" / "config.toml"
-        if not path.exists() or not any(_OURS.match(line) for line in path.read_text(encoding="utf-8").splitlines()):
+        text = path.read_text(encoding="utf-8") if path.exists() else ""
+        if not _has_our_table(text):
             return "записи не было"
+        new_text = _strip_toml_tables(text)
+        problem = _toml_rewrite_problem(text, new_text, None)
+        if problem:
+            return f"не удалено: {problem}; уберите запись {SERVER_NAME} вручную"
         _backup(path)
-        _atomic_write(path, _strip_toml_tables(path.read_text(encoding="utf-8")))
+        _atomic_write(path, new_text)
         return "удалено"
     path, keys, _ = _json_target(client)
     if not path or not path.exists():

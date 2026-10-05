@@ -47,16 +47,25 @@ def workbook_path(wb) -> str:
 
 def workbook_allowed(wb) -> bool:
     """Книга в зоне доступа (OFFICE_LIVE_ALLOWED_DIRS)? Несохранённая книга без пути допустима."""
-    return safety.doc_allowed(workbook_path(wb))
+    return not is_undo_workbook(wb) and safety.doc_allowed(workbook_path(wb))
 
 
-def suspend_events(app) -> None:
+def is_undo_workbook(wb) -> bool:
+    """Служебная книга отмены никогда не является пользовательской целью."""
+    try:
+        wb.Names("__OfficeLiveUndo")
+        return True
+    except (pywintypes.com_error, AttributeError, KeyError):
+        return False
+
+
+def suspend_events(app, force: bool = False) -> None:
     """Отключает события Excel (Worksheet_Change, BeforeSave, SheetActivate ...) до конца вызова; возврат — в run_com.
 
     Если отключить не удалось, вызов отклоняется: чужие обработчики могли бы изменить документ или сработать на наши правки.
     OFFICE_LIVE_ENABLE_EVENTS=1 оставляет события включёнными осознанно.
     """
-    if config.SETTINGS.enable_events:
+    if config.SETTINGS.enable_events and not force:
         return
     try:
         if bool(app.EnableEvents):
@@ -85,6 +94,9 @@ def _guard_workbook(app, wb, allow_autosave: bool = False):
                 "Ask the user to turn AutoSave off for this workbook (or start the server with OFFICE_LIVE_AUTOSAVE=allow)."
             )
     suspend_events(app)
+    from .undo import selected
+
+    selected("workbook", app, wb)
     return app, wb
 
 
@@ -122,7 +134,7 @@ def pick_workbook(name: str = "", launch: bool = False, allow_autosave: bool = F
     if not name:
         for app in apps:
             wb = app.ActiveWorkbook
-            if wb is not None:
+            if wb is not None and not is_undo_workbook(wb):
                 if not workbook_allowed(wb):
                     raise ToolError("The active workbook is outside OFFICE_LIVE_ALLOWED_DIRS; pass the name of an allowed workbook.")
                 return _guard_workbook(app, wb, allow_autosave)

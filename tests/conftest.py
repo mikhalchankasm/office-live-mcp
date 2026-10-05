@@ -7,10 +7,16 @@
 
 import os
 import sys
+import tempfile
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Журнал по умолчанию пишется в %LOCALAPPDATA%\office-live-mcp\journal: юнит-тесты не должны мусорить в профиле пользователя.
+# Задаётся до импорта office_live: настройки читаются при импорте.
+if os.environ.get("OFFICE_LIVE_LIVE_TESTS") != "1":
+    os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="office-live-localappdata-")
 
 
 def pytest_configure(config):

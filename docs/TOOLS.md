@@ -145,3 +145,10 @@
 | `excel_pivot_options` | write | Layout and behaviour options of a pivot table. |
 | `excel_manage_slicers` | write (readonly: list) | Create and drive slicers (clickable filter buttons, 'срезы') and date timelines for pivot tables and Excel tables. |
 | `excel_describe_layout` | read | Produce a BLUEPRINT of a sheet so it can be re-created with new data: where the title/header block ends (frozen rows), merged header cells, every column (header text, width, hidden, number format, data type, typical values, the formula it contains), the KINDS of data rows (e.g. section rows vs item rows - grouped by how they actually look on screen incl. conditional formatting - with examples and code patterns), conditional-format rules in English with their colors, hidden rows, tables/charts/pivots/validation/macros. Read it, then build the analogue. |
+
+### history (2)
+
+| Tool | Kind | What it does |
+|---|---|---|
+| `office_journal` | write (readonly: read, status) | Read a document's on-disk change journal or enable/disable the optional Excel 'Лог' sheet. Pass exactly one workbook or document name/path. Read and status are available in read-only mode. |
+| `office_undo` | destructive (readonly: history) | Undo recent agent changes to an open workbook/document, or read the session's undo history. Stops at unsupported operations (barriers). Later user edits block undo unless force=true. In Word, force also undoes the user's later edits to reach the state before the agent change, up to 20 native steps per entry; reports native_steps and stops at a barrier if that state cannot be reached. Excel is tried first, then Word. |

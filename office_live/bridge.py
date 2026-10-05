@@ -19,7 +19,7 @@ from .word_core import _word_running, fill_placeholders
 from .word_layout import insert_picture
 from .word_tables import build_table, get_table, table_grid
 from .xl_common import (
-    addr_of, bounds, count_nonempty, error_cells, get_range, pick_sheet, pick_workbook, preview, read_grid, sheet_names,
+    _guard_workbook, addr_of, bounds, count_nonempty, error_cells, get_range, pick_sheet, pick_workbook, preview, read_grid, sheet_names,
     suspend_events, validate_sheet_name,
 )
 
@@ -43,7 +43,7 @@ def _excel_for_write(workbook: str, create_workbook: bool):
             raise
         app = com.primary_app("excel", launch=True)
         suspend_events(app)
-        return app, app.Workbooks.Add()
+        return _guard_workbook(app, app.Workbooks.Add())
 
 
 # ================================================================== Word -> Excel

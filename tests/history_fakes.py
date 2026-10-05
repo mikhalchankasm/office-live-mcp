@@ -1,0 +1,443 @@
+"""Минимальный Office в памяти: никакого Dispatch, ROT или живых приложений."""
+
+import copy
+from types import SimpleNamespace as NS
+
+import pytest
+
+from office_live.util import MAX_COLS, MAX_ROWS, a1_range, parse_a1, to_grid
+
+
+class Collection:
+    def __init__(self, items=()):
+        self.items = list(items)
+
+    @property
+    def Count(self):
+        return len(self.items)
+
+    def __call__(self, key):
+        if isinstance(key, int):
+            return self.items[key - 1]
+        for item in self.items:
+            if item.Name.lower() == key.lower():
+                return item
+        raise KeyError(key)
+
+    def __iter__(self):
+        return iter(self.items)
+
+
+class Names(Collection):
+    def Add(self, name, formula, visible=True):
+        try:
+            self(name).Delete()
+        except KeyError:
+            pass
+        item = NS(Name=name, RefersTo=formula, Visible=visible)
+        item.Delete = lambda: self.items.remove(item)
+        self.items.append(item)
+        return item
+
+
+class Lines:
+    def __init__(self, ws, axis, count):
+        self.ws, self.axis, self.Count = ws, axis, count
+
+    def __call__(self, i):
+        values = self.ws.rows if self.axis == "rows" else self.ws.columns
+        return values.setdefault(i, NS(ColumnWidth=8.43, RowHeight=15, Hidden=False))
+
+
+class RangeFormat:
+    """Свойства диапазона агрегируются по ячейкам; неизвестных членов у COM-интерфейса нет."""
+
+    __slots__ = ("rng", "prefix")
+    defaults = {"NumberFormat": "General", "Font.Name": "Calibri", "Font.Size": 11, "Font.Bold": False,
+                "Font.Italic": False, "Font.Underline": -4142, "Font.Color": 0, "Interior.Color": 16777215,
+                "Interior.Pattern": -4142, "HorizontalAlignment": -4131, "VerticalAlignment": -4107,
+                "WrapText": False, "MergeCells": False}
+
+    def __init__(self, rng, prefix):
+        object.__setattr__(self, "rng", rng)
+        object.__setattr__(self, "prefix", prefix)
+
+    def __getattr__(self, name):
+        prop = self.prefix + name
+        if prop not in self.defaults:
+            raise AttributeError(prop)
+        ws = self.rng.Worksheet
+        ws.format_reads.append((self.rng.Address, prop))
+        values = {ws.formats.get(rc, {}).get(prop, self.defaults[prop]) for rc in self.rng.positions()}
+        return values.pop() if len(values) == 1 else None
+
+    def __setattr__(self, name, value):
+        prop = self.prefix + name
+        if prop not in self.defaults:
+            raise AttributeError(prop)
+        for rc in self.rng.positions():
+            self.rng.Worksheet.formats.setdefault(rc, {})[prop] = value
+
+
+def format_property(name):
+    return property(lambda rng: getattr(RangeFormat(rng, ""), name),
+                    lambda rng, value: setattr(RangeFormat(rng, ""), name, value))
+
+
+class Range:
+    NumberFormat = format_property("NumberFormat")
+    HorizontalAlignment = format_property("HorizontalAlignment")
+    VerticalAlignment = format_property("VerticalAlignment")
+    WrapText = format_property("WrapText")
+    MergeCells = format_property("MergeCells")
+
+    def __init__(self, ws, address):
+        self.Worksheet = ws
+        self.Row, self.Column, self.r2, self.c2 = parse_a1(address)
+        self.Rows = NS(Count=self.r2 - self.Row + 1)
+        self.Columns = NS(Count=self.c2 - self.Column + 1)
+        self.Address = a1_range(self.Row, self.Column, self.r2, self.c2)
+
+    def positions(self):
+        return ((r, c) for r in range(self.Row, self.r2 + 1) for c in range(self.Column, self.c2 + 1))
+
+    @property
+    def Formula(self):
+        values = tuple(tuple(self.Worksheet.data.get((r, c)) for c in range(self.Column, self.c2 + 1)) for r in range(self.Row, self.r2 + 1))
+        return values[0][0] if self.Rows.Count == self.Columns.Count == 1 else values
+
+    @Formula.setter
+    def Formula(self, value):
+        self.Worksheet.formula_writes.append((self.Address, value))
+        self._assign(value, formula=True)
+
+    @property
+    def Value(self):
+        return self.Formula
+
+    @Value.setter
+    def Value(self, value):
+        self._assign(value)
+
+    Formula2 = Formula
+
+    def _assign(self, value, formula=False):
+        grid = to_grid(value)
+        for r, c in self.positions():
+            item = grid[min(r - self.Row, len(grid) - 1)][min(c - self.Column, len(grid[0]) - 1)]
+            if formula and isinstance(item, str) and item.isdigit():
+                item = int(item)  # ловушка Excel: '007' через Formula становится числом
+            if isinstance(item, str) and item.startswith("'"):
+                item = item[1:]
+            self.Worksheet.data[r, c] = item
+
+    @property
+    def Font(self):
+        return RangeFormat(self, "Font.")
+
+    @property
+    def Interior(self):
+        return RangeFormat(self, "Interior.")
+
+    @property
+    def ColumnWidth(self):
+        return self.Worksheet.Columns(self.Column).ColumnWidth
+
+    @ColumnWidth.setter
+    def ColumnWidth(self, value):
+        for i in range(self.Column, self.c2 + 1):
+            self.Worksheet.Columns(i).ColumnWidth = value
+
+    @property
+    def RowHeight(self):
+        return self.Worksheet.Rows(self.Row).RowHeight
+
+    @RowHeight.setter
+    def RowHeight(self, value):
+        for i in range(self.Row, self.r2 + 1):
+            self.Worksheet.Rows(i).RowHeight = value
+
+    def Copy(self, destination, /):
+        assert not self.Worksheet.Parent.Application.EnableEvents
+        grid = to_grid(self.Formula)
+        for i, row in enumerate(grid):
+            for j, value in enumerate(row):
+                if self.Worksheet.Parent is not destination.Worksheet.Parent and isinstance(value, str) and value.startswith("="):
+                    value = "=[other.xlsx]" + value[1:]
+                destination.Worksheet.data[destination.Row + i, destination.Column + j] = value
+                rc = (destination.Row + i, destination.Column + j)
+                formats = self.Worksheet.formats.get((self.Row + i, self.Column + j))
+                if formats:
+                    destination.Worksheet.formats[rc] = copy.deepcopy(formats)
+                else:
+                    destination.Worksheet.formats.pop(rc, None)
+
+    def Cut(self, destination):
+        self.Copy(destination)
+        self.ClearContents()
+
+    def ClearContents(self):
+        for rc in self.positions():
+            self.Worksheet.data.pop(rc, None)
+
+    def UnMerge(self):
+        pass
+
+    def Insert(self):
+        self._shift(1)
+
+    def Delete(self):
+        self._shift(-1)
+
+    def _shift(self, direction):
+        axis = 0 if self.Columns.Count == self.Worksheet.Columns.Count else 1
+        start = self.Row if axis == 0 else self.Column
+        count = self.Rows.Count if axis == 0 else self.Columns.Count
+        out = {}
+        for rc, value in self.Worksheet.data.items():
+            p = rc[axis]
+            if direction < 0 and start <= p < start + count:
+                continue
+            p += direction * count if p >= start else 0
+            out[(p, rc[1]) if axis == 0 else (rc[0], p)] = value
+        self.Worksheet.data = out
+
+    def End(self, direction):
+        assert direction == -4162
+        rows = [r for (r, c), v in self.Worksheet.data.items() if c == self.Column and v is not None]
+        return NS(Row=max(rows, default=1))
+
+    def Select(self):
+        self.Worksheet.Parent.Application.Selection = self
+
+
+class Cells:
+    def __init__(self, ws):
+        self.ws = ws
+        self.Row = self.Column = 1
+        self.Rows, self.Columns = NS(Count=MAX_ROWS), NS(Count=MAX_COLS)
+        self.Worksheet = ws
+        self.Address = "A1:XFD1048576"
+
+    def __call__(self, row, col):
+        return self.ws.Range(a1_range(row, col, row, col))
+
+
+class Sheets(Collection):
+    def __init__(self, wb):
+        super().__init__()
+        self.wb = wb
+
+    def Add(self, before=None, after=None):
+        name = f"Sheet{len(self.items) + 1}"
+        while any(s.Name == name for s in self.items):
+            name += "x"
+        sheet = Sheet(self.wb, name)
+        index = self.items.index(before) if before is not None else self.items.index(after) + 1 if after is not None else 0
+        self.items.insert(index, sheet)
+        self.wb.ActiveSheet = sheet
+        return sheet
+
+
+class Sheet:
+    def __init__(self, wb, name):
+        self.Parent, self.Name = wb, name
+        self.Visible = -1
+        self.Tab = NS(ColorIndex=-4142, Color=0)
+        self.data, self.columns, self.rows, self.formats = {}, {}, {}, {}
+        self.format_reads = []
+        self.formula_writes = []
+        self.Rows, self.Columns = Lines(self, "rows", MAX_ROWS), Lines(self, "columns", MAX_COLS)
+        self.Cells = Cells(self)
+        self.Shapes, self.ListObjects = Collection(), Collection()
+        self.view = NS(SplitRow=0, SplitColumn=0, FreezePanes=False, Zoom=100, DisplayGridlines=True, DisplayHeadings=True, ScrollRow=1, ScrollColumn=1)
+
+    @property
+    def Index(self):
+        return self.Parent.Sheets.items.index(self) + 1
+
+    @property
+    def UsedRange(self):
+        points = [(r, c) for (r, c), v in self.data.items() if v is not None]
+        if not points:
+            return self.Range("A1")
+        return self.Range(a1_range(min(r for r, _ in points), min(c for _, c in points), max(r for r, _ in points), max(c for _, c in points)))
+
+    def Range(self, address):
+        return Range(self, address)
+
+    def Activate(self):
+        self.Parent.Activate()
+        self.Parent.ActiveSheet = self
+
+    def Delete(self):
+        self.Parent.Sheets.items.remove(self)
+        self.Parent.ActiveSheet = self.Parent.Sheets(1)
+
+    def Copy(self, before=None, after=None):
+        target = before.Parent if before is not None else after.Parent
+        sheet = target.Sheets.Add(before, after)
+        sheet.data, sheet.columns, sheet.rows, sheet.formats = copy.deepcopy((self.data, self.columns, self.rows, self.formats))
+        name = self.Name
+        if any(s.Name == name for s in target.Sheets if s is not sheet):
+            name += " (2)"
+        sheet.Name = name
+        sheet.Visible = self.Visible
+        target.ActiveSheet = sheet
+
+    def Move(self, before=None, after=None):
+        coll = self.Parent.Sheets.items
+        coll.remove(self)
+        coll.insert(coll.index(before) if before is not None else coll.index(after) + 1, self)
+
+
+class Books(Collection):
+    def __init__(self, app):
+        super().__init__()
+        self.app = app
+
+    def Add(self, template=None):
+        wb = Workbook(self.app, f"Book{len(self.items) + 1}")
+        self.items.append(wb)
+        self.app.ActiveWorkbook = wb
+        return wb
+
+
+class Workbook:
+    def __init__(self, app, name):
+        self.Application, self.Name, self.FullName, self.Path = app, name, name, ""
+        self.AutoSaveOn = self.ReadOnly = False
+        self.Saved = True
+        self.Names, self.SlicerCaches = Names(), Collection()
+        self.Sheets = self.Worksheets = Sheets(self)
+        self.ActiveSheet = self.Worksheets.Add()
+        self.ActiveSheet.Name = "Data"
+        self.Windows = Collection([NS(Visible=True)])
+
+    def Activate(self):
+        self.Application.ActiveWorkbook = self
+
+    def Close(self, save):
+        assert not save
+        self.Application.Workbooks.items.remove(self)
+
+
+class Excel:
+    def __init__(self):
+        self.Hwnd = 42
+        self.EnableEvents = self.DisplayAlerts = True
+        self.Calculation = -4105
+        self.Workbooks = Books(self)
+        self.ActiveWorkbook = None
+        self.Selection = None
+        self.WorksheetFunction = NS(CountA=lambda rng: sum(v is not None for row in to_grid(rng.Value) for v in row))
+
+    @property
+    def ActiveSheet(self):
+        return self.ActiveWorkbook.ActiveSheet if self.ActiveWorkbook else None
+
+    @property
+    def ActiveWindow(self):
+        return self.ActiveSheet.view
+
+    def Calculate(self):
+        pass
+
+
+class HeaderFooter:
+    def __init__(self):
+        self.Exists = False
+        self._range = NS(Text="")
+
+    @property
+    def Range(self):
+        assert self.Exists, "Do not read a missing header/footer"
+        return self._range
+
+
+class Section:
+    def __init__(self):
+        self.Headers = Collection(HeaderFooter() for _ in range(3))
+        self.Footers = Collection(HeaderFooter() for _ in range(3))
+
+
+class Document:
+    native_fields = ("Content", "Paragraphs", "Tables", "InlineShapes", "Sections", "Comments", "Footnotes", "Endnotes", "Shapes")
+
+    def __init__(self, app):
+        self.Application = app
+        self.Name, self.FullName, self.Path = "Draft.docx", "Draft.docx", ""
+        self.AutoSaveOn = False
+        self.Content = NS(Text="original", WordOpenXML="")
+        self.Paragraphs, self.Tables, self.InlineShapes = Collection([NS()]), Collection(), Collection()
+        self.Sections, self.Comments = Collection([Section()]), Collection()
+        self.Footnotes, self.Endnotes, self.Shapes = Collection(), Collection(), Collection()
+        self.undo_calls, self.states = [], []
+        self.undo_ok = True
+
+    def save_state(self):
+        self.states.append(copy.deepcopy({name: getattr(self, name) for name in self.native_fields}))
+
+    def Undo(self, count, /):
+        assert count == 1
+        self.undo_calls.append(count)
+        if not self.undo_ok or not self.states:
+            return False
+        self.__dict__.update(self.states.pop())
+        return True
+
+
+class Word:
+    def __init__(self):  # как у настоящего Word.Application: свойства Hwnd нет
+        self.Documents = Collection([Document(self)])
+        self.ActiveDocument = self.Documents(1)
+        self.starts, self.ends = [], 0
+        self.UndoRecord = NS(IsRecordingCustomRecord=False, StartCustomRecord=self.start, EndCustomRecord=self.end)
+
+    def start(self, label):
+        self.starts.append(label)
+        self.ActiveDocument.save_state()
+        self.UndoRecord.IsRecordingCustomRecord = True
+
+    def end(self):
+        self.ends += 1
+        self.UndoRecord.IsRecordingCustomRecord = False
+
+
+@pytest.fixture(name="office")
+def fake_office(monkeypatch, tmp_path):
+    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, registry, templates, undo, wd_common
+
+    excel, word = Excel(), Word()
+    wb = excel.Workbooks.Add()
+    doc = word.ActiveDocument
+    monkeypatch.setattr(config, "SETTINGS", config.load({"OFFICE_LIVE_JOURNAL_DIR": str(tmp_path / "journal")}))
+    monkeypatch.setattr(com, "apps", lambda kind, launch=False: [excel if kind == "excel" else word])
+    monkeypatch.setattr(undo, "STACKS", {})
+    monkeypatch.setattr(undo, "_active", None)
+    saved_catalog = dict(registry.CATALOG)
+    registered = {}
+    monkeypatch.setattr(registry, "mcp", NS(add_tool=lambda fn, name, **kw: registered.__setitem__(name, fn)))
+    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, undo)
+
+    def call(tool_name, **kwargs):
+        fn = next(getattr(m, tool_name) for m in modules if hasattr(m, tool_name))
+        info = registry.CATALOG[tool_name]
+        registry.office_tool(info.group, info.kind, read_actions=info.read_actions, file_args=info.file_args)(fn)
+        return registered[tool_name](**kwargs)
+
+    def word_write(text, fail=False, tool="word_insert_text"):
+        def write(document, text):
+            _, target = wd_common.pick_document(document)
+            target.Content.Text = text
+            if fail:
+                raise ValueError("simulated failure")
+            return {"ok": True}
+
+        write.__name__ = tool
+        registry.office_tool("word_core", "write")(write)
+        return registered[tool](document=doc.Name, text=text)
+
+    yield NS(excel=excel, word=word, wb=wb, ws=wb.ActiveSheet, doc=doc, call=call, word_write=word_write, tmp=tmp_path)
+    registry.CATALOG.clear()
+    registry.CATALOG.update(saved_catalog)

@@ -1,4 +1,4 @@
-"""Настройки сервера из переменных окружения OFFICE_LIVE_*.
+r"""Настройки сервера из переменных окружения OFFICE_LIVE_*.
 
 OFFICE_LIVE_MODE            full (по умолчанию) | readonly — в readonly пишущие инструменты
                             вообще не регистрируются, книги/документы открываются только на чтение
@@ -14,11 +14,16 @@ OFFICE_LIVE_AUTOSAVE        block (по умолчанию) | allow — книг
                             сами после каждой правки, поэтому по умолчанию пишущие инструменты на них отказывают
 OFFICE_LIVE_ENABLE_EVENTS   1 — не отключать события Excel (Worksheet_Change, BeforeSave…) на время пишущих вызовов
 OFFICE_LIVE_AUDIT_CONTENT   1 — писать в журнал фрагменты текстовых аргументов (по умолчанию длинные строки скрываются)
+OFFICE_LIVE_JOURNAL         on (по умолчанию) | off — Markdown-журнал для каждого документа
+OFFICE_LIVE_JOURNAL_DIR     каталог журналов; по умолчанию %LOCALAPPDATA%\office-live-mcp\journal
+OFFICE_LIVE_UNDO            on (по умолчанию) | off — запись отмены на время сеанса сервера
+OFFICE_LIVE_UNDO_DEPTH      максимальная глубина отмены, положительное целое; по умолчанию 50
+OFFICE_LIVE_UNDO_MAX_CELLS  максимум ячеек в одном снимке отмены, положительное целое; по умолчанию 200000
 """
 
 import os
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 GROUPS = (
@@ -47,6 +52,10 @@ class ConfigError(ValueError):
     """Неверная настройка окружения: сервер не должен молча расширять права."""
 
 
+def _journal_dir():
+    return Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local") / "office-live-mcp" / "journal"
+
+
 @dataclass(frozen=True)
 class Settings:
     mode: str = "full"
@@ -59,16 +68,28 @@ class Settings:
     autosave: str = "block"
     enable_events: bool = False
     audit_content: bool = False
+    journal: bool = True
+    journal_dir: Path = field(default_factory=_journal_dir)
+    undo: bool = True
+    undo_depth: int = 50
+    undo_max_cells: int = 200000
 
     @property
     def readonly(self) -> bool:
         return self.mode == "readonly"
 
+    def group_selected(self, group: str) -> bool:
+        if group == "history":
+            return bool(self.groups & {"excel_core", "word_core"})
+        return group in self.groups
+
     def enabled(self, group: str, kind: str) -> bool:
         if group == "eval":
             return self.allow_eval and not self.readonly
-        if group not in self.groups:
+        if not self.group_selected(group):
             return False
+        if group == "history" and self.readonly:
+            return kind == "read"
         if self.readonly and kind not in READ_KINDS:
             return False
         return True
@@ -76,6 +97,23 @@ class Settings:
 
 def _flag(value: str | None) -> bool:
     return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _on_off(env, name):
+    value = (env.get(name) or "on").strip().lower()
+    if value not in {"on", "off"}:
+        raise ConfigError(f"{name}={value!r}: допустимо on или off.")
+    return value == "on"
+
+
+def _positive_int(env, name, default):
+    try:
+        value = int(env.get(name) or default)
+        if value > 0:
+            return value
+    except (ValueError, TypeError):
+        pass
+    raise ConfigError(f"{name}: требуется положительное целое число.")
 
 
 def load(env=None) -> Settings:
@@ -130,6 +168,11 @@ def load(env=None) -> Settings:
         autosave=autosave,
         enable_events=_flag(env.get("OFFICE_LIVE_ENABLE_EVENTS")),
         audit_content=_flag(env.get("OFFICE_LIVE_AUDIT_CONTENT")),
+        journal=_on_off(env, "OFFICE_LIVE_JOURNAL"),
+        journal_dir=Path(os.path.expandvars(env["OFFICE_LIVE_JOURNAL_DIR"].strip().strip('"'))) if env.get("OFFICE_LIVE_JOURNAL_DIR", "").strip() else _journal_dir(),
+        undo=_on_off(env, "OFFICE_LIVE_UNDO"),
+        undo_depth=_positive_int(env, "OFFICE_LIVE_UNDO_DEPTH", 50),
+        undo_max_cells=_positive_int(env, "OFFICE_LIVE_UNDO_MAX_CELLS", 200000),
     )
 
 

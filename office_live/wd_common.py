@@ -76,6 +76,10 @@ def _guard_document(app, doc, allow_autosave: bool = False):
                 f"AutoSave is ON for {doc.Name}: every change would be saved to the cloud file immediately, before the user can review it. "
                 "Ask the user to turn AutoSave off for this document (or start the server with OFFICE_LIVE_AUTOSAVE=allow)."
             )
+    if com.current_kind() in WRITE_KINDS:
+        from .undo import selected
+
+        selected("document", app, doc)
     return app, doc
 
 

@@ -170,7 +170,7 @@ def test_catalog_is_sane(catalog):
     assert len(cat) >= 100
     for name, info in cat.items():
         assert re.fullmatch(r"[a-z][a-z0-9_]+", name), name
-        assert info.group in config.GROUPS + ("eval",), name
+        assert info.group in config.GROUPS + ("eval", "history"), name
         assert info.kind in config.ALL_KINDS, name
         assert len(info.doc.split("\n")[0]) >= 15, f"{name}: add a one-line description"
 

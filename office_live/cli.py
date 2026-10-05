@@ -65,7 +65,9 @@ def doctor() -> int:
                         names = []
                         for a in apps:
                             coll = a.Workbooks if kind == "excel" else a.Documents
-                            names += [coll(i).Name for i in range(1, int(coll.Count) + 1)]
+                            from .xl_common import is_undo_workbook
+
+                            names += [coll(i).Name for i in range(1, int(coll.Count) + 1) if kind != "excel" or not is_undo_workbook(coll(i))]
                         line(True, f"{label} running: {len(apps)} instance(s), open files: {names[:8]}")
                     finally:
                         pythoncom.CoUninitialize()

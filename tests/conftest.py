@@ -17,7 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Задаётся до импорта office_live: настройки читаются при импорте.
 if os.environ.get("OFFICE_LIVE_LIVE_TESTS") != "1":
     for _key in list(os.environ):
-        if _key.startswith("OFFICE_LIVE_") and _key not in {"OFFICE_LIVE_LIVE_TESTS", "OFFICE_LIVE_TEST_EXE"}:
+        if _key.startswith("OFFICE_LIVE_") and _key not in {"OFFICE_LIVE_LIVE_TESTS", "OFFICE_LIVE_TEST_EXE", "OFFICE_LIVE_SETUP_EXE_TEST"}:
             os.environ.pop(_key)
     _profile = tempfile.mkdtemp(prefix="office-live-profile-")
     for _key, _part in (("USERPROFILE", "home"), ("HOME", "home"), ("APPDATA", "roaming"),

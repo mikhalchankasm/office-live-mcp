@@ -1,4 +1,4 @@
-"""Сборка автономного архива dist/office-live-mcp-<версия>-win64.zip: PyInstaller, проверка exe, упаковка с install.cmd.
+"""Сборка setup.exe и запасного win64.zip: PyInstaller, проверка MCP, Inno Setup 6.7+.
 
 Запуск (в окружении с зависимостями проекта и pyinstaller):  python packaging/build.py
 """
@@ -43,12 +43,26 @@ def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dist", default=str(ROOT / "dist"), help="where to put the archive")
     p.add_argument("--work", default="", help="короткий каталог сборки (по умолчанию временный olb-*)")
+    p.add_argument("--no-setup", action="store_true", help="локальная сборка только zip, без Inno Setup")
     ns = p.parse_args()
     with tempfile.TemporaryDirectory(prefix="olb-") as temporary:
-        return build(Path(ns.dist).resolve(), Path(ns.work).resolve() if ns.work else Path(temporary))
+        return build(Path(ns.dist).resolve(), Path(ns.work).resolve() if ns.work else Path(temporary), no_setup=ns.no_setup)
 
 
-def build(dist: Path, work: Path) -> int:
+def find_iscc() -> Path:
+    candidates = [os.environ.get("ISCC", ""),
+                  str(Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)")) / "Inno Setup 6/ISCC.exe"),
+                  str(Path(os.environ.get("LOCALAPPDATA", "")) / "Programs/Inno Setup 6/ISCC.exe"),
+                  shutil.which("ISCC.exe") or ""]
+    for value in candidates:
+        if value and Path(value).is_file():
+            return Path(value).resolve()
+    raise FileNotFoundError("ISCC.exe не найден. Установите Inno Setup 6.7+ (winget install JRSoftware.InnoSetup), "
+                            "задайте ISCC или используйте --no-setup для локальной сборки только zip.")
+
+
+def build(dist: Path, work: Path, *, no_setup: bool = False) -> int:
+    iscc = None if no_setup else find_iscc()  # До подмены LOCALAPPDATA и долгой сборки PyInstaller.
     pyi_out = work / "dist"
     dist.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ)
@@ -74,8 +88,13 @@ def build(dist: Path, work: Path) -> int:
         for f in sorted(app.rglob("*")):
             if f.is_file():
                 z.write(f, f"{name}/app/{f.relative_to(app).as_posix()}")
-    shutil.rmtree(pyi_out, ignore_errors=True)
     print(f"{archive}  ({archive.stat().st_size / 1_048_576:.1f} MB)")
+    if iscc:
+        subprocess.run([str(iscc), f"/DAppVersion={__version__}", f"/DSourceDir={app}", f"/O{dist}",
+                        str(ROOT / "packaging/office-live-mcp.iss")], check=True)
+        setup = dist / f"office-live-mcp-{__version__}-setup.exe"
+        print(f"{setup}  ({setup.stat().st_size / 1_048_576:.1f} MB)")
+    shutil.rmtree(pyi_out, ignore_errors=True)
     return 0
 
 

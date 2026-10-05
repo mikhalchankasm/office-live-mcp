@@ -16,12 +16,12 @@ import stat
 import subprocess
 import sys
 import time
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stdout
 from pathlib import Path
 
 from . import __version__
 from .cli import CLIENT_LABELS, _atomic_write, _office_installed, setup_cmd
-from .state import file_lock, read_state, remember_install, state_path
+from .state import file_lock, forget_install, read_state, remember_install, state_path
 from .install_files import check_path, check_tree, digest, remaining_paths, removal_plan, remove_files, write_manifest
 
 EXE_NAME = "office-live-mcp.exe"
@@ -228,6 +228,8 @@ def _install(ns, setup_args: list[str]) -> int:
     if existing is None and _owned(source.parent) and source.name == "app":
         existing = source.parent
     root = (Path(ns.target) if ns.target else existing or install_root()).absolute()
+    if (root / "unins000.exe").is_file():
+        print("Программа установлена через setup.exe. Рекомендуется обновить её новым setup.exe; установка из архива продолжится по запросу.")
     check_path(root, root)
     previous_location = recorded or existing
     if ns.target and previous_location and not _same(root, previous_location) and not ns.new_location:
@@ -347,22 +349,48 @@ def uninstall_cmd(args: list[str]) -> int:
     p.add_argument("--keep-files", action="store_true", help="только отключить клиентов, файлы программы оставить")
     p.add_argument("--target", default="", help="корень установки; по умолчанию — state.json или каталог своего exe")
     p.add_argument("--dry-run", action="store_true", help="показать план без изменений")
+    p.add_argument("--yes", action="store_true", help="без вопросов; для Inno — /SILENT")
+    p.add_argument("--json", action="store_true", help="машиночитаемый результат отключения")
     ns = p.parse_args(args)
-    try:
-        with nullcontext() if ns.dry_run else file_lock(state_path().with_name("maintenance")):
-            return _uninstall(ns)
-    except (OSError, ValueError) as exc:
-        print(f"Удаление остановлено: {exc}. Файлы программы сохранены.")
-        return 1
+    ns.problems = []
+    with redirect_stdout(sys.stderr) if ns.json else nullcontext():
+        try:
+            root = _uninstall_root(ns)
+            uninstaller = root / "unins000.exe"
+            if uninstaller.is_file() and not ns.keep_files:
+                check_path(uninstaller, root)
+                print(f"{'ПЛАН: ' if ns.dry_run else ''}Удаление выполняет установщик Windows: {uninstaller}")
+                # Не держим maintenance и не ждём: Inno вызовет uninstall --keep-files в новом процессе.
+                if not ns.dry_run:
+                    subprocess.Popen([str(uninstaller), *(["/SILENT"] if ns.yes else [])], cwd=str(root.parent))
+                rc = 0
+            else:
+                with nullcontext() if ns.dry_run else file_lock(state_path().with_name("maintenance")):
+                    rc = _uninstall(ns)
+        except (OSError, ValueError) as exc:
+            ns.problems.append(str(exc))
+            print(f"Удаление остановлено: {exc}. Файлы программы сохранены.")
+            rc = 1
+    if ns.json:
+        print(json.dumps({"ok": rc == 0, "problems": ns.problems}, ensure_ascii=True))
+    return rc
+
+
+def _uninstall_root(ns) -> Path:
+    own_root = Path(sys.executable).parent.parent if frozen() else None
+    if ns.target:
+        return Path(ns.target).absolute()
+    if own_root and (_owned(own_root) or (own_root / "unins000.exe").is_file()):
+        return own_root.absolute()
+    state = read_state()
+    return (Path(state["root"]) if state["root"] else install_root()).absolute()
 
 
 def _uninstall(ns) -> int:
     from . import registrations as reg
 
     state = read_state()
-    own_root = Path(sys.executable).parent.parent if frozen() else None
-    root = Path(ns.target) if ns.target else own_root if own_root and _owned(own_root) else Path(state["root"]) if state["root"] else install_root()
-    root = root.absolute()
+    root = _uninstall_root(ns)
     exists = os.path.lexists(root)
     if exists and not ns.keep_files:
         check_path(root, root)
@@ -394,6 +422,7 @@ def _uninstall(ns) -> int:
                 if not configure(False, dry_run=ns.dry_run, server=(command, [])):
                     failures.append(spec["path"])
                     blocked.append(spec["path"])
+                    ns.problems.append(f"Осталась регистрация {spec['path']}: officelive://; проверьте вручную")
                 continue
             _, _, current = reg.read_entry(spec)
             dependent = current is not None and reg.belongs(current, command, [])
@@ -404,12 +433,16 @@ def _uninstall(ns) -> int:
             print(f"{spec['client']} [{spec['scope']}] {spec['path']}: {message}")
             if not ok:
                 failures.append(spec["path"])
+                ns.problems.append(f"{spec['path']}: {message}")
                 if dependent:
                     blocked.append(spec["path"])
         except (ValueError, OSError) as exc:
             failures.append(spec["path"])
             blocked.append(spec["path"])  # нечитаемый файл: зависимость нельзя безопасно исключить
+            ns.problems.append(f"Осталась регистрация {spec['path']}: {exc}")
             print(f"Осталась регистрация {spec['path']}: {exc}; уберите office-live вручную и повторите uninstall.")
+    if ns.keep_files and not ns.dry_run:
+        forget_install(root)
     if blocked or ns.keep_files:
         print(f"Файлы сохранены: {root}. " + ("Не удалось отключить зависимые регистрации: " + ", ".join(blocked) if blocked else "Указан --keep-files."))
         return 1 if failures else 0
@@ -454,6 +487,7 @@ def _uninstall(ns) -> int:
         print(("Удаление неполное. " if errors else "Удаление завершено. ") +
               ("Осталось: " + ", ".join(str(p) for p in remaining) if remaining else "Остатков файлов нет."))
         if errors:
+            ns.problems.extend(errors)
             print("Ошибки: " + "; ".join(errors) + ". Закройте клиентов, проверьте права и повторите uninstall; оставшиеся пути можно проверить вручную.")
             return 1
     return 1 if failures else 0

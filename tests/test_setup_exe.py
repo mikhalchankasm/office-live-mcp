@@ -60,7 +60,7 @@ def test_silent_install_upgrade_uninstall():
             run(setup, *base, "/CLIENTS=none", f"/LOG={test_root / 'install.log'}")
             assert exe.is_file() and unins.is_file() and (root / "app/_internal").is_dir()
             assert (root / "LICENSE.txt").is_file() and (root / "app/office-live-mcp.files.json").is_file()
-            assert json.loads((root / "office-live-mcp.install").read_text())["product"] == "office-live-mcp"
+            assert json.loads((root / "office-live-mcp.install").read_text(encoding="utf-8"))["product"] == "office-live-mcp"
             assert Path(uninstall_location()) == root
             assert json.loads(state.read_text(encoding="utf-8"))["registrations"] == []
             assert smoke([str(exe)], env) > 0
@@ -79,7 +79,7 @@ def test_silent_install_upgrade_uninstall():
             run(setup, *base, f"/LOG={test_root / 'upgrade.log'}")
             assert not stale.exists() and config.read_bytes() == before
             assert smoke([str(exe)], env) > 0
-            assert foreign.read_text() == "keep this unrelated file"
+            assert foreign.read_text(encoding="utf-8") == "keep this unrelated file"
             run(unins, "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", f"/LOG={test_root / 'uninstall.log'}")
             deadline = time.monotonic() + 30
             while (exe.exists() or unins.exists() or uninstall_location()) and time.monotonic() < deadline:
@@ -87,8 +87,8 @@ def test_silent_install_upgrade_uninstall():
             assert not exe.exists() and not unins.exists() and uninstall_location() is None
             assert not (root / "app/_internal").exists() and not (root / "office-live-mcp.install").exists()
             assert not (root / "app/office-live-mcp.files.json").exists()
-            assert foreign.read_text() == "keep this unrelated file"
-            assert 'mcp_servers.office-live' not in config.read_text()
+            assert foreign.read_text(encoding="utf-8") == "keep this unrelated file"
+            assert 'mcp_servers.office-live' not in config.read_text(encoding="utf-8")
             data = json.loads(state.read_text(encoding="utf-8"))
             assert data["root"] == "" and data["registrations"] == []
             assert list(config.parent.glob("*.bak-*"))

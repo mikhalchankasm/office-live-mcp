@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.3.1 — 2026-10-05
 
 - Installer: the informational `doctor` step is limited to 120 s, so a hung Excel/Word no longer stops the
   installation before the program check and the agent connection.
+- README: language buttons, step-by-step install and update, a subjective rating column in the comparison and a
+  project status note.
 
 ## 0.3.0 — 2026-10-05
 

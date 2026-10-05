@@ -5,7 +5,12 @@
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
 
-[English](README.md) · **Русский**
+[![English](https://img.shields.io/badge/English-README-0969da?style=for-the-badge)](README.md)
+[![Русский](https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-README-cf222e?style=for-the-badge)](README.ru.md)
+
+> **Статус: активно дорабатывается.** Релизы 0.x — инструменты и установщик проверены на настоящих Excel и Word, но
+> проект продолжает развиваться (дальше: Power Query, Power Pivot/DAX и новые инструменты анализа в Excel). Замечания и
+> issues приветствуются.
 
 MCP-сервер, через который любой ИИ-агент (Claude, Cursor, Codex, ZCode, VS Code…) работает в документах Excel и Word,
 **которые у вас уже открыты**, — так же, как встроенные ассистенты Office. Изменения сразу видны на экране, а вы
@@ -16,20 +21,26 @@ MCP-сервер, через который любой ИИ-агент (Claude, 
 
 ## Установка
 
-Нужны Windows 10/11 (64-бит) и настольные Excel и/или Word. Python, git, winget и права администратора не нужны.
+**Что нужно:** Windows 10/11 (64-бит) и настольные Excel и/или Word. Python, git, winget и права администратора не нужны.
 
-1. Скачайте `office-live-mcp-<версия>-win64.zip` со страницы [Releases](https://github.com/mikhalchankasm/office-live-mcp/releases/latest)
-   и **распакуйте архив целиком**.
-2. Дважды щёлкните **`install.cmd`**. Установщик проверит Windows и Office, скопирует программу в
-   `%LOCALAPPDATA%\Programs\office-live-mcp`, проверит её и спросит, какой доступ дать (полный или только чтение) и к каким
-   агентам подключить (найденные отмечены).
-3. Перезапустите агента и попросите: *«покажи, какие книги открыты в Excel»*.
+| Шаг | Что сделать |
+|:---:|---|
+| **1** | Скачайте **`office-live-mcp-<версия>-win64.zip`** со страницы [**Releases**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest) и **распакуйте архив целиком** (правой кнопкой → *Извлечь все…*). |
+| **2** | Дважды щёлкните **`install.cmd`** в распакованной папке. Установщик проверит Windows и Office, скопирует программу в `%LOCALAPPDATA%\Programs\office-live-mcp`, проверит её и спросит, какой доступ дать (**полный** или **только чтение**) и к каким агентам подключить (найденные отмечены). |
+| **3** | **Перезапустите агента** и попросите: *«покажи, какие книги открыты в Excel»*. |
 
-Обновление — `install.cmd` из нового архива (настройки сохраняются). Удаление:
-`"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall`.
-Без вопросов: `install.cmd --yes --clients claude-code,cursor --readonly`.
+## Обновление
 
-Exe пока не подписан сертификатом: SmartScreen может предупредить («Подробнее» → «Выполнить в любом случае»), а Smart App
+| Шаг | Что сделать |
+|:---:|---|
+| **1** | Скачайте и распакуйте **новый** архив со страницы [Releases](https://github.com/mikhalchankasm/office-live-mcp/releases/latest). |
+| **2** | Запустите его **`install.cmd`**. Режим доступа, разрешённые папки и подключённые агенты сохраняются. Если установщик скажет, что программа занята, закройте агентов и запустите его ещё раз. |
+| **3** | Перезапустите агента. |
+
+**Удаление:** `"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall` — отключает агентов и удаляет
+только файлы самой программы. **Без вопросов:** `install.cmd --yes --clients claude-code,cursor --readonly`.
+
+Exe пока не подписан сертификатом: SmartScreen может предупредить (*Подробнее* → *Выполнить в любом случае*), а Smart App
 Control или корпоративный антивирус — заблокировать запуск. Из исходников: `install.cmd` в клоне репозитория или
 `pip install .` и `python -m office_live setup` — см. [руководство](docs/GUIDE.ru.md).
 
@@ -64,17 +75,18 @@ Control или корпоративный антивирус — заблоки�
 
 Популярные MCP-серверы для Office правят **файлы на диске**; лишь некоторые управляют **запущенным** приложением.
 
-| Проект | Подход | Плюсы | Минусы |
-|---|---|---|---|
-| **Office Live MCP** (этот) | COM, работает с уже открытыми файлами; Excel **и** Word | видит несохранённые правки и пересчитанные значения; работает рядом с вами; сводные, срезы, диаграммы; мосты Word↔Excel; только чтение, разрешённые папки, журнал, отмена; установщик одним файлом | только Windows и настольный Office; COM медленнее работы с файлами; автоматизация стирает собственную историю Ctrl+Z в Excel |
-| [haris-musa/excel-mcp-server](https://github.com/haris-musa/excel-mcp-server) | файлы через openpyxl | кроссплатформенный, Excel не нужен, установка через `uvx`, HTTP-транспорт, только чтение и ограничение папок | не видит открытые книги; формулы не пересчитываются; «сводные» — статичные итоги; нет Word |
-| [sbroenne/mcp-server-excel](https://github.com/sbroenne/mcp-server-excel) | COM (.NET), только Excel | очень широкий охват Excel: Power Query, DAX, Power Pivot, VBA, 300+ операций | просит сначала закрыть открытые книги; нет Word; только Windows |
-| [negokaz/excel-mcp-server](https://github.com/negokaz/excel-mcp-server) | файлы (Go), в Windows — правка открытых книг | установка через `npx`, файловый режим везде, скриншоты в Windows | мало инструментов (8); нет Word |
-| [GongRzhe/Office-Word-MCP-Server](https://github.com/GongRzhe/Office-Word-MCP-Server) | файлы через python-docx | Word не нужен, богатое создание документов, экспорт в PDF | не видит открытые документы, нет исправлений; архивирован (только чтение) с марта 2026 |
-| [OfficeMCP/OfficeMCP](https://github.com/OfficeMCP/OfficeMCP) | COM через общий `RunPython` | много приложений Office (Outlook, PowerPoint, Access…) | нет типизированных инструментов и ограничений — агент выполняет произвольный код |
+| Проект | Подход | Плюсы | Минусы | Оценка* |
+|---|---|---|---|:---:|
+| **Office Live MCP** (этот) | COM, работает с уже открытыми файлами; Excel **и** Word | видит несохранённые правки и пересчитанные значения; работает рядом с вами; сводные, срезы, диаграммы; мосты Word↔Excel; только чтение, разрешённые папки, журнал, отмена; установщик одним файлом | только Windows и настольный Office; COM медленнее работы с файлами; автоматизация стирает собственную историю Ctrl+Z в Excel; пока нет Power Query/DAX | ★★★★★ |
+| [sbroenne/mcp-server-excel](https://github.com/sbroenne/mcp-server-excel) | COM (.NET), только Excel | очень широкий охват Excel: Power Query, DAX, Power Pivot, VBA, 300+ операций | просит сначала закрыть открытые книги; нет Word; только Windows | ★★★★☆ |
+| [haris-musa/excel-mcp-server](https://github.com/haris-musa/excel-mcp-server) | файлы через openpyxl | кроссплатформенный, Excel не нужен, установка через `uvx`, HTTP-транспорт, только чтение и ограничение папок | не видит открытые книги; формулы не пересчитываются; «сводные» — статичные итоги; нет Word | ★★★☆☆ |
+| [negokaz/excel-mcp-server](https://github.com/negokaz/excel-mcp-server) | файлы (Go), в Windows — правка открытых книг | установка через `npx`, файловый режим везде, скриншоты в Windows | мало инструментов (8); нет Word | ★★☆☆☆ |
+| [GongRzhe/Office-Word-MCP-Server](https://github.com/GongRzhe/Office-Word-MCP-Server) | файлы через python-docx | Word не нужен, богатое создание документов, экспорт в PDF | не видит открытые документы, нет исправлений; архивирован (только чтение) с марта 2026 | ★★☆☆☆ |
+| [OfficeMCP/OfficeMCP](https://github.com/OfficeMCP/OfficeMCP) | COM через общий `RunPython` | много приложений Office (Outlook, PowerPoint, Access…) | нет типизированных инструментов и ограничений — агент выполняет произвольный код | ★★☆☆☆ |
 
-Для фоновой обработки файлов и кроссплатформенных конвейеров выбирайте файловый сервер; Office Live MCP — когда агент
-должен помогать человеку в документах, открытых прямо сейчас.
+\* *Субъективная оценка автора этого проекта для одного сценария: ИИ-агент помогает человеку в документах Excel и Word,
+открытых прямо сейчас. Для фоновой обработки файлов и кроссплатформенных конвейеров порядок был бы другим — там лучше
+файловый сервер.*
 
 ## Разработка
 

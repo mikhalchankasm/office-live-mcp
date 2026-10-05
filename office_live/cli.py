@@ -537,39 +537,47 @@ def _detect_clients() -> dict[str, bool]:
     }
 
 
-def _remove_client(client: str) -> str:
-    """Убирает запись office-live из конфигурации клиента. Возвращает короткий статус."""
+def _remove_client(client: str) -> tuple[bool, str]:
+    """Убирает запись office-live. Статус успеха не зависит от текста сообщения."""
     if client == "claude-code":
+        path = Path.home() / ".claude.json"
+        data = _read_json(path)
+        if SERVER_NAME not in data.get("mcpServers", {}):
+            return True, "записи не было"
         if not shutil.which("claude"):
-            return "нет CLI claude"
+            return False, "не удалено: нет CLI claude"
         rc = subprocess.call(["claude", "mcp", "remove", SERVER_NAME, "-s", "user"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        return "удалено" if rc == 0 else "записи не было"
+        return (True, "удалено") if rc == 0 else (False, f"не удалено: CLI claude завершился с кодом {rc}")
     if client == "codex":
         path = Path.home() / ".codex" / "config.toml"
         text = path.read_text(encoding="utf-8") if path.exists() else ""
         if not _has_our_table(text):
-            return "записи не было"
+            return True, "записи не было"
         new_text = _strip_toml_tables(text)
         problem = _toml_rewrite_problem(text, new_text, None)
         if problem:
-            return f"не удалено: {problem}; уберите запись {SERVER_NAME} вручную"
+            return False, f"не удалено: {problem}; уберите запись {SERVER_NAME} вручную"
         _backup(path)
         _atomic_write(path, new_text)
-        return "удалено"
+        return True, "удалено"
     path, keys, _ = _json_target(client)
     if not path or not path.exists():
-        return "записи не было"
+        return True, "записи не было"
     data = _read_json(path)
     node = data
     for k in keys:
-        node = node.get(k) if isinstance(node, dict) else None
+        if not isinstance(node, dict):
+            return False, "не удалено: конфигурация серверов не является объектом JSON"
+        node = node.get(k)
         if node is None:
-            return "записи не было"
+            return True, "записи не было"
+    if not isinstance(node, dict):
+        return False, "не удалено: список серверов не является объектом JSON"
     if SERVER_NAME not in node:
-        return "записи не было"
+        return True, "записи не было"
     del node[SERVER_NAME]
     _write_json_with_backup(path, data)
-    return "удалено"
+    return True, "удалено"
 
 
 def _ask(prompt: str, default: str = "") -> str:
@@ -654,11 +662,19 @@ def setup_cmd(args) -> int:
         print(f"\nНи к какому агенту не подключаю. Подключить позже: {_self_cmd()} setup")
         return 0
     failed = 0
+    still_connected = []
     print()
     for client in selected:
         label = CLIENT_LABELS[client]
         if ns.remove:
-            print(f"  {label}: {_remove_client(client)}")
+            try:
+                ok, message = _remove_client(client)
+            except Exception as exc:  # noqa: BLE001 — ошибка одного клиента не мешает отключить остальных
+                ok, message = False, f"не удалено: {exc}"
+            print(f"  {label}: {message}")
+            if not ok:
+                failed += 1
+                still_connected.append(label)
             continue
         extra = ["--quiet"]
         if ns.readonly:
@@ -680,7 +696,10 @@ def setup_cmd(args) -> int:
         print(f"  {'✔' if rc == 0 else '✘'} {label}: " + ("подключено" if rc == 0 else "не удалось (см. сообщение выше)"))
         failed += rc != 0
     if ns.remove:
-        print("\nГотово. Перезапустите агентов.")
+        if failed:
+            print("\nНе подтверждено отключение; всё ещё могут быть подключены: " + ", ".join(still_connected))
+        else:
+            print("\nГотово. Перезапустите агентов.")
     elif failed:
         print(f"\nНе удалось подключить: {failed}. Проверка окружения: {_self_cmd()} doctor")
     else:

@@ -18,6 +18,7 @@ from .xl_common import pick_workbook, sheet_names, suspend_events, workbook_path
 
 LOG_NAME = "OfficeLive_Log"
 LOG_SHEET = "Лог"
+SHEET_MARKER = "OfficeLive_LogSheet"
 _lock = threading.Lock()
 _warned = False
 
@@ -81,6 +82,22 @@ def sheet_enabled(wb):
         return False
 
 
+def owns_sheet(ws):
+    try:
+        return str(ws.Names(SHEET_MARKER).RefersTo).upper() == "=TRUE"
+    except (pywintypes.com_error, AttributeError, KeyError):
+        return False
+
+
+def _existing_sheet(wb):
+    return next((wb.Worksheets(name) for name in sheet_names(wb) if name.casefold() == LOG_SHEET.casefold()), None)
+
+
+def _check_owner(ws):
+    if ws is not None and not owns_sheet(ws):
+        raise ToolError("The sheet 'Лог' belongs to you, not Office Live. Rename it before enabling the log sheet.")
+
+
 def append_sheet(app, wb, tool, arguments, *, where=None, summary=None):
     """Возвращает предупреждение вместо исключения; вызов внутри действующего COM-контекста."""
     try:
@@ -89,14 +106,19 @@ def append_sheet(app, wb, tool, arguments, *, where=None, summary=None):
         suspend_events(app, force=True)
         previous_book, previous = app.ActiveWorkbook, app.ActiveSheet
         try:
-            if LOG_SHEET not in sheet_names(wb):
+            ws = _existing_sheet(wb)
+            _check_owner(ws)
+            if ws is None:
                 ws = wb.Worksheets.Add(None, wb.Sheets(wb.Sheets.Count))
                 ws.Name = LOG_SHEET
+                ws.Names.Add(SHEET_MARKER, "=TRUE", False)
                 ws.Range("A1:E1").Value = (("Время", "Действие", "Где", "Что сделано", "Результат"),)
                 ws.Range("A1:E1").Font.Bold = True
-            else:
-                ws = wb.Worksheets(LOG_SHEET)
-            row = max(2, int(ws.Cells(ws.Rows.Count, 1).End(-4162).Row) + 1)  # xlUp
+            last_row = int(ws.Rows.Count)
+            bottoms = [ws.Cells(last_row, col) for col in range(1, 6)]
+            if any(cell.Value is not None for cell in bottoms):
+                raise ToolError("The 'Лог' sheet is full; no journal row was written.")
+            row = max(2, max(int(cell.End(-4162).Row) for cell in bottoms) + 1)  # xlUp
             location, details = describe(arguments)
             target = ws.Range(f"A{row}:E{row}")
             target.NumberFormat = "@"
@@ -138,15 +160,18 @@ def office_journal(workbook: str = "", document: str = "", action: str = "read",
         app, obj = pick_document(document)
         identity = document_path(obj) or obj.Name
     if act == "enable_sheet":
+        _check_owner(_existing_sheet(obj))
         obj.Names.Add(LOG_NAME, "=TRUE", False)
     elif act == "disable_sheet":
         if sheet_enabled(obj):
             obj.Names(LOG_NAME).Delete()
-        if delete_sheet and LOG_SHEET in sheet_names(obj):
+        ws = _existing_sheet(obj) if delete_sheet else None
+        if ws is not None:
+            _check_owner(ws)
             old = app.DisplayAlerts
             app.DisplayAlerts = False
             try:
-                obj.Worksheets(LOG_SHEET).Delete()
+                ws.Delete()
             finally:
                 app.DisplayAlerts = old
     path = journal_path(identity)

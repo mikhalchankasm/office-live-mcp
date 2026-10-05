@@ -112,6 +112,59 @@ def test_sheet_warning_does_not_fail_tool(office, monkeypatch):
     assert result["log_sheet_warning"] == "protected workbook" and result["ok"]
 
 
+def test_enable_refuses_user_log_sheet_without_setting_flag(office):
+    o = office
+    ws = o.wb.Sheets.Add(None, o.ws)
+    ws.Name = "Лог"
+    ws.Range("A1:E1").Value = (("private", 2, 3, 4, 5),)
+    with pytest.raises(ToolError, match="Rename"):
+        o.call("office_journal", workbook=o.wb.Name, action="enable_sheet")
+    assert not journal.sheet_enabled(o.wb) and not journal.owns_sheet(ws)
+    assert ws.Range("A1:E1").Value == (("private", 2, 3, 4, 5),)
+
+
+def test_append_and_delete_never_touch_unowned_log_sheet(office):
+    o = office
+    o.wb.Names.Add(journal.LOG_NAME, "=TRUE", False)
+    ws = o.wb.Sheets.Add(None, o.ws)
+    ws.Name = "Лог"
+    ws.Range("B3").Value = "private"
+    result = o.call("excel_write_range", workbook=o.wb.Name, sheet="Data", cells="A1", values=1)
+    assert "Rename" in result["log_sheet_warning"] and ws.data == {(3, 2): "private"}
+    with pytest.raises(ToolError, match="Rename"):
+        o.call("office_journal", workbook=o.wb.Name, action="disable_sheet", delete_sheet=True)
+    assert ws in o.wb.Sheets.items and ws.data == {(3, 2): "private"}
+
+
+@pytest.mark.parametrize("column", ["A", "B", "C", "D", "E"])
+def test_append_uses_last_nonempty_cell_across_all_log_columns(office, column):
+    o = office
+    o.call("office_journal", workbook=o.wb.Name, action="enable_sheet")
+    ws = o.wb.Worksheets("Лог")
+    assert ws.Names(journal.SHEET_MARKER).Visible is False
+    ws.Range(f"{column}12").Value = "keep"
+    o.call("excel_write_range", workbook=o.wb.Name, sheet="Data", cells="A1", values=1)
+    assert ws.Range(f"{column}12").Value == "keep" and ws.Range("B13").Value == "excel_write_range"
+
+
+def test_missing_owned_log_is_recreated_with_sheet_marker(office):
+    o = office
+    o.call("office_journal", workbook=o.wb.Name, action="enable_sheet")
+    o.wb.Worksheets("Лог").Delete()
+    o.call("excel_write_range", workbook=o.wb.Name, sheet="Data", cells="A1", values=1)
+    assert journal.owns_sheet(o.wb.Worksheets("Лог"))
+
+
+def test_full_log_sheet_returns_warning_without_overwriting_cells(office):
+    o = office
+    o.call("office_journal", workbook=o.wb.Name, action="enable_sheet")
+    ws = o.wb.Worksheets("Лог")
+    ws.Cells(ws.Rows.Count, 5).Value = "keep"
+    before = dict(ws.data)
+    result = o.call("excel_write_range", workbook=o.wb.Name, sheet="Data", cells="A1", values=1)
+    assert "sheet is full" in result["log_sheet_warning"] and ws.data == before
+
+
 def test_sheet_logging_forces_events_off_even_with_user_opt_in(office, monkeypatch):
     o = office
     monkeypatch.setattr(config, "SETTINGS", replace(config.SETTINGS, enable_events=True, undo=False))

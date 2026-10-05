@@ -167,7 +167,50 @@ def test_setup_remove_undoes_everything(fake_home):
     assert cli.run("setup", ["--remove", "--yes", "--clients", "cursor,codex,claude-desktop"]) == 0
     assert "office-live" not in _servers(fake_home / ".cursor" / "mcp.json", ["mcpServers"])
     assert "office-live" not in (fake_home / ".codex" / "config.toml").read_text(encoding="utf-8")
-    assert cli._remove_client("cursor") == "записи не было"  # повторное удаление безопасно
+    assert cli._remove_client("cursor") == (True, "записи не было")  # повторное удаление безопасно
+
+
+def test_remove_reports_failures_and_continues_other_clients(fake_home, monkeypatch, capsys):
+    seen = []
+
+    def remove(client):
+        seen.append(client)
+        if client == "cursor":
+            raise PermissionError("locked config")
+        return client != "codex", "не удалено" if client == "codex" else "удалено"
+
+    monkeypatch.setattr(cli, "_remove_client", remove)
+    assert cli.setup_cmd(["--remove", "--yes", "--clients", "cursor,codex,zcode"]) == 1
+    assert seen == ["cursor", "codex", "zcode"]
+    assert "Cursor, Codex CLI" in capsys.readouterr().out
+
+
+def test_remove_unsafe_toml_reports_structured_failure(fake_home, monkeypatch):
+    path = fake_home / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text('[mcp_servers.office-live]\ncommand="old"\n')
+    monkeypatch.setattr(cli, "_toml_rewrite_problem", lambda *a: "unsafe TOML")
+    assert cli._remove_client("codex")[0] is False
+    assert cli.setup_cmd(["--remove", "--yes", "--clients", "codex"]) == 1
+    assert 'command="old"' in path.read_text()
+
+
+@pytest.mark.parametrize("cli_available", [False, True])
+def test_remove_claude_failure_is_not_reported_as_absent(fake_home, monkeypatch, cli_available):
+    (fake_home / ".claude.json").write_text(json.dumps({"mcpServers": {cli.SERVER_NAME: {"command": "old"}}}))
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "claude" if cli_available else None)
+    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **kw: 1)
+    assert cli._remove_client("claude-code")[0] is False
+    assert cli.setup_cmd(["--remove", "--yes", "--clients", "claude-code"]) == 1
+
+
+@pytest.mark.parametrize("content", ['{bad json', '{"mcpServers": []}'])
+def test_remove_malformed_json_keeps_config_and_returns_failure(fake_home, content):
+    path = fake_home / ".cursor" / "mcp.json"
+    path.parent.mkdir()
+    path.write_text(content)
+    assert cli.setup_cmd(["--remove", "--yes", "--clients", "cursor"]) == 1
+    assert path.read_text() == content
 
 
 def test_setup_with_no_clients_changes_nothing(fake_home):

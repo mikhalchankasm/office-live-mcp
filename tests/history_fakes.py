@@ -4,6 +4,7 @@ import copy
 from types import SimpleNamespace as NS
 
 import pytest
+import pywintypes
 
 from office_live.util import MAX_COLS, MAX_ROWS, a1_range, parse_a1, to_grid
 
@@ -29,7 +30,7 @@ class Collection:
 
 
 class Names(Collection):
-    def Add(self, name, formula, visible=True):
+    def Add(self, name, formula, visible=True, /):
         try:
             self(name).Delete()
         except KeyError:
@@ -57,6 +58,14 @@ class RangeFormat:
                 "Font.Italic": False, "Font.Underline": -4142, "Font.Color": 0, "Interior.Color": 16777215,
                 "Interior.Pattern": -4142, "HorizontalAlignment": -4131, "VerticalAlignment": -4107,
                 "WrapText": False, "MergeCells": False}
+    defaults.update({"Font.Strikethrough": False, "Font.Subscript": False, "Font.Superscript": False,
+                     "Font.OutlineFont": False, "Font.Shadow": False, "Font.TintAndShade": 0,
+                     "Interior.PatternColor": 0, "Interior.TintAndShade": 0, "Interior.PatternTintAndShade": 0,
+                     "ShrinkToFit": False, "IndentLevel": 0, "Orientation": 0, "ReadingOrder": -5002,
+                     "AddIndent": False, "Locked": True, "FormulaHidden": False})
+    defaults.update({f"Borders{i}.{prop}": value for i in range(5, 13) for prop, value in (("LineStyle", -4142), ("Weight", 2), ("Color", 0))})
+    defaults.update({"Font.ThemeColor": 1, "Interior.ThemeColor": 1, "Interior.PatternThemeColor": 1, "Style": "Normal"})
+    defaults.update({f"Borders{i}.{prop}": value for i in range(5, 13) for prop, value in (("ThemeColor", 1), ("TintAndShade", 0))})
 
     def __init__(self, rng, prefix):
         object.__setattr__(self, "rng", rng)
@@ -90,6 +99,14 @@ class Range:
     VerticalAlignment = format_property("VerticalAlignment")
     WrapText = format_property("WrapText")
     MergeCells = format_property("MergeCells")
+    ShrinkToFit = format_property("ShrinkToFit")
+    IndentLevel = format_property("IndentLevel")
+    Orientation = format_property("Orientation")
+    ReadingOrder = format_property("ReadingOrder")
+    AddIndent = format_property("AddIndent")
+    Locked = format_property("Locked")
+    FormulaHidden = format_property("FormulaHidden")
+    Style = format_property("Style")
 
     def __init__(self, ws, address):
         self.Worksheet = ws
@@ -140,6 +157,22 @@ class Range:
         return RangeFormat(self, "Interior.")
 
     @property
+    def FormatConditions(self):
+        return self.Worksheet.conditions
+
+    @property
+    def Hyperlinks(self):
+        return Collection()
+
+    def SpecialCells(self, cell_type, /):
+        assert cell_type in (-4144, -4174)
+        raise pywintypes.com_error(-2147352567, "No cells found", None, None)
+
+    def Borders(self, index, /):
+        assert 5 <= index <= 12
+        return RangeFormat(self, f"Borders{index}.")
+
+    @property
     def ColumnWidth(self):
         return self.Worksheet.Columns(self.Column).ColumnWidth
 
@@ -157,8 +190,14 @@ class Range:
         for i in range(self.Row, self.r2 + 1):
             self.Worksheet.Rows(i).RowHeight = value
 
-    def Copy(self, destination, /):
+    def Copy(self, destination=None, /):
         assert not self.Worksheet.Parent.Application.EnableEvents
+        if destination is None:
+            self.Worksheet.Parent.Application.clipboard = self
+            return
+        self._copy_to(destination, formats=True)
+
+    def _copy_to(self, destination, *, formats):
         grid = to_grid(self.Formula)
         for i, row in enumerate(grid):
             for j, value in enumerate(row):
@@ -166,11 +205,16 @@ class Range:
                     value = "=[other.xlsx]" + value[1:]
                 destination.Worksheet.data[destination.Row + i, destination.Column + j] = value
                 rc = (destination.Row + i, destination.Column + j)
-                formats = self.Worksheet.formats.get((self.Row + i, self.Column + j))
                 if formats:
-                    destination.Worksheet.formats[rc] = copy.deepcopy(formats)
-                else:
-                    destination.Worksheet.formats.pop(rc, None)
+                    source_format = self.Worksheet.formats.get((self.Row + i, self.Column + j))
+                    if source_format:
+                        destination.Worksheet.formats[rc] = copy.deepcopy(source_format)
+                    else:
+                        destination.Worksheet.formats.pop(rc, None)
+
+    def PasteSpecial(self, paste, operation, skip_blanks, transpose, /):
+        assert (paste, operation, skip_blanks, transpose) == (-4123, -4142, False, False)
+        self.Worksheet.Parent.Application.clipboard._copy_to(self, formats=False)
 
     def Cut(self, destination):
         self.Copy(destination)
@@ -250,6 +294,8 @@ class Sheet:
         self.Rows, self.Columns = Lines(self, "rows", MAX_ROWS), Lines(self, "columns", MAX_COLS)
         self.Cells = Cells(self)
         self.Shapes, self.ListObjects = Collection(), Collection()
+        self.Names = Names()
+        self.conditions = Collection()
         self.view = NS(SplitRow=0, SplitColumn=0, FreezePanes=False, Zoom=100, DisplayGridlines=True, DisplayHeadings=True, ScrollRow=1, ScrollColumn=1)
 
     @property

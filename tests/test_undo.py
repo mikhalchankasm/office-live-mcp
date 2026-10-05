@@ -413,7 +413,7 @@ def test_bridge_word_text_snapshot_uses_filtered_source_size(office):
         NS(OutlineLevel=1, Range=NS(Text="\r"), Style=NS(NameLocal="Heading 1")),
     ])
     result = o.call("bridge_word_text_to_excel", document=o.doc.Name, workbook=o.wb.Name, sheet="Data", top_left="B3", headings_only=True)
-    assert result["undo"] == "available" and stack(o)[-1].areas == [{"sheet": "Data", "address": "B3:D4"}]
+    assert result["undo"] == "available" and stack(o)[-1].areas == [{"sheet": "Data", "address": "B3:D4"}, {"sheet": "Data", "address": "B3:D3"}]
     assert not o.word.starts
     revert(o)
     assert o.ws.Range("B3:D4").Value == ((None, None, None), (None, None, None))

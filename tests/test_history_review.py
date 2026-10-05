@@ -283,10 +283,11 @@ def set_format(rng, prop, value):
 
 
 @pytest.mark.parametrize("prop,value", FORMAT_CHANGES)
-def test_excel_format_edit_blocks_snapshot_undo_and_force_restores_it(office, prop, value):
+def test_excel_format_edit_blocks_full_copy_undo_and_force_restores_it(office, prop, value):
     o = office
     original = undo._format_state(o.ws.Range("A1:B2"))
-    o.call("excel_write_range", workbook=o.wb.Name, sheet="Data", cells="A1:B2", values=1)
+    o.ws.Range("D1:E2").Value = 1
+    o.call("excel_copy_range", workbook=o.wb.Name, sheet="Data", source="D1:E2", dest_cell="A1")
     set_format(o.ws.Range("A1"), prop, value)
     with pytest.raises(ToolError, match="later edits"):
         o.call("office_undo", file=o.wb.Name)
@@ -297,7 +298,7 @@ def test_excel_format_edit_blocks_snapshot_undo_and_force_restores_it(office, pr
 
 def test_excel_format_signature_reads_each_whole_range_property_once(office, monkeypatch):
     from collections import Counter
-    from tests.history_fakes import Range
+    from tests.history_fakes import Range, RangeFormat
 
     reads = []
     for member in ("Font", "Interior"):
@@ -312,7 +313,7 @@ def test_excel_format_signature_reads_each_whole_range_property_once(office, mon
     entry = undo.Entry("excel_write_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1:B2"}])
     o.ws.format_reads.clear()
     undo.excel_fingerprint(o.excel, o.wb, entry)
-    assert Counter(o.ws.format_reads) == Counter({("A1:B2", prop): 1 for prop, _ in FORMAT_CHANGES})
+    assert Counter(o.ws.format_reads) == Counter({("A1:B2", prop): 1 for prop in RangeFormat.defaults})
     assert reads == [("A1:B2", "Font"), ("A1:B2", "Interior")]
 
 

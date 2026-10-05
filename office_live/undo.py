@@ -1,8 +1,10 @@
 """Сеансовая отмена: Word UndoRecord и собственные снимки Excel. В стеке нет COM-прокси."""
 
 import contextlib
+import ctypes
 import hashlib
 import json
+import os
 import re
 import time
 import uuid
@@ -16,6 +18,7 @@ from .registry import office_tool
 from .util import clean_word_text, parse_a1, to_com_grid, to_grid
 
 MARKER = "__OfficeLiveUndo"
+SESSION = uuid.uuid4().hex
 STACKS: dict[tuple, list] = {}
 _active = None  # доступ сериализован com.LOCK; живёт только внутри run_com
 
@@ -99,23 +102,55 @@ def _keep_sheet(wb):
             previous_book.Activate()
 
 
+def _process_alive(pid):
+    """При отказе доступа считаем процесс живым. На Windows os.kill(pid, 0) небезопасен."""
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel.CloseHandle.restype = wintypes.BOOL
+    handle = kernel.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() != 87  # ERROR_INVALID_PARAMETER: такого PID нет
+    try:
+        code = wintypes.DWORD()
+        return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
+    finally:
+        kernel.CloseHandle(handle)
+
+
 def _backup(app, token=None):
     """Находим по метке, а не по имени: закрытую книгу нельзя подменить новой одноимённой."""
     if token is None:
         xl.suspend_events(app, force=True)
-    for i in range(1, int(app.Workbooks.Count) + 1):
+    found = None
+    for i in range(int(app.Workbooks.Count), 0, -1):
         wb = app.Workbooks(i)
         if xl.is_undo_workbook(wb):
             value = str(wb.Names(MARKER).RefersTo)
-            if token is None or value == token:
-                return wb
+            owner = re.fullmatch(r'="([0-9]+):([0-9a-f]{32}):[0-9a-f]{32}"', value)
+            if owner is None:
+                continue  # старую/повреждённую метку нельзя безопасно приписать умершему процессу
+            pid, session = int(owner[1]), owner[2]
+            if pid == os.getpid() and session == SESSION:
+                if token is None or value == token:
+                    found = wb
+            elif not _process_alive(pid):
+                with _internal_events(app), _quiet(app):
+                    wb.Close(False)
+    if found is not None:
+        return found
     if token is not None:
         raise ToolError("The hidden undo backup workbook was closed or is unavailable.")
     previous = app.ActiveWorkbook
     wb = None
     try:
         wb = app.Workbooks.Add(-4167)  # одна пустая таблица; не пользовательский шаблон
-        wb.Names.Add(MARKER, f'="{uuid.uuid4().hex}"', False)
+        wb.Names.Add(MARKER, f'="{os.getpid()}:{SESSION}:{uuid.uuid4().hex}"', False)
         wb.Windows(1).Visible = False
         wb.Saved = True
         return wb
@@ -173,7 +208,115 @@ def _format_state(rng):
     # По одному чтению каждого свойства всего диапазона; None для смешанного оформления допустим.
     font, interior = rng.Font, rng.Interior
     return [rng.NumberFormat, font.Name, font.Size, font.Bold, font.Italic, font.Underline, font.Color,
-            interior.Color, interior.Pattern, rng.HorizontalAlignment, rng.VerticalAlignment, rng.WrapText, rng.MergeCells]
+            interior.Color, interior.Pattern, rng.HorizontalAlignment, rng.VerticalAlignment, rng.WrapText, rng.MergeCells,
+            font.Strikethrough, font.Subscript, font.Superscript, font.OutlineFont, font.Shadow, font.TintAndShade,
+            interior.PatternColor, interior.TintAndShade, interior.PatternTintAndShade,
+            rng.ShrinkToFit, rng.IndentLevel, rng.Orientation, rng.ReadingOrder, rng.AddIndent, rng.Locked, rng.FormulaHidden,
+            [[rng.Borders(i).LineStyle, rng.Borders(i).Weight, rng.Borders(i).Color,
+              *_optional_state(rng.Borders(i), ("ThemeColor", "TintAndShade"))] for i in range(5, 13)],
+            _optional_state(font, ("ThemeColor",)), _optional_state(interior, ("ThemeColor", "PatternThemeColor")),
+            _property_state(rng, "Style")]
+
+
+def _optional_state(obj, names):
+    out = []
+    for name in names:
+        try:
+            out.append(getattr(obj, name))
+        except (pywintypes.com_error, AttributeError):
+            out.append(None)  # например Formula2 отсутствует у правила с одним операндом
+    return out
+
+
+def _metadata_state(rng, mode="all"):
+    """Метаданные, которые переносит Copy/PasteSpecial; читаем только выбранный диапазон."""
+    state = []
+    if mode in {"all", "formats"}:
+        rules = rng.FormatConditions
+        for i in range(1, int(rules.Count) + 1):
+            rule = rules(i)
+            state.append([int(rule.Type), xl.addr_of(rule.AppliesTo),
+                          _optional_state(rule, ("Priority", "StopIfTrue", "Formula1", "Formula2", "Operator", "Text", "TextOperator", "DateOperator",
+                                                 "Rank", "Percent", "TopBottom", "AboveBelow", "NumStdDev", "DupeUnique"))])
+            for member, props in (("Font", ("Name", "Size", "Bold", "Italic", "Underline", "Strikethrough", "Color")),
+                                  ("Interior", ("Color", "Pattern", "PatternColor"))):
+                try:
+                    state.append(_optional_state(getattr(rule, member), props))
+                except (pywintypes.com_error, AttributeError):
+                    state.append(None)
+    if mode in {"all", "comments", "validation"}:
+        for cell_type, member in ((-4144, "Comment"), (-4174, "Validation")):
+            if mode != "all" and member.lower() != mode.removesuffix("s"):
+                continue
+            try:
+                selected = rng.SpecialCells(cell_type)
+            except pywintypes.com_error:
+                continue  # Excel: no cells found
+            selected = rng.Worksheet.Parent.Application.Intersect(rng, selected)
+            if selected is None:
+                continue
+            r1, c1, r2, c2 = xl.bounds(rng)
+            for cell in selected.Cells:
+                # SpecialCells у одиночной ячейки может искать по всему UsedRange.
+                if not (r1 <= int(cell.Row) <= r2 and c1 <= int(cell.Column) <= c2):
+                    continue
+                obj = getattr(cell, member)
+                if member == "Comment":
+                    value = [obj.Text(), obj.Author, obj.Visible]
+                else:
+                    value = _optional_state(obj, ("Type", "AlertStyle", "Operator", "Formula1", "Formula2", "IgnoreBlank", "InCellDropdown",
+                                                   "ShowError", "ErrorTitle", "ErrorMessage", "ShowInput", "InputTitle", "InputMessage"))
+                state.append([xl.addr_of(cell), member, value])
+    if mode == "all":
+        links = rng.Hyperlinks
+        state.append([[xl.addr_of(links(i).Range), links(i).Address, links(i).SubAddress, links(i).ScreenTip, links(i).TextToDisplay]
+                      for i in range(1, int(links.Count) + 1)])
+    return state
+
+
+def _property_object(rng, path):
+    parts = path.split(".")
+    for name in parts[:-1]:
+        rng = rng.Borders(int(name[7:])) if name.startswith("Borders") else getattr(rng, name)
+    return rng, parts[-1]
+
+
+def _property_state(rng, path):
+    obj, name = _property_object(rng, path)
+    try:
+        value = getattr(obj, name)
+    except pywintypes.com_error:
+        if name in {"ThemeColor", "PatternThemeColor"}:
+            return {"undefined": True}  # явный RGB не имеет номера цвета темы
+        raise
+    if path == "Style" and value is not None and not isinstance(value, str):
+        value = value.Name
+    if value is not None:
+        return {"value": value}
+    # Смешанное свойство восстанавливается по ячейкам, а не присваиванием COM Null всему диапазону.
+    r1, c1, r2, c2 = xl.bounds(rng)
+    cells = []
+    for r in range(r1, r2 + 1):
+        for c in range(c1, c2 + 1):
+            obj, name = _property_object(rng.Worksheet.Cells(r, c), path)
+            value = getattr(obj, name)
+            if path == "Style" and value is not None and not isinstance(value, str):
+                value = value.Name
+            cells.append((r, c, value))
+    return {"cells": cells}
+
+
+def _restore_properties(rng, properties):
+    for path, data in properties.items():
+        if "undefined" in data:
+            continue  # RGB/ColorIndex восстанавливается отдельным свойством
+        if "value" in data:
+            obj, name = _property_object(rng, path)
+            setattr(obj, name, data["value"])
+        else:
+            for r, c, value in data["cells"]:
+                obj, name = _property_object(rng.Worksheet.Cells(r, c), path)
+                setattr(obj, name, value)
 
 
 def _repair_formulas(rng, formulas, formula_property="Formula"):
@@ -214,7 +357,7 @@ class Entry:
         self.reason = str(reason)[:300]
 
 
-def _snapshots(app, wb, entry, ranges):
+def _snapshots(app, wb, entry, ranges, *, columns=False, rows=False, restore="all", properties=()):
     ranges = list(ranges)
     if any(rng.Worksheet.Name == journal.LOG_SHEET for rng in ranges) and journal.sheet_enabled(wb):
         entry.barrier("The service log sheet is not recorded by undo.")
@@ -229,7 +372,10 @@ def _snapshots(app, wb, entry, ranges):
         try:
             for rng in ranges:
                 prop, formulas = _formula_state(rng)
-                data = {**_area(rng), **_dimensions(rng), "formulas": formulas, "formula_property": prop}
+                copy_columns = entry.tool == "excel_copy_range" and restore == "all" and int(rng.Rows.Count) == int(rng.Worksheet.Rows.Count)
+                copy_rows = entry.tool == "excel_copy_range" and restore == "all" and int(rng.Columns.Count) == int(rng.Worksheet.Columns.Count)
+                data = {**_area(rng), **_dimensions(rng, columns or copy_columns, rows or copy_rows), "formulas": formulas, "formula_property": prop,
+                        "restore": restore, "properties": {p: _property_state(rng, p) for p in properties}}
                 saved = backup.Worksheets.Add(None, backup.Sheets(backup.Sheets.Count))
                 entry.backup_sheets.append(saved.Name)
                 data["backup_sheet"] = saved.Name
@@ -287,20 +433,30 @@ def excel_fingerprint(app, wb, entry):
     state = []
     if entry.structural:
         # Создание/удаление служебного журнала между вызовами не является чужой правкой.
-        state.append([name for name in xl.sheet_names(wb, any_type=True) if name != journal.LOG_SHEET])
+        state.append([name for name in xl.sheet_names(wb, any_type=True)
+                      if name.casefold() != journal.LOG_SHEET.casefold() or not journal.owns_sheet(wb.Sheets(name))])
     for area in entry.areas:
         rng = _range(wb, area)
-        state.append([area, _formula_state(rng), _format_state(rng)])
+        ops = [op for op in entry.ops if op["op"] == "range" and _area(rng) == {k: op[k] for k in ("sheet", "address")}]
+        modes = {op.get("restore", "all") for op in ops} or {"all"}
+        state.append([area, _formula_state(rng) if modes & {"all", "contents"} else None,
+                      _format_state(rng) if modes & {"all", "formats"} else None])
+        for mode in modes & {"all", "formats", "comments", "validation"}:
+            state.append(_metadata_state(rng, mode))
     for name in entry.used:
-        rng = wb.Worksheets(name).UsedRange
+        ws = wb.Worksheets(name)
+        rng = ws.UsedRange
         if _size(rng) > config.SETTINGS.undo_max_cells:
             raise ToolError("The affected sheet exceeds the undo fingerprint size limit.")
-        state.append([name, xl.addr_of(rng), _formula_state(rng)])
+        state.append([name, xl.addr_of(rng), _formula_state(rng), _format_state(rng),
+                      int(ws.Shapes.Count), int(ws.ListObjects.Count), int(rng.FormatConditions.Count)])
     for op in entry.ops:
         what = op["op"]
-        if what == "dimensions":
+        if what in {"dimensions", "range"}:
             rng = _range(wb, op)
             state.append(_dimensions(rng, bool(op["widths"]), bool(op["heights"]), explicit=True))
+            if what == "range":
+                state.append({p: _property_state(rng, p) for p in op.get("properties", {})})
         elif what == "hidden":
             ws = wb.Worksheets(op["sheet"])
             coll = ws.Rows if op["axis"] == "rows" else ws.Columns
@@ -319,7 +475,34 @@ def excel_fingerprint(app, wb, entry):
 
 def _simple_range(app, wb, entry, args):
     _, rng = xl.get_range(wb, args.get("sheet", ""), args.get("cells", args.get("cell", "")))
-    _snapshots(app, wb, entry, [rng])
+    if entry.tool == "excel_clear_range" and args.get("what", "contents").lower() == "contents":
+        _snapshots(app, wb, entry, [rng], restore="contents")
+    elif entry.tool == "excel_manage_comments" or (entry.tool == "excel_clear_range" and args.get("what", "").lower() == "comments"):
+        _snapshots(app, wb, entry, [rng], restore="comments")
+    elif entry.tool == "excel_data_validation":
+        _snapshots(app, wb, entry, [rng], restore="validation")
+    elif entry.tool == "excel_conditional_format" or (entry.tool == "excel_clear_range" and args.get("what", "").lower() == "formats"):
+        _snapshots(app, wb, entry, [rng], restore="formats")
+    elif entry.tool == "excel_format_range" and args.get("style") is None:
+        mapping = {"bold": "Font.Bold", "italic": "Font.Italic", "underline": "Font.Underline", "strikethrough": "Font.Strikethrough",
+                   "font_name": "Font.Name", "font_size": "Font.Size", "number_format": "NumberFormat",
+                   "horizontal_alignment": "HorizontalAlignment", "vertical_alignment": "VerticalAlignment", "wrap_text": "WrapText",
+                   "shrink_to_fit": "ShrinkToFit", "indent": "IndentLevel", "text_rotation": "Orientation"}
+        properties = [p for key, p in mapping.items() if args.get(key) is not None]
+        if args.get("font_color") is not None:
+            properties += ["Font.Color", "Font.ThemeColor", "Font.TintAndShade"]
+        if args.get("fill_color") is not None:
+            properties += ["Interior.Color", "Interior.ThemeColor", "Interior.TintAndShade", "Interior.Pattern"]
+        if args.get("borders") is not None:
+            from .excel_format import EDGES, _border_plan
+
+            edges = _border_plan(rng, args["borders"].lower(), args.get("border_style", "thin").lower(), args.get("border_color", "#000000"))[0]
+            properties += [f"Borders{EDGES[edge]}.{p}" for edge in edges for p in ("Color", "ThemeColor", "TintAndShade", "Weight", "LineStyle")]
+        _snapshots(app, wb, entry, [rng], restore="properties", properties=properties)
+    elif entry.tool == "excel_format_range":
+        _snapshots(app, wb, entry, [rng], restore="formats")
+    else:
+        _snapshots(app, wb, entry, [rng])
 
 
 def _write_range(app, wb, entry, args):
@@ -330,7 +513,7 @@ def _write_range(app, wb, entry, args):
     if entry.tool == "excel_write_range" or not isinstance(value, str):
         grid = to_com_grid(value)
         rng, _ = _prepare_target(ws, rng, len(grid), len(grid[0]))
-    _snapshots(app, wb, entry, [rng])
+    _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
 
 
 def _autofill(app, wb, entry, args):
@@ -346,7 +529,7 @@ def _replace(app, wb, entry, args):
     ws, rng = xl.get_range(wb, args.get("sheet", ""), args.get("cells", ""))
     rng = xl.clip_to_used(app, ws, rng)
     if rng is not None:
-        _snapshots(app, wb, entry, [rng])
+        _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
 
 
 def _dimensions_plan(app, wb, entry, args):
@@ -395,7 +578,7 @@ def _rows_columns(app, wb, entry, args):
     deleting = entry.tool == "excel_delete_rows_columns"
     entry.ops.append({"op": "insert_lines" if deleting else "delete_lines", **_area(rng)})
     if deleting:
-        _snapshots(app, wb, entry, [rng])
+        _snapshots(app, wb, entry, [rng], columns=args["axis"].lower() == "columns", rows=args["axis"].lower() == "rows")
         entry.warning = f"Undo restores the deleted {args['axis'].lower()}, but formulas elsewhere that referred to them stay #REF!."
 
 
@@ -519,7 +702,10 @@ def _bridge(app, wb, entry, args):
                 rows += 1
     ws = xl.pick_sheet(wb, args.get("sheet", ""))
     rng, _ = _prepare_target(ws, ws.Range(args.get("top_left", "A1")), rows, cols)
-    _snapshots(app, wb, entry, [rng])
+    _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
+    if entry.tool == "bridge_word_text_to_excel" or args.get("header_bold", True):
+        r1, c1, _, c2 = xl.bounds(rng)
+        _snapshots(app, wb, entry, [xl.sub_range(ws, r1, c1, r1, c2)], restore="properties", properties=("Font.Bold",))
 
 
 RESOLVERS = dict.fromkeys((
@@ -540,7 +726,10 @@ RESOLVERS.update({
 def _finish_excel(wb, entry, result):
     for op in entry.ops:
         what = op["op"]
-        if what == "delete_created_sheet":
+        if what == "range":
+            rng = _range(wb, op)
+            op["properties"] = {p: before for p, before in op.get("properties", {}).items() if before != _property_state(rng, p)}
+        elif what == "delete_created_sheet":
             before = op.pop("before")
             created = [n for n in xl.sheet_names(wb, any_type=True) if n not in before]
             if len(created) != 1:
@@ -564,10 +753,25 @@ def restore_excel(app, wb, entry):
         what = op["op"]
         if what == "range":
             target = _range(wb, op)
-            target.UnMerge()  # снимок сам вернёт старые объединения; текущие мешают Copy
-            backup.Worksheets(op["backup_sheet"]).Range(op["address"]).Copy(target)
+            mode = op.get("restore", "all")
+            if mode == "all":
+                target.UnMerge()  # снимок сам вернёт старые объединения; текущие мешают Copy
+                backup.Worksheets(op["backup_sheet"]).Range(op["address"]).Copy(target)
+            elif mode in {"contents", "formats", "comments", "validation"}:
+                backup.Worksheets(op["backup_sheet"]).Range(op["address"]).Copy()
+                try:
+                    paste = {"contents": -4123, "formats": -4122, "comments": -4144, "validation": 6}[mode]
+                    if mode == "comments":
+                        target.ClearComments()
+                    elif mode == "validation":
+                        target.Validation.Delete()
+                    target.PasteSpecial(paste, -4142, False, False)
+                finally:
+                    app.CutCopyMode = False
+            _restore_properties(target, op.get("properties", {}))
             _restore_dimensions(target.Worksheet, op)
-            _repair_formulas(target, op["formulas"], op["formula_property"])
+            if mode in {"all", "contents"}:
+                _repair_formulas(target, op["formulas"], op["formula_property"])
         elif what == "dimensions":
             _restore_dimensions(wb.Worksheets(op["sheet"]), op)
         elif what == "hidden":
@@ -719,7 +923,9 @@ class Recording:
         if args.get("move"):
             entry.warning = "Undo restores the source and destination cells, but formulas elsewhere that pointed to the moved cells keep pointing to the destination."
         if key == dest_key:
-            _snapshots(app, wb, entry, [dest, source] if args.get("move") else [dest])
+            mode = "contents" if args.get("what", "all").lower() in {"values", "formulas"} else "formats" if args.get("what", "all").lower() == "formats" else "all"
+            _snapshots(app, wb, entry, [dest, source] if args.get("move") else [dest], restore=mode,
+                       properties=("NumberFormat",) if mode == "contents" else ())
         else:
             de = Entry(self.tool, f"{dest_ws.Name}!{xl.addr_of(dest)}", "workbook")
             de.warning = entry.warning
@@ -729,7 +935,8 @@ class Recording:
                 for item in (entry, de):
                     item.barrier("Combined source and destination exceeds OFFICE_LIVE_UNDO_MAX_CELLS")
                 return
-            _snapshots(da, dw, de, [dest])
+            mode = "contents" if args.get("what", "all").lower() in {"values", "formulas"} else "formats" if args.get("what", "all").lower() == "formats" else "all"
+            _snapshots(da, dw, de, [dest], restore=mode, properties=("NumberFormat",) if mode == "contents" else ())
             if args.get("move"):
                 _snapshots(app, wb, entry, [source])
             else:

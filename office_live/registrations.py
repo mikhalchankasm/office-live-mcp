@@ -66,7 +66,13 @@ def fingerprint(entry) -> str:
 
 
 def same_path(a, b) -> bool:
-    return os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b))
+    if os.path.normcase(os.path.abspath(a)) == os.path.normcase(os.path.abspath(b)):
+        return True
+    # Короткие имена 8.3 (C:\Users\RUNNER~1\…): frozen sys.executable бывает в той форме, в которой exe запустили.
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except (OSError, ValueError):
+        return False
 
 
 def identity() -> tuple[str, list[str], str]:

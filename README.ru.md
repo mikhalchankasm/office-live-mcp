@@ -1,6 +1,6 @@
 # Office Live MCP
 
-[![CI](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/ci.yml)
+[![CI](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/checks.yml/badge.svg)](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/checks.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
 ![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)

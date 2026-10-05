@@ -79,7 +79,7 @@ def test_keep_preserves_settings_and_does_not_add_detected(copied, capsys):
     assert path.read_bytes() == before
     assert not Path(reg.target("cursor")["path"]).exists()
     assert result["smoke_tools"] == 114
-    assert json.loads((copied / install.MARKER).read_text())["version"] == __version__
+    assert json.loads((copied / install.MARKER).read_text(encoding="utf-8"))["version"] == __version__
     assert (copied / "app" / MANIFEST).exists() and Path(read_state()["root"]) == copied
 
 
@@ -158,7 +158,7 @@ def test_bad_selection_is_rejected_before_smoke_or_writes(copied, capsys, monkey
 def test_modified_registration_reports_problem_without_overwriting(copied, capsys):
     connect("codex")
     path = Path(reg.target("codex")["path"])
-    path.write_text(path.read_text() + "timeout = 99\n")
+    path.write_text(path.read_text(encoding="utf-8") + "timeout = 99\n", encoding="utf-8")
     before = path.read_bytes()
     capsys.readouterr()
     result = post(capsys, "--clients", "none", expected=1)

@@ -51,12 +51,14 @@ def _open_temporary_copy(app, path, previous):
                                      "__office_live_no_password__", 0, None, True, False, None, True)
         try:
             doc.Windows(1).Visible = False
-            if previous is not None:
-                previous.Activate()
         except (pywintypes.com_error, ToolError):
             with contextlib.suppress(pywintypes.com_error, ToolError):
                 doc.Close(0)
             raise
+        if previous is not None:
+            # вернуть окно пользователя — желательно, но не ценой сравнения: копия уже спрятана
+            with contextlib.suppress(pywintypes.com_error, ToolError):
+                previous.Activate()
         return doc
     finally:
         app.ScreenUpdating = updating

@@ -27,4 +27,5 @@ exe = EXE(
     console=True,  # stdio-сервер MCP и консольный установщик
     upx=False,  # UPX чаще вызывает ложные срабатывания антивирусов
 )
-coll = COLLECT(exe, a.binaries, a.datas, name="office-live-mcp", upx=False)
+link_exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="office-live-link", console=False, upx=False)
+coll = COLLECT(exe, link_exe, a.binaries, a.datas, name="office-live-mcp", upx=False)

@@ -991,3 +991,17 @@ def test_word_fingerprint_ignores_spellcheck_marks_and_edit_session_ids():
     assert undo.word_fingerprint(noisy) == base
     bold = doc('<w:p w:rsidR="00A1"><w:r><w:rPr><w:b/></w:rPr><w:t>Hello</w:t></w:r></w:p>')
     assert undo.word_fingerprint(bold) != base
+
+
+def test_manage_names_formula_is_localized_for_names_add(office):
+    o = office
+    seen = []
+    add = o.wb.Names.Add
+
+    def recording(name, formula, visible=True, /):
+        seen.append(formula)
+        return add(name, formula, visible)
+
+    o.wb.Names.Add = recording
+    o.call("excel_manage_names", workbook=o.wb.Name, action="add", name="Dyn", formula="=SUM(Data!$A$1,Data!$B$1)")
+    assert seen == ["=SUM(Data!$A$1;Data!$B$1)"]

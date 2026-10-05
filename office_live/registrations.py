@@ -158,6 +158,8 @@ def render(spec, text, data, entry):
 
 
 def record_key(spec):
+    if spec.get("kind") == "protocol":
+        return "protocol", spec["path"], spec["name"]
     return os.path.normcase(os.path.abspath(spec["path"])), tuple(spec["keys"]), spec["name"]
 
 

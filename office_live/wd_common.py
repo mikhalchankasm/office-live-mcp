@@ -76,10 +76,9 @@ def _guard_document(app, doc, allow_autosave: bool = False):
                 f"AutoSave is ON for {doc.Name}: every change would be saved to the cloud file immediately, before the user can review it. "
                 "Ask the user to turn AutoSave off for this document (or start the server with OFFICE_LIVE_AUTOSAVE=allow)."
             )
-    if com.current_kind() in WRITE_KINDS:
-        from .undo import selected
+    from .undo import selected
 
-        selected("document", app, doc)
+    selected("document", app, doc)
     return app, doc
 
 
@@ -103,13 +102,13 @@ def active_document(app):
         return None
 
 
-def pick_document(name: str = "", launch: bool = False, allow_autosave: bool = False):
+def pick_document(name: str = "", launch: bool = False, allow_autosave: bool = False, *, exact_only: bool = False):
     """(app, document): точное имя / полный путь / уникальная подстрока / '' = активный.
 
     В строгом режиме для пишущих инструментов — только точное имя или полный путь.
     """
     _need_explicit(name)
-    strict = _strict_write()
+    strict = _strict_write() or exact_only
     name = (name or "").strip()
     apps = com.apps("word", launch)
     pairs, outside = [], 0

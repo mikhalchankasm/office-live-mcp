@@ -34,6 +34,25 @@ def isolated_profile(tmp_path, monkeypatch, request):
         monkeypatch.setenv(key, str(tmp_path / part))
 
 
+@pytest.fixture(autouse=True)
+def fake_registry(monkeypatch, request):
+    if "live" in request.keywords:
+        return
+    import winreg
+
+    from office_live import protocol
+    from tests.registry_fake import FakeRegistry
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unit tests must never write to the native registry")
+
+    for name in ("CreateKey", "CreateKeyEx", "SetValue", "SetValueEx", "DeleteKey", "DeleteKeyEx", "DeleteValue", "LoadKey", "SaveKey"):
+        monkeypatch.setattr(winreg, name, forbidden)
+    registry = FakeRegistry()
+    monkeypatch.setattr(protocol, "Registry", lambda: registry)
+    return registry
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: needs real Excel/Word (set OFFICE_LIVE_LIVE_TESTS=1)")
 

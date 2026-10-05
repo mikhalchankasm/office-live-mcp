@@ -180,6 +180,7 @@ def install_cmd(args: list[str]) -> int:
     p.add_argument("--target", default="", help="папка установки (по умолчанию %%LOCALAPPDATA%%\\Programs\\office-live-mcp)")
     p.add_argument("--new-location", action="store_true", help="разрешить другую папку при уже существующей установке (старую копию не удаляет)")
     p.add_argument("--dry-run", action="store_true", help="показать план без копирования, проверочных запусков и записи настроек")
+    p.add_argument("--no-links", action="store_true", help="пропустить регистрацию officelive:// (не обращаться к реестру схемы)")
     p.add_argument("--pause", action="store_true", help="в конце ждать Enter (запуск двойным щелчком)")
     ns, setup_args = p.parse_known_args(args)
     try:
@@ -251,6 +252,10 @@ def _install(ns, setup_args: list[str]) -> int:
             if path.is_file():
                 print(f"ПЛАН: скопировать {path} → {app / path.relative_to(source)}")
         print(f"ПЛАН: проверить EXE/MCP до и после переключения; записать {root / MARKER}, манифест и {state_path()}")
+        if not ns.no_links:
+            from .protocol import configure
+
+            configure(dry_run=True, server=(str(app / EXE_NAME), []), allowed_dirs=_link_dirs(setup_args))
         if updating and not any(a == "--clients" or a.startswith("--clients=") for a in setup_args):
             print("ПЛАН: сохранить все регистрации и их настройки; новые клиенты не добавляются.")
             return 0
@@ -299,6 +304,10 @@ def _install(ns, setup_args: list[str]) -> int:
         _cleanup_leftovers(root)
 
     _step(5, total, "Подключение ИИ-агентов")
+    if not ns.no_links:
+        from .protocol import configure
+
+        configure(server=(str(exe), []), allowed_dirs=_link_dirs(setup_args))
     if updating and not any(a == "--clients" or a.startswith("--clients=") for a in setup_args):
         print("Существующие регистрации и их настройки сохранены. Новых клиентов можно добавить через setup --clients …")
         rc = 0
@@ -308,6 +317,14 @@ def _install(ns, setup_args: list[str]) -> int:
     target = f' --target "{root}"' if ns.target else ""
     print(f'Обновить: запустить install.cmd из нового архива.  Удалить: "{exe}" uninstall{target}')
     return rc
+
+
+def _link_dirs(args):
+    """Only the explicit link policy; updating without it preserves the previous policy."""
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--allowed-dirs", default=None)
+    ns, _ = p.parse_known_args(args)
+    return ns.allowed_dirs.split(";") if ns.allowed_dirs is not None else None
 
 
 def uninstall_cmd(args: list[str]) -> int:
@@ -356,6 +373,13 @@ def _uninstall(ns) -> int:
     blocked, failures = [], []
     for spec in specs:
         try:
+            if spec.get("kind") == "protocol":
+                from .protocol import configure
+
+                if not configure(False, dry_run=ns.dry_run, server=(command, [])):
+                    failures.append(spec["path"])
+                    blocked.append(spec["path"])
+                continue
             _, _, current = reg.read_entry(spec)
             dependent = current is not None and reg.belongs(current, command, [])
             if current is not None and not dependent:

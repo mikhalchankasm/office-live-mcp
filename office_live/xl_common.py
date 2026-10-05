@@ -82,6 +82,9 @@ def _guard_workbook(app, wb, allow_autosave: bool = False):
     """Проверки перед пишущим вызовом: AutoSave (правки сохраняются сами и не проходят проверку пользователем) и события Excel."""
     com.note_target(f"workbook:{workbook_path(wb) or wb.Name}")
     if com.current_kind() not in WRITE_KINDS:
+        from .undo import selected
+
+        selected("workbook", app, wb)
         return app, wb
     if not allow_autosave and config.SETTINGS.autosave == "block":
         try:
@@ -111,13 +114,13 @@ def all_workbooks(launch: bool = False) -> list:
     return pairs
 
 
-def pick_workbook(name: str = "", launch: bool = False, allow_autosave: bool = False):
+def pick_workbook(name: str = "", launch: bool = False, allow_autosave: bool = False, *, exact_only: bool = False):
     """(app, workbook): точное имя / полный путь / уникальная подстрока / '' = активная.
 
     В строгом режиме для пишущих инструментов — только точное имя или полный путь.
     """
     _need_explicit(name, "Workbook")
-    strict = _strict_write()
+    strict = _strict_write() or exact_only
     name = (name or "").strip()
     apps = com.apps("excel", launch)
     pairs, outside = [], 0
@@ -169,7 +172,7 @@ def sheet_names(wb, any_type: bool = False) -> list[str]:
     return [coll(i).Name for i in range(1, coll.Count + 1)]
 
 
-def pick_sheet(wb, name: str = "", any_type: bool = False):
+def pick_sheet(wb, name: str = "", any_type: bool = False, *, exact_only: bool = False):
     """Лист по имени ('' = активный). any_type=True — включая листы диаграмм."""
     coll = wb.Sheets if any_type else wb.Worksheets
     if _strict_write() and not (name or "").strip():
@@ -185,7 +188,7 @@ def pick_sheet(wb, name: str = "", any_type: bool = False):
     for i, nm in enumerate(names, start=1):
         if nm.lower() == low:
             return coll(i)
-    if not _strict_write():
+    if not _strict_write() and not exact_only:
         subs = [i for i, nm in enumerate(names, start=1) if low in nm.lower()]
         if len(subs) == 1:
             return coll(subs[0])

@@ -387,6 +387,28 @@ def smart_number(text: str, decimal_sep: str = ",") -> float | int | None:
     return int(num) if "." not in plain else num
 
 
+DATE_FORMATS = {"DD.MM.YYYY": "%d.%m.%Y", "DD/MM/YYYY": "%d/%m/%Y", "MM/DD/YYYY": "%m/%d/%Y",
+                "YYYY-MM-DD": "%Y-%m-%d", "DD-MM-YYYY": "%d-%m-%Y", "YYYY.MM.DD": "%Y.%m.%d"}
+DATE_FORMATS.update({base + suffix: fmt + code for base, fmt in list(DATE_FORMATS.items())
+                     for suffix, code in ((" HH:MM", " %H:%M"), (" HH:MM:SS", " %H:%M:%S"))})
+
+
+def excel_date_serial(text, date_format, date1904=False):
+    """Strict fixed-width date, with Excel's 1900 leap-year bug and 1904 epoch."""
+    pattern = re.sub(r"YYYY|DD|MM|HH|SS", lambda m: r"[0-9]{4}" if m[0] == "YYYY" else r"[0-9]{2}", re.escape(date_format))
+    if not re.fullmatch(pattern, text):
+        return None
+    try:
+        value = datetime.datetime.strptime(text, DATE_FORMATS[date_format])
+    except ValueError:
+        return None
+    epoch = datetime.datetime(1904, 1, 1) if date1904 else datetime.datetime(1899, 12, 31)
+    if value < (epoch if date1904 else datetime.datetime(1900, 1, 1)):
+        return None
+    days = (value - epoch).days + int(not date1904 and value >= datetime.datetime(1900, 3, 1))
+    return days + (value.hour * 3600 + value.minute * 60 + value.second) / 86400
+
+
 def cell_kind(v) -> str:
     """Тип значения ячейки для отчётов: empty | bool | number | date | time | text | error."""
     if v is None or v == "":

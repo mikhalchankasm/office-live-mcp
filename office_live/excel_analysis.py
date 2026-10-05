@@ -28,6 +28,37 @@ from .xl_common import (
 MISSING = pythoncom.Missing
 
 
+@office_tool("excel_analysis", "read", title="Trace formula")
+def excel_trace_formula(workbook: str = "", sheet: str = "", cell: str = "", direction: str = "precedents",
+                        depth: int = 1, max_nodes: int = 200) -> dict:
+    """Trace formula references without selection changes, sheet activation, arrows or evaluation. Edges always point from input to consumer. Never treat complete=false as a full graph.
+
+    Args:
+        workbook, sheet: target workbook/sheet; empty selects the active one.
+        cell: required single cell.
+        direction: precedents (inputs) or dependents (consumers).
+        depth: 1..5, default 1; an unexpanded edge sets depth_limit.
+        max_nodes: 1..2000 including the root, default 200.
+
+    Uses DirectPrecedents/DirectDependents on the already active sheet plus a conservative formula tokenizer.
+    Supports A1 ranges, quoted sheets, range names and Table[Column]. Dependents scan Formula arrays once, at most 500000 cells across the workbook.
+    A separate budget of 2000000 reference containment checks bounds large dependent graphs (reference_check_limit).
+    Reports incomplete_reasons for inactive-sheet COM, ambiguous COM 1004, dynamic/external/3D/spill references, INDIRECT/OFFSET/INDEX/LET/LAMBDA,
+    formula names, unsupported structured references/syntax and limits. No external workbooks are opened.
+    """
+    from .formula_trace import Trace, validate_trace
+
+    validate_trace(direction, depth, max_nodes)
+    app, wb = pick_workbook(workbook)
+    _, original = get_range(wb, sheet, cell, empty_means_used=False)
+    if int(original.Areas.Count) != 1 or int(original.Rows.Count) * int(original.Columns.Count) != 1:
+        raise ToolError("cell must resolve to one cell (not a whole row/column).")
+    _, rng = bounded_range(app, wb, sheet, cell, 1)
+    if rng is None:
+        raise ToolError("cell must resolve to one cell.")
+    return {"workbook": wb.Name, "direction": direction, **Trace(app, wb, direction, depth, max_nodes).run(rng)}
+
+
 def _compare_text(value, ignore_case, ignore_whitespace):
     if isinstance(value, str):
         if ignore_whitespace:
@@ -240,6 +271,7 @@ def excel_compare_ranges(
     total = sum(summary["differences"].values())
     # списки строк «только в A/B» при сравнении по ключу растут со строками — режем тем же лимитом
     return {"summary": summary, "differences": differences, "truncated": total > len(differences), "remaining_differences": total - len(differences),
+            "target_a": {"workbook": wa.FullName, "sheet": sa.Name}, "target_b": {"workbook": wb.FullName, "sheet": sb.Name},
             "only_in_a": only_a[:max_differences], "only_in_b": only_b[:max_differences],
             "only_truncated": len(only_a) > max_differences or len(only_b) > max_differences,
             "headers_only_in_a": headers_only_a, "headers_only_in_b": headers_only_b}

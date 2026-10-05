@@ -1,7 +1,7 @@
 """Общие фикстуры и помощники живых тестов (реальные Excel/Word через настоящий MCP-протокол).
 
 Фикстуры создают СВОИ черновые книги/документы и закрывают только их (discard); приложения не закрываются, кроме Word,
-если его запустили сами тесты и в нём не осталось документов.
+и Excel, если их запустили сами тесты и в них не осталось документов/книг.
 """
 
 import tempfile
@@ -11,16 +11,31 @@ import uuid
 import pytest
 
 from tests.live.mcpclient import Stdio, ToolFailed
-from tests.live.office_cleanup import quit_word_if_idle, word_running
+from tests.live.office_cleanup import excel_pids, quit_excel_if_idle, quit_word_if_idle, word_running
+
+
+EXCEL_BEFORE: set[int] = set()  # процессы Excel до прогона (их не закрываем никогда)
+SESSION = {"started": False}
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _fresh_excel_between_modules(request):
+    yield
+    if SESSION["started"]:  # до запуска сервера список «чужих» процессов ещё не снят
+        quit_excel_if_idle(EXCEL_BEFORE, gdi_over=5000)
 
 
 @pytest.fixture(scope="session")
 def srv():
     word_was_running = word_running()  # Word пользователя не закрываем, даже пустой
+    excel_before = excel_pids()  # и Excel пользователя тоже
+    EXCEL_BEFORE.update(excel_before)
+    SESSION["started"] = True
     c = Stdio()
     yield c
     c.close()
     quit_word_if_idle(started_by_tests=not word_was_running)
+    quit_excel_if_idle(excel_before)
 
 
 # уникальна для этого запуска: файлы других запусков и пользователя не совпадут. Через окружение — потому что модуль

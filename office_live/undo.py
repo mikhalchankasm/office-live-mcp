@@ -14,6 +14,7 @@ import pywintypes
 
 from . import com, config, journal, wd_common as wd, xl_common as xl
 from .errors import PartialChangeError, ToolError
+from .privacy import redact
 from .registry import office_tool
 from .util import clean_word_text, parse_a1, to_com_grid, to_grid
 
@@ -388,7 +389,7 @@ class Entry:
 
 def _snapshots(app, wb, entry, ranges, *, columns=False, rows=False, restore="all", properties=()):
     ranges = list(ranges)
-    if any(rng.Worksheet.Name == journal.LOG_SHEET for rng in ranges) and journal.sheet_enabled(wb):
+    if any(journal.owns_sheet(rng.Worksheet) or (rng.Worksheet.Name == journal.LOG_SHEET and journal.sheet_enabled(wb)) for rng in ranges):
         entry.barrier("The service log sheet is not recorded by undo.")
         return
     size = sum(_size(rng) for rng in ranges)
@@ -520,7 +521,7 @@ def excel_fingerprint(app, wb, entry):
         modes = {op.get("restore", "all") for op in ops} or {"all"}
         state.append([area, _formula_state(rng) if modes & {"all", "contents"} else None,
                       _format_state(rng) if modes & {"all", "formats"} else None])
-        if entry.tool == "excel_clean_text":
+        if entry.tool in {"excel_clean_text", "excel_split_column"}:
             state.append([_property_state(rng, p) for p in ("NumberFormat", "PrefixCharacter")])
         for mode in modes & {"all", "formats", "comments", "validation"}:
             state.append(_metadata_state(rng, mode))
@@ -550,6 +551,12 @@ def excel_fingerprint(app, wb, entry):
             state.append(app.Calculation)
         elif what == "view":
             state.append(_view(app, wb, op["sheet"]))
+        elif what == "protection":
+            from .excel_format import _protection_state
+
+            target = wb.Worksheets(op["sheet"]) if op["scope"] == "sheet" else wb
+            state.append(_protection_state(target, op["scope"]))
+            state.extend(_property_state(target.Range(a), "Locked") for a in op["locked"])
     return _hash(state)
 
 
@@ -600,6 +607,27 @@ def _clean_text(app, wb, entry, args):
     _, rng = xl.bounded_range(app, wb, args["sheet"], args["cells"], 100000)
     if rng is not None:
         _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
+
+
+def _split_column(app, wb, entry, args):
+    rng = wb.Worksheets(args["_output_sheet"]).Range(args["_output_range"])
+    _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
+
+
+def _protection(app, wb, entry, args):
+    from .excel_format import PASSWORD_BARRIER, _protection_state
+
+    if args.get("_has_secret"):
+        entry.barrier(PASSWORD_BARRIER)
+        return
+    scope = args.get("scope", "sheet")
+    target = wb.Worksheets(args["_protection_sheet"]) if scope == "sheet" else wb
+    ranges = args.get("_locked_ranges", [])
+    if sum(_size(target.Range(a)) for a in ranges) > config.SETTINGS.undo_max_cells:
+        entry.barrier("Locked snapshot exceeds OFFICE_LIVE_UNDO_MAX_CELLS")
+        return
+    entry.ops.append({"op": "protection", "scope": scope, "sheet": args["_protection_sheet"],
+                      "state": _protection_state(target, scope), "locked": {a: _property_state(target.Range(a), "Locked") for a in ranges}})
 
 
 def _autofill(app, wb, entry, args):
@@ -675,7 +703,7 @@ def _add_sheet(app, wb, entry, args):
 
 def _delete_sheet(app, wb, entry, args):
     ws = xl.pick_sheet(wb, args["sheet"], any_type=True)
-    if ws.Name == journal.LOG_SHEET and journal.sheet_enabled(wb):
+    if journal.owns_sheet(ws) or (ws.Name == journal.LOG_SHEET and journal.sheet_enabled(wb)):
         entry.barrier("The service log sheet is not recorded by undo.")
         return
     rng = ws.UsedRange
@@ -801,6 +829,7 @@ RESOLVERS = dict.fromkeys((
 ), _simple_range)
 RESOLVERS.update({
     "excel_clean_text": _clean_text,
+    "excel_split_column": _split_column, "excel_protection": _protection,
     "excel_write_range": _write_range, "excel_set_formula": _write_range, "excel_autofill": _autofill,
     "excel_replace": _replace, "excel_set_dimensions": _dimensions_plan, "excel_hide_rows_columns": _hidden,
     "excel_insert_rows_columns": _rows_columns, "excel_delete_rows_columns": _rows_columns,
@@ -923,17 +952,32 @@ def restore_excel(app, wb, entry):
             _view(app, wb, op["sheet"], op["value"])
         elif what == "calculation":
             app.Calculation = op["value"]
+        elif what == "protection":
+            from .excel_format import _protect, _protected
+
+            target = wb.Worksheets(op["sheet"]) if op["scope"] == "sheet" else wb
+            try:
+                target.Unprotect("")
+                for address, value in op["locked"].items():
+                    _restore_properties(target.Range(address), {"Locked": value})
+                if _protected(op["state"], op["scope"]):
+                    _protect(target, op["scope"], "", op["state"])
+                if op["scope"] == "sheet":
+                    target.EnableSelection = op["state"]["enable_selection"]
+            except pywintypes.com_error:
+                raise ToolError("Excel rejected protection undo (the password or protection may have changed).") from None
 
 
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
             "excel_close_workbook", "word_close_document", "word_compare_documents"}
 
-DEFERRED = {"excel_clean_text", "word_sort_table"}
+DEFERRED = {"excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table"}
 
 
 class Recording:
     def __init__(self, tool, kind, arguments, supplied):
-        self.tool, self.kind, self.args, self.supplied = tool, kind, arguments, supplied
+        self.tool, self.kind, self.args, self.supplied = tool, kind, redact(arguments), redact(supplied)
+        self.args["_has_secret"] = any("password" in k.casefold() and bool(v) for k, v in arguments.items())
         self.targets = {}
         self.pending = {}
         self.records = []
@@ -1094,10 +1138,13 @@ class Recording:
                         entry.force_reason = f"Could not read the partial result: {exc}; pass force=true to restore the pre-call snapshot."
                     else:
                         entry.barrier(f"Could not finish undo snapshot: {exc}")
+        from .navigation import result_links
+
+        result_links(self, result)
         if self.kind in {"write", "destructive"} and self.tool != "office_undo":
             for key, (app, obj) in self.targets.items():
                 if key[0] == "workbook":
-                    warning = journal.append_sheet(app, obj, self.tool, self.supplied)
+                    warning = journal.append_sheet(app, obj, self.tool, self.supplied, links=result.get("links", []) if isinstance(result, dict) else [])
                     if warning and isinstance(result, dict):
                         result["log_sheet_warning"] = warning
         statuses = []
@@ -1153,7 +1200,7 @@ def selected(kind, app, obj):
         _active.target(kind, app, obj)
 
 
-def require_undo(kind, app, obj):
+def require_undo(kind, app, obj, *, plan=None, barrier_reason=""):
     """Новые операции начинаются только после проверок и успешной подготовки отмены."""
     if _active is None:
         raise ToolError("This operation requires the office_tool undo context.")
@@ -1161,13 +1208,25 @@ def require_undo(kind, app, obj):
         return  # отмена выключена владельцем (OFFICE_LIVE_UNDO=0): работаем, как остальные инструменты
     if not _active.enabled:
         raise ToolError("This operation requires the office_tool undo context.")
+    if plan:
+        _active.args.update(plan)
     _active.target(kind, app, obj, ready=True)
     entry = _active.pending.get(stack_key(kind, app, obj))
+    if entry is not None and barrier_reason and entry.reason == barrier_reason:
+        return  # explicitly chosen password barrier; snapshot failures are still refused
     if entry is None or not entry.undoable:
         if entry is not None:
             _drop(app, entry)
             _active.pending.pop(stack_key(kind, app, obj), None)
         raise ToolError("No changes made: could not prepare office_undo. " + (entry.reason if entry else "No snapshot."))
+
+
+def cancel_prepared(kind, app, obj):
+    """Only for a tool that has verified complete local rollback after a failed mutation."""
+    if _active is not None:
+        entry = _active.pending.pop(stack_key(kind, app, obj), None)
+        if entry is not None:
+            _drop(app, entry)
 
 
 def record_call(fn, args, kwargs, tool, kind, arguments, supplied):
@@ -1321,9 +1380,17 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
             peer_stack.pop()
             _drop(pa, pe)
             summary = f"отменено: {pe.tool} ({pe.where})"
-            journal.append([f"{pk[0]}:{identity(pk[0], po)}"], "office_undo", {}, where=pe.where, summary=summary)
+            from .navigation import undo_links
+
+            linked = undo_links(pa, po, pe)
+            places = linked.get("links", [])
+            if places:
+                existing = out.get("links", [])
+                combined = list({link["uri"]: link for link in [*existing, *places]}.values())
+                out.update(links=combined[:20], links_truncated=out.get("links_truncated", False) or linked.get("links_truncated", False) or len(combined) > 20)
+            journal.append([f"{pk[0]}:{identity(pk[0], po)}"], "office_undo", {}, where=pe.where, summary=summary, links=places)
             if pk[0] == "workbook":
-                warning = journal.append_sheet(pa, po, "office_undo", {}, where=pe.where, summary=summary)
+                warning = journal.append_sheet(pa, po, "office_undo", {}, where=pe.where, summary=summary, links=places)
                 if warning:
                     out["log_sheet_warning"] = warning
             if pe.warning:

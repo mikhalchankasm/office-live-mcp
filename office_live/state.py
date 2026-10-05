@@ -52,6 +52,16 @@ def read_state() -> dict:
                 or not isinstance(data.get("registrations"), list)):
             raise ValueError("неверная структура")
         for record in data["registrations"]:
+            if isinstance(record, dict) and record.get("kind") == "protocol":
+                from .protocol import KEY, PATH
+
+                if (record.get("path") != PATH or record.get("keys") != [KEY] or record.get("name") != "officelive"
+                        or record.get("client") != "protocol" or record.get("scope") != "user"
+                        or any(not isinstance(record.get(k), str) for k in ("command", "root", "fingerprint", "time"))
+                        or not Path(record["root"]).is_absolute() or not isinstance(record.get("allowed_dirs"), list)
+                        or any(not isinstance(d, str) or not Path(d).is_absolute() for d in record["allowed_dirs"])):
+                    raise ValueError("повреждена регистрация протокола")
+                continue
             if (not isinstance(record, dict)
                     or any(not isinstance(record.get(k), str) for k in ("client", "scope", "path", "name", "command", "root", "fingerprint", "time"))
                     or not isinstance(record.get("keys"), list) or not all(isinstance(k, str) for k in record["keys"])

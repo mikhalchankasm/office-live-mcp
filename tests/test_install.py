@@ -28,6 +28,7 @@ def bundle(tmp_path, monkeypatch):
     src = tmp_path / "unzipped" / "app"
     (src / "_internal").mkdir(parents=True)
     (src / install.EXE_NAME).write_text("exe v2", encoding="utf-8")
+    (src / "office-live-link.exe").write_text("GUI exe", encoding="utf-8")
     (src / "_internal" / "lib.pyd").write_text("lib v2", encoding="utf-8")
     monkeypatch.setattr(install, "frozen", lambda: True)
     monkeypatch.setattr(sys, "executable", str(src / install.EXE_NAME))
@@ -146,7 +147,7 @@ def test_legacy_custom_update_adopts_only_existing_registration(bundle):
     before = path.read_bytes()
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
     assert path.read_bytes() == before
-    assert [r["client"] for r in read_state()["registrations"]] == ["codex"]
+    assert [r["client"] for r in read_state()["registrations"]] == ["codex", "protocol"]
 
 
 def test_install_copies_the_program_checks_it_and_connects_agents(bundle):
@@ -206,6 +207,7 @@ def test_one_missing_office_app_is_only_a_warning(bundle, monkeypatch, capsys):
 def test_running_the_installed_exe_again_does_not_copy_onto_itself(bundle, monkeypatch):
     bundle.app.mkdir(parents=True)
     (bundle.app / install.EXE_NAME).write_text("installed", encoding="utf-8")
+    (bundle.app / "office-live-link.exe").write_text("installed GUI", encoding="utf-8")
     install._write_marker(bundle.root)
     monkeypatch.setattr(sys, "executable", str(bundle.app / install.EXE_NAME))
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
@@ -532,3 +534,14 @@ def test_packaged_cmd_long_path_warns_but_continues_in_isolated_profile(tmp_path
     assert "PROBE_CALLED install --yes" in result.stdout and str(profile) in result.stdout
     if warning:
         assert "shorter folder" in result.stdout and "Downloads" in result.stdout
+
+
+def test_install_no_links_skips_registry_entirely_and_dry_run_shows_protocol(bundle, fake_registry, capsys):
+    from office_live.state import read_state
+
+    assert install.install_cmd(["--target", str(bundle.root), "--clients", "none", "--dry-run"]) == 0
+    assert "HKCU\\Software\\Classes\\officelive" in capsys.readouterr().out
+    assert "write" not in fake_registry.calls and not read_state()["registrations"]
+    fake_registry.calls.clear()
+    assert install.install_cmd(["--target", str(bundle.root), "--clients", "none", "--yes", "--no-links"]) == 0
+    assert not fake_registry.calls and not read_state()["registrations"]

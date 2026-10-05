@@ -3,7 +3,7 @@
 from .registry import CATALOG, mcp  # noqa: F401
 
 # порядок важен только для порядка инструментов в tools/list
-from . import bridge, evaltool, excel_analysis, excel_core, excel_format, excel_pivot, journal, templates, undo, word_core, word_layout, word_tables  # noqa: F401,E402
+from . import bridge, evaltool, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, templates, undo, word_core, word_layout, word_tables  # noqa: F401,E402
 
 
 def main() -> None:

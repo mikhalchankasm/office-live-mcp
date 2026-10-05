@@ -3,7 +3,7 @@
 Сгенерировано командой `python -m office_live tools --markdown`. Описания — на английском: их читает агент.
 Вид `write (readonly: list)` — многоактный инструмент: в режиме `OFFICE_LIVE_MODE=readonly` доступны только перечисленные действия чтения.
 
-### excel_core (34)
+### excel_core (35)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -19,7 +19,8 @@
 | `excel_find` | read | Search cell values or formulas. Returns matching cells with their address and content. |
 | `excel_get_selection` | read | What the user currently has selected in Excel (active workbook/sheet/range) and the values in it. Use this for requests like 'format what I selected' or 'sum this column'. |
 | `excel_select_range` | ui | Activate a sheet and select (and scroll to) a range so the user sees it - useful to point at a result. |
-| `excel_clean_text` | write | Clean text constants with a preview by default; preserve formulas, literal text and leading-zero codes. Writes only changed cells in vertical runs, verifies their types, and supports office_undo even after a partial COM failure. |
+| `excel_clean_text` | write | Clean text constants or parse dates by an explicit format, with a preview by default; preserve formulas, literal text and leading-zero codes. Writes only changed cells in vertical runs, verifies their types, and supports office_undo even after a partial COM failure. |
+| `excel_split_column` | write | Split text constants in Python, preserving literal text; preview by default. Checks and snapshots the ENTIRE output rectangle before writing, with office_undo and partial-failure recovery. |
 | `excel_write_range` | write | Write a block of values. Pass a single top-left cell (e.g. 'B2') and the block is placed from there; rows shorter than the widest are padded with blanks; a single value fills the whole target range. Returns a read-back. |
 | `excel_set_formula` | write | Put formulas into a cell or fill a whole range. A single formula string assigned to a multi-cell range is filled like Excel's fill-down: relative references adjust per cell (write '=A2*B2' with cells='C2:C100'). A 2-D array assigns each cell its own formula. Dynamic-array formulas (SORT, FILTER, UNIQUE, SEQUENCE) spill normally. Returns computed values and any error cells. |
 | `excel_clear_range` | destructive | Clear parts of a range. |
@@ -42,10 +43,11 @@
 | `excel_create_from_template` | save | Make a new workbook as an exact copy of a sample file (all formatting, merged cells, column widths, conditional formats, formulas, named ranges, and macros are kept) and open it. The sample itself is never modified. Then clear the old data and write the new data. For .xlsm samples keep the .xlsm extension; macros stay disabled in the copy until the user enables them in Excel. |
 | `excel_autofill` | write | Do what dragging the fill handle does: extend a pattern from `source` over `dest` (which must contain `source`). Formulas adjust their relative references, numbers/dates continue as a series, formats are copied. Use it to carry a template row's formulas AND formatting down to new rows. |
 
-### excel_format (10)
+### excel_format (11)
 
 | Tool | Kind | What it does |
 |---|---|---|
+| `excel_protection` | write (readonly: status) | Inspect, protect or unprotect a sheet/workbook. Status is available in readonly mode. Passwords are redacted from journals, audit, errors and history; password operations create an undo barrier and never retain the password. |
 | `excel_format_range` | write | Format a range. Only the properties you pass are changed. Colors: '#RRGGBB' or a name (red, lightblue, lightgreen, lightyellow, ...); fill_color='none' removes the fill. |
 | `excel_get_format` | read | Read the formatting of a range. A property is reported as 'mixed' when the cells of the range differ - narrow the range to see each value. |
 | `excel_conditional_format` | write (readonly: list) | Add, list or clear conditional formatting ('highlight cells that ...'). |
@@ -131,10 +133,11 @@
 |---|---|---|
 | `office_run_python` | destructive | ADVANCED / DANGEROUS: run Python code with live COM objects when no dedicated tool covers a need. Predefined names: `excel` (Excel.Application or None), `wb` (workbook or None), `ws` (its active sheet), `word` (Word.Application or None), `doc` (document or None), `pythoncom`, `win32com`. Set `result = ...` to return a value; print() output is returned too. COM rules: pass arguments POSITIONALLY (no name=value), use None for skipped optional arguments, and avoid Range.Resize/Offset (they misbehave in late binding). Only available when the server was started with OFFICE_LIVE_ALLOW_EVAL=1. |
 
-### excel_analysis (14)
+### excel_analysis (15)
 
 | Tool | Kind | What it does |
 |---|---|---|
+| `excel_trace_formula` | read | Trace formula references without selection changes, sheet activation, arrows or evaluation. Edges always point from input to consumer. Never treat complete=false as a full graph. |
 | `excel_compare_ranges` | read | Compare two rectangles by position or unique row keys, across sheets, workbooks or Excel instances; never modifies either range. Reports values/types, formula text or five direct formats, with bounded differences. |
 | `excel_manage_tables` | write (readonly: list) | Work with Excel tables (the structured 'Format as Table' objects with filter buttons and auto-growing ranges). |
 | `excel_create_pivot_table` | write | Create a PivotTable ('сводная таблица') from a data block or an Excel table. The first row of the source must contain unique header names. |
@@ -150,9 +153,10 @@
 | `excel_manage_slicers` | write (readonly: list) | Create and drive slicers (clickable filter buttons, 'срезы') and date timelines for pivot tables and Excel tables. |
 | `excel_describe_layout` | read | Produce a BLUEPRINT of a sheet so it can be re-created with new data: where the title/header block ends (frozen rows), merged header cells, every column (header text, width, hidden, number format, data type, typical values, the formula it contains), the KINDS of data rows (e.g. section rows vs item rows - grouped by how they actually look on screen incl. conditional formatting - with examples and code patterns), conditional-format rules in English with their colors, hidden rows, tables/charts/pivots/validation/macros. Read it, then build the analogue. |
 
-### history (2)
+### history (3)
 
 | Tool | Kind | What it does |
 |---|---|---|
 | `office_journal` | write (readonly: read, status) | Read a document's on-disk change journal or enable/disable the optional Excel 'Лог' sheet. Pass exactly one workbook or document name/path. Read and status are available in read-only mode. |
+| `office_link` | read | Build a clickable officelive:// link for a plan or result. Checks an exact, already open local target and existing location without selecting or editing it. Clicking only navigates. A range requires an explicit sheet; Word accepts one paragraph interval, table or bookmark. |
 | `office_undo` | destructive (readonly: history) | Undo recent agent changes to an open workbook/document, or read the session's undo history. Stops at unsupported operations (barriers). Later user edits block undo unless force=true. In Word, force also undoes the user's later edits to reach the state before the agent change, up to 20 native steps per entry; reports native_steps and stops at a barrier if that state cannot be reached. Excel is tried first, then Word. |

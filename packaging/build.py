@@ -31,6 +31,11 @@ def smoke(exe: Path) -> int:
         readonly = check([str(exe)], {**env, "OFFICE_LIVE_MODE": "readonly"})
         if not 0 < readonly < count:
             raise RuntimeError(f"readonly: {readonly}, full: {count}; ожидалось сокращение каталога")
+        result = subprocess.run([str(exe.with_name("office-live-link.exe")), "open-link", "javascript:invalid"],
+                                env={**os.environ, **env, "OFFICE_LIVE_LINK_NO_DIALOG": "1"},
+                                stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+        if result.returncode == 0:
+            raise RuntimeError("GUI link handler accepted an invalid URI")
         return count
 
 

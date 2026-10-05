@@ -125,6 +125,15 @@ class Range:
     def HasSpill(self):
         return any(rc in self.Worksheet.spills for rc in self.positions()) if hasattr(self.Worksheet, "spills") else False
 
+    def _direct(self, direction):
+        app = self.Worksheet.Parent.Application
+        assert app.ActiveSheet is self.Worksheet, "Direct references need an already active sheet"
+        ranges = self.Worksheet.direct.get((direction, self.Address), [])
+        return NS(Worksheet=self.Worksheet, Areas=Collection(self.Worksheet.Range(a) for a in ranges))
+
+    DirectPrecedents = property(lambda self: self._direct("precedents"))
+    DirectDependents = property(lambda self: self._direct("dependents"))
+
     @property
     def PrefixCharacter(self):
         values = {self.Worksheet.prefixes.get(rc, "") for rc in self.positions()}
@@ -145,6 +154,15 @@ class Range:
     def Formula(self):
         values = tuple(tuple(self.Worksheet.data.get((r, c)) for c in range(self.Column, self.c2 + 1)) for r in range(self.Row, self.r2 + 1))
         return values[0][0] if self.Rows.Count == self.Columns.Count == 1 else values
+
+    @property
+    def FormulaLocal(self):  # русская запись: разделитель ';' (кавычки в фейковых формулах не встречаются)
+        value = self.Formula
+        return value.replace(",", ";") if isinstance(value, str) else value
+
+    @FormulaLocal.setter
+    def FormulaLocal(self, value):
+        self.Formula = value.replace(";", ",")
 
     @Formula.setter
     def Formula(self, value):
@@ -195,7 +213,7 @@ class Range:
 
     @property
     def Hyperlinks(self):
-        return Collection()
+        return Collection(h for h in self.Worksheet.Hyperlinks if h.Range.Address == self.Address)
 
     def SpecialCells(self, cell_type, /):
         assert cell_type in (-4144, -4174)
@@ -348,6 +366,13 @@ class Sheets(Collection):
         return sheet
 
 
+class Hyperlinks(Collection):
+    def Add(self, anchor, address, subaddress, screentip, text, /):
+        assert address == "" and subaddress.startswith("'")
+        anchor.Value = text
+        self.items.append(NS(Range=anchor, Address=address, SubAddress=subaddress, ScreenTip=screentip, TextToDisplay=text))
+
+
 class Sheet:
     def __init__(self, wb, name):
         self.Parent, self.Name = wb, name
@@ -356,6 +381,14 @@ class Sheet:
         self.data, self.columns, self.rows, self.formats = {}, {}, {}, {}
         self.prefixes, self.results, self.merges = {}, {}, []
         self.ProtectContents = False
+        self.ProtectDrawingObjects = self.ProtectScenarios = self.ProtectionMode = False
+        self.EnableSelection = 0
+        self.secret = ""
+        self.protection_calls = []
+        self.direct = {}
+        self.Protection = NS(**dict.fromkeys(("AllowFormattingCells", "AllowFormattingColumns", "AllowFormattingRows", "AllowInsertingColumns",
+                                             "AllowInsertingRows", "AllowInsertingHyperlinks", "AllowDeletingColumns", "AllowDeletingRows",
+                                             "AllowSorting", "AllowFiltering", "AllowUsingPivotTables"), False))
         self.StandardWidth = 8.43
         self.dimension_reads = []
         self.format_reads = []
@@ -366,6 +399,7 @@ class Sheet:
         self.pivots, self.Comments, self.CommentsThreaded = Collection(), Collection(), Collection()
         self.validations = set()
         self.Names = Names()
+        self.Hyperlinks = Hyperlinks()
         self.conditions = Collection()
         self.view = NS(SplitRow=0, SplitColumn=0, FreezePanes=False, Zoom=100, DisplayGridlines=True, DisplayHeadings=True, ScrollRow=1, ScrollColumn=1)
 
@@ -382,6 +416,23 @@ class Sheet:
 
     def Range(self, address):
         return Range(self, address)
+
+    def Protect(self, password, objects, contents, scenarios, ui, format_cells, format_columns, format_rows,
+                insert_columns, insert_rows, insert_hyperlinks, delete_columns, delete_rows, sort, filtering, pivot, /):
+        self.protection_calls.append("protect")
+        self.secret = password
+        self.ProtectDrawingObjects, self.ProtectContents, self.ProtectScenarios, self.ProtectionMode = objects, contents, scenarios, ui
+        for name, value in zip(vars(self.Protection), (format_cells, format_columns, format_rows, insert_columns, insert_rows,
+                                                     insert_hyperlinks, delete_columns, delete_rows, sort, filtering, pivot), strict=True):
+            setattr(self.Protection, name, value)
+
+    def Unprotect(self, password, /):
+        self.protection_calls.append("unprotect")
+        if password != self.secret:
+            raise pywintypes.com_error(-2147352567, "Wrong password: " + password, None, None)
+        self.ProtectContents = self.ProtectDrawingObjects = self.ProtectScenarios = self.ProtectionMode = False
+        for name in vars(self.Protection):
+            setattr(self.Protection, name, False)
 
     def PivotTables(self, /):
         return self.pivots
@@ -438,6 +489,8 @@ class Workbook:
     def __init__(self, app, name):
         self.Application, self.Name, self.FullName, self.Path = app, name, name, ""
         self.AutoSaveOn = self.ReadOnly = False
+        self.Date1904 = self.ProtectStructure = self.ProtectWindows = False
+        self.secret = ""
         self.Saved = True
         self.Names, self.SlicerCaches = Names(), Collection()
         self.Sheets = self.Worksheets = Sheets(self)
@@ -451,6 +504,14 @@ class Workbook:
     def Close(self, save):
         assert not save
         self.Application.Workbooks.items.remove(self)
+
+    def Protect(self, password, structure, windows, /):
+        self.secret, self.ProtectStructure, self.ProtectWindows = password, structure, windows
+
+    def Unprotect(self, password, /):
+        if password != self.secret:
+            raise pywintypes.com_error(-2147352567, "Wrong password: " + password, None, None)
+        self.ProtectStructure = self.ProtectWindows = False
 
 
 class Excel:
@@ -474,6 +535,12 @@ class Excel:
 
     def Calculate(self):
         pass
+
+    def Goto(self, rng, scroll, /):
+        assert scroll is True
+        rng.Worksheet.Activate()
+        self.Selection = rng
+        self.ActiveWindow.ScrollRow, self.ActiveWindow.ScrollColumn = rng.Row, rng.Column
 
     def Intersect(self, a, b, /):
         if a.Worksheet is not b.Worksheet:
@@ -584,7 +651,7 @@ class Word:
 
 @pytest.fixture(name="office")
 def fake_office(monkeypatch, tmp_path):
-    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, registry, templates, undo, wd_common, word_core, word_tables
+    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, registry, templates, undo, wd_common, word_core, word_tables
 
     excel, word = Excel(), Word()
     wb = excel.Workbooks.Add()
@@ -596,7 +663,7 @@ def fake_office(monkeypatch, tmp_path):
     saved_catalog = dict(registry.CATALOG)
     registered = {}
     monkeypatch.setattr(registry, "mcp", NS(add_tool=lambda fn, name, **kw: registered.__setitem__(name, fn)))
-    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, undo, word_core, word_tables)
+    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, word_core, word_tables)
 
     def call(tool_name, **kwargs):
         fn = next(getattr(m, tool_name) for m in modules if hasattr(m, tool_name))

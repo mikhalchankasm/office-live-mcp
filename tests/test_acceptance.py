@@ -57,6 +57,9 @@ def test_owner_acceptance_1_to_10(acceptance, monkeypatch, capsys):
             assert Path(reg.target(client)["path"]).is_relative_to(root)
 
     def execute(command, *args, expected=0):
+        # Environment isolation does NOT redirect HKCU. Every child install must skip the protocol.
+        if args[0] == "install":
+            args = (*args, "--no-links")
         if source_exe and args[0] == "install" and not any(cli._office_installed(p) for p in ("Excel.Application", "Word.Application")):
             # CI без Office: подменяется только проверка наличия Office, все процессы EXE настоящие.
             with monkeypatch.context() as patch:
@@ -104,6 +107,7 @@ def test_owner_acceptance_1_to_10(acceptance, monkeypatch, capsys):
     execute(command, "setup", "--clients", "cursor", "--config", str(custom), "--yes")
     uninstall()
     assert not read_state()["registrations"]
+    assert all(r.get("kind") != "protocol" for r in read_state()["registrations"])
     assert json.loads(custom.read_text(encoding="utf-8")) == {"mcpServers": {"foreign": {"command": "keep"}}, "setting": 42}
     if source_exe:
         assert not target.exists()

@@ -12,6 +12,7 @@ import pywintypes
 
 from . import config
 from .errors import ToolError
+from .privacy import redact, safe_text
 from .registry import _brief, office_tool
 from .wd_common import document_path, pick_document
 from .xl_common import pick_workbook, sheet_names, suspend_events, workbook_path
@@ -35,6 +36,7 @@ def journal_path(identity):
 
 
 def describe(arguments):
+    arguments = redact(arguments)
     sheet = arguments.get("dest_sheet") or arguments.get("sheet", "")
     cells = next((arguments[k] for k in ("dest_cell", "cells", "cell", "top_left", "dest", "source", "lines") if arguments.get(k)), "")
     where = f"{sheet}!{cells}" if sheet and cells and "!" not in str(cells) else cells
@@ -46,22 +48,40 @@ def describe(arguments):
     return _line(where), _line(summary)
 
 
-def append(targets, tool, arguments, error=None, *, where=None, summary=None):
+def target_links(items, kind, identity):
+    from .links import parse
+
+    out = []
+    for link in items or ():
+        try:
+            app, params = parse(link["uri"])
+            if (app == "excel") == (kind == "workbook") and params.get("book", params.get("doc")) == identity:
+                out.append(link)
+        except (ToolError, KeyError, TypeError):
+            continue
+    return out
+
+
+def append(targets, tool, arguments, error=None, *, where=None, summary=None, links=None):
     """Ровно одна строка на каждую фактически выбранную цель, без COM-доступа."""
     global _warned
     if not config.SETTINGS.journal:
         return
     location, details = describe(arguments)
-    location = location if where is None else _line(where)
-    details = details if summary is None else _line(summary)
-    result = "ok" if error is None else "ошибка: " + _line(str(error)[:200])
-    row = f"- {time.strftime('%Y-%m-%d %H:%M:%S')} · {_line(tool)} · {location} · {details} · {result}\n"
+    location = location if where is None else _line(safe_text(where, arguments))
+    details = details if summary is None else _line(safe_text(summary, arguments))
+    result = "ok" if error is None else "ошибка: " + _line(safe_text(error, arguments)[:200])
     with _lock:
         for target in dict.fromkeys(targets or ()):
             try:
                 kind, _, identity = target.partition(":")
                 if kind not in {"workbook", "document"} or not identity:
                     continue
+                from .links import markdown
+
+                places = target_links(links, kind, identity) if error is None else []
+                linked_location = ", ".join(markdown(link) for link in places) or location
+                row = f"- {time.strftime('%Y-%m-%d %H:%M:%S')} · {_line(tool)} · {linked_location} · {details} · {result}\n"
                 path = journal_path(identity)
                 path.parent.mkdir(parents=True, exist_ok=True)
                 with path.open("a", encoding="utf-8", newline="\n") as stream:
@@ -98,7 +118,7 @@ def _check_owner(ws):
         raise ToolError("The sheet 'Лог' belongs to you, not Office Live. Rename it before enabling the log sheet.")
 
 
-def append_sheet(app, wb, tool, arguments, *, where=None, summary=None):
+def append_sheet(app, wb, tool, arguments, *, where=None, summary=None, links=None):
     """Возвращает предупреждение вместо исключения; вызов внутри действующего COM-контекста."""
     try:
         if not sheet_enabled(wb):
@@ -122,15 +142,25 @@ def append_sheet(app, wb, tool, arguments, *, where=None, summary=None):
             location, details = describe(arguments)
             target = ws.Range(f"A{row}:E{row}")
             target.NumberFormat = "@"
-            target.Value = ((time.strftime("%Y-%m-%d %H:%M:%S"), _line(tool), location if where is None else _line(where),
-                             details if summary is None else _line(summary), "ok"),)
+            target.Value = ((time.strftime("%Y-%m-%d %H:%M:%S"), _line(tool), location if where is None else _line(safe_text(where, arguments)),
+                             details if summary is None else _line(safe_text(summary, arguments)), "ok"),)
+            # One row has one address cell: use the first actual destination in this workbook.
+            from .links import parse
+
+            for link in target_links(links, "workbook", workbook_path(wb) or wb.Name):
+                _, params = parse(link["uri"])
+                name, address = params.get("sheet"), params.get("range")
+                if name and address and name != ws.Name and name in sheet_names(wb):
+                    subaddress = "'" + name.replace("'", "''") + "'!" + address
+                    ws.Hyperlinks.Add(ws.Cells(row, 3), "", subaddress, "Office Live", link["label"])
+                    break
         finally:
             if previous is not None:
                 previous.Activate()
             elif previous_book is not None:
                 previous_book.Activate()
     except Exception as exc:  # noqa: BLE001
-        return str(exc)[:200]
+        return safe_text(exc, arguments)[:200]
     return None
 
 

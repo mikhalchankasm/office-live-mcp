@@ -9,7 +9,7 @@
 [![Русский](https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-README-cf222e?style=for-the-badge)](README.ru.md)
 
 > **Status: actively developed.** 0.x releases — the tools and the installer are tested on real Excel and Word, but the
-> project is still being improved (next: Power Query, Power Pivot/DAX and more Excel analysis tools). Feedback and issues
+> project is still being improved (next: an in-chat panel of changes and more Excel/Word tools; Power Query and Power Pivot/DAX later). Feedback and issues
 > are welcome.
 
 An MCP server that lets any AI agent (Claude, Cursor, Codex, ZCode, VS Code…) work in the Excel and Word documents
@@ -61,14 +61,20 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 
 ## What it can do
 
-109 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`) — full list in [docs/TOOLS.md](docs/TOOLS.md).
+113 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`) — full list in [docs/TOOLS.md](docs/TOOLS.md).
 
 | Group | Highlights |
 |---|---|
-| Excel | read/write ranges, **compare ranges by position or key**, **clean text with a preview and undo**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
+| Excel | read/write ranges, **compare ranges by position or key**, **clean text, parse explicit dates and split columns with preview/undo**, **trace formula inputs/consumers with completeness reporting**, **sheet/workbook protection**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
 | Word | **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
 | Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF, inspect a file without opening it |
-| History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes |
+| History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes, **clickable links** to plans and results (`office_link`) |
+
+Clickable `officelive://` links select a range or Word location in an **already open local file**. Installation registers
+the handler for your Windows account; skip with `install --no-links`, disable with `setup --no-links`, enable with
+`setup --links`. The handler never opens files or edits their contents. For restricted folders use
+`setup --links --allowed-dirs "D:\Work"`; the browser handler has its own saved policy, separate from client settings.
+See [link formats and safety](docs/GUIDE.ru.md#кликабельные-ссылки).
 
 ## Safety
 
@@ -81,6 +87,7 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 - **Journal and undo**: every change is logged per document; `office_undo` reverts the agent's steps (Word's own undo
   history; Excel snapshots) and refuses when you edited the same content afterwards unless `force=true`.
 - Optional audit log (`OFFICE_LIVE_AUDIT_LOG`) and strict targeting (`OFFICE_LIVE_STRICT_TARGET`).
+- Protection passwords are masked in logs/errors/history. Password operations create an undo barrier; password-free protection restores flags and Locked properties.
 
 Everything runs locally; the server opens no ports. What the agent reads ends up in the model's context — limit the folders
 for confidential files. Details and limits: [guide](docs/GUIDE.ru.md) · [SECURITY.md](SECURITY.md).
@@ -91,7 +98,7 @@ The popular Office MCP servers edit **files on disk**; a few drive the **running
 
 | Project | Approach | Pros | Cons | Rating* |
 |---|---|---|---|:---:|
-| **Office Live MCP** (this) | Live COM, attaches to the files you have open; Excel **and** Word | sees unsaved edits and recalculated values; works next to you; pivots, slicers, charts; Word↔Excel bridges; read-only mode, allowed folders, journal, undo; one-file installer | Windows + desktop Office only; COM is slower than file editing; Excel's own Ctrl+Z history is cleared by automation; no Power Query/DAX yet | ★★★★★ |
+| **Office Live MCP** (this) | Live COM, attaches to the files you have open; Excel **and** Word | sees unsaved edits and recalculated values; works next to you; pivots, slicers, charts; Word↔Excel bridges; read-only mode, allowed folders, journal, undo; clickable links to changed cells; one-file installer | Windows + desktop Office only; COM is slower than file editing; Excel's own Ctrl+Z history is cleared by automation; no Power Query/DAX yet | ★★★★★ |
 | [sbroenne/mcp-server-excel](https://github.com/sbroenne/mcp-server-excel) | Live COM (.NET), Excel only | very broad Excel coverage: Power Query, DAX, Power Pivot, VBA, 300+ operations | asks you to close your open workbooks first; no Word; Windows only | ★★★★☆ |
 | [haris-musa/excel-mcp-server](https://github.com/haris-musa/excel-mcp-server) | Files via openpyxl | cross-platform, no Excel needed, `uvx` install, HTTP transport, read-only and folder limits | no live workbooks; formulas are not recalculated; pivot "tables" are static summaries; no Word | ★★★☆☆ |
 | [negokaz/excel-mcp-server](https://github.com/negokaz/excel-mcp-server) | Files (Go), live editing on Windows | `npx` install, cross-platform file mode, screenshots on Windows | small toolset (8 tools); no Word | ★★☆☆☆ |

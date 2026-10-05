@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.4.0
+
+- Add clickable `officelive://` locations and read-only `office_link` (113 tools). Return bounded links for Excel writes,
+  supported Word locations, search, comparison, issue reports, formula tracing and document headings; link Markdown journals
+  and the optional Excel log sheet without including log hyperlinks in undo snapshots.
+- Add strict local/open-target navigation, exact matching across instances, saved folder policy, malformed/malicious URI
+  refusal and short Windows error dialogs. Package `office-live-link.exe` without a console alongside the MCP executable.
+- Register the per-user protocol on install, support `install --no-links`, `setup --links/--no-links`, dry-run, state tracking,
+  ownership checks, update and uninstall. Unit tests use a fake registry and block native writes; EXE acceptance skips
+  protocol registration on isolated profiles. Add opt-in live link tests (not run) and a timed invalid-link GUI build smoke.
+
+- Add `excel_split_column`: Python delimiter/fixed-width parsing, preview, full-output preflight and undo, literal text
+  verification and conservative numeric conversion. Refuse occupied output, formulas/spills, merges, tables and pivots.
+- Extend `excel_clean_text` with strict `text_to_date`, explicit formats/time, Excel 1900/1904 serial dates, invalid-date
+  reporting and reversible number formats.
+- Add read-only `excel_trace_formula`: bounded local COM references plus formula tokenization, cross-sheet dependents,
+  range names and simple structured columns. Report incomplete graphs for dynamic/external/unsupported references,
+  inactive-sheet COM, ambiguous COM failures and limits; never activate sheets or draw arrows.
+- Add `excel_protection`: readonly status, sheet permissions, editable Locked ranges and workbook structure protection.
+  Password-free actions support inverse undo; password actions create explicit barriers. Redact password-named arguments
+  in audit (including positional calls), both journals, undo history and errors.
+- Add fake/refusal/privacy/undo tests, type-library protection/reference checks and opt-in stage 2 live tests (not run).
+  Update documentation and generated catalog to 112 tools. No release publication is performed by this change.
 
 - Track installation root/version and client registrations in per-user `state.json`; custom-path updates reuse the existing
   installation, preserve all client settings and never auto-connect newly detected clients.
@@ -27,7 +49,7 @@
 - Packaged `install.cmd` warns when the extracted `app\_internal` path exceeds 200 characters, then continues installation.
   Unit tests isolate the installer profile and use temporary folders, including the exact 200/201 boundary.
 - Add unit/refusal/undo regressions, Office type-library signature checks and opt-in live scenarios for all four tools.
-  Update the generated catalog and EN/RU documentation to 109 tools.
+  Update the generated catalog and EN/RU documentation for stage 1.
 - CI can be started by hand (`workflow_dispatch`).
 - Known limitation documented: the PyInstaller build does not start when the full path of its libraries exceeds
   260 characters (very deep extraction folder, long `--target` or user profile).

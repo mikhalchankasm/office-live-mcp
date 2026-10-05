@@ -14,7 +14,7 @@ import pywintypes
 from mcp.server.mcpserver import Image
 
 from . import com
-from .errors import ToolError
+from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .safety import IMAGE_EXTS, check_path
 from .util import a1_cell, cm_to_points, color_to_hex, parse_a1, parse_color, quote_sheet
@@ -53,6 +53,132 @@ ALERT_STYLES = {"stop": 1, "warning": 2, "information": 3}
 
 
 MISSING = pythoncom.Missing
+
+# Order is Worksheet.Protect's positional Allow* tail, verified against the type library.
+PROTECTION_ALLOW = dict(zip(
+    ("format_cells", "format_columns", "format_rows", "insert_columns", "insert_rows", "insert_hyperlinks",
+     "delete_columns", "delete_rows", "sort", "filter", "pivot_tables"),
+    ("AllowFormattingCells", "AllowFormattingColumns", "AllowFormattingRows", "AllowInsertingColumns", "AllowInsertingRows",
+     "AllowInsertingHyperlinks", "AllowDeletingColumns", "AllowDeletingRows", "AllowSorting", "AllowFiltering", "AllowUsingPivotTables"),
+    strict=True,
+))
+PASSWORD_BARRIER = "Password operation cannot be undone: re-protection/unprotection would require retaining the password."
+
+
+def _protection_state(target, scope):
+    if scope == "workbook":
+        return {"structure": bool(target.ProtectStructure), "windows": bool(target.ProtectWindows)}
+    return {"contents": bool(target.ProtectContents), "objects": bool(target.ProtectDrawingObjects),
+            "scenarios": bool(target.ProtectScenarios), "user_interface_only": bool(target.ProtectionMode),
+            "allow": {k: bool(getattr(target.Protection, p)) for k, p in PROTECTION_ALLOW.items()},
+            "enable_selection": int(target.EnableSelection)}
+
+
+def _protected(state, scope):
+    return any(state[p] for p in (("structure", "windows") if scope == "workbook" else ("contents", "objects", "scenarios")))
+
+
+def _protect(target, scope, password, state):
+    if scope == "workbook":
+        target.Protect(password, state["structure"], state["windows"])
+    else:
+        target.Protect(password, state["objects"], state["contents"], state["scenarios"], state["user_interface_only"],
+                       *(state["allow"][k] for k in PROTECTION_ALLOW))
+
+
+@office_tool("excel_format", "write", title="Sheet/workbook protection", read_actions=("status",))
+def excel_protection(workbook: str = "", sheet: str = "", scope: str = "sheet", action: str = "status",
+                     password: str = "", allow: list[str] | None = None, unlocked_cells: list[str] | None = None) -> dict:
+    """Inspect, protect or unprotect a sheet/workbook. Status is available in readonly mode. Passwords are redacted from journals, audit, errors and history; password operations create an undo barrier and never retain the password.
+
+    Args:
+        workbook, sheet: target names; sheet required for sheet changes, unused for workbook scope.
+        scope: sheet or workbook (workbook protect enables Structure=True, Windows=False).
+        action: status, protect or unprotect. Already protected targets must be unprotected first; unprotect on an unprotected target is a no-op.
+        password: optional case-sensitive password; explicitly passed even when empty to avoid password prompts. Status never guesses whether a protection password exists.
+        allow: sheet protect only: format_cells, format_columns, format_rows, insert_columns, insert_rows, insert_hyperlinks, delete_columns, delete_rows, sort, filter, pivot_tables, edit_objects, edit_scenarios.
+        unlocked_cells: sheet protect only: list of same-sheet rectangles to set Locked=False before protecting (total <=100000 cells, no merges).
+
+    Without a password, undo restores the original protection flags and Locked properties and detects later changes to them.
+    Read-only workbooks are refused. Partial COM errors retain undo or the explicit password barrier; no raw protection COM errors are returned.
+    """
+    action = action.lower()
+    if scope not in {"sheet", "workbook"} or action not in {"status", "protect", "unprotect"}:
+        raise ToolError("scope must be sheet/workbook; action must be status/protect/unprotect.")
+    if not isinstance(password, str):
+        raise ToolError("password must be a string.")
+    allowed = set(PROTECTION_ALLOW) | {"edit_objects", "edit_scenarios"}
+    if allow is not None and (not isinstance(allow, list) or any(not isinstance(a, str) or a not in allowed for a in allow) or len(set(allow)) != len(allow)):
+        raise ToolError("allow must be a unique list of supported permissions.")
+    if unlocked_cells is not None and (not isinstance(unlocked_cells, list) or any(not isinstance(c, str) or not c.strip() for c in unlocked_cells)):
+        raise ToolError("unlocked_cells must be a list of nonempty rectangles.")
+    if (allow or unlocked_cells) and (scope != "sheet" or action != "protect"):
+        raise ToolError("allow/unlocked_cells require sheet protect.")
+    if action == "status" and password:
+        raise ToolError("status does not accept a password.")
+    app, wb = pick_workbook(workbook)
+    target = pick_sheet(wb, sheet) if scope == "sheet" else wb
+    before = _protection_state(target, scope)
+    result = {"workbook": wb.Name, "scope": scope, "action": action, "state": before,
+              "workbook_structure": bool(wb.ProtectStructure)}
+    if scope == "sheet":
+        result["sheet"] = target.Name
+    if action == "status":
+        return result
+    if wb.ReadOnly:
+        raise ToolError("Workbook is read-only; no protection was changed.")
+    if action == "protect" and _protected(before, scope):
+        raise ToolError("Target is already protected; unprotect it first.")
+    if action == "unprotect" and not _protected(before, scope):
+        return {**result, "changed": False}
+    ranges, size = [], 0
+    for address in unlocked_cells or []:
+        _, rng = get_range(wb, target.Name, address, empty_means_used=False)
+        if (int(rng.Areas.Count) != 1 or rng.Worksheet.Name != target.Name or rng.Worksheet.Parent.FullName != wb.FullName):
+            raise ToolError("unlocked_cells must be rectangles on the selected sheet.")
+        size += int(rng.Rows.Count) * int(rng.Columns.Count)
+        if size > 100000:
+            raise ToolError("unlocked_cells exceeds 100000 cells; use smaller rectangles.")
+        if rng.MergeCells is not False:
+            raise ToolError("unlocked_cells contains merged cells.")
+        ranges.append(rng)
+    from .undo import _property_state, _restore_properties, cancel_prepared, require_undo
+
+    # Snapshot Locked even for password barriers: best-effort local rollback on failed Protect.
+    locked = [(rng, _property_state(rng, "Locked")) for rng in ranges]
+    desired = {"structure": True, "windows": False} if scope == "workbook" else {
+        "contents": True, "objects": "edit_objects" not in (allow or []), "scenarios": "edit_scenarios" not in (allow or []),
+        "user_interface_only": False, "allow": {k: k in (allow or []) for k in PROTECTION_ALLOW}}
+    require_undo("workbook", app, wb, plan={"_protection_sheet": target.Name if scope == "sheet" else "",
+                                          "_locked_ranges": [addr_of(rng) for rng in ranges]},
+                 barrier_reason=PASSWORD_BARRIER if password else "")
+    applied = 0
+    try:
+        if action == "protect":
+            for rng in ranges:
+                rng.Locked = False
+                applied += int(rng.Rows.Count) * int(rng.Columns.Count)
+            _protect(target, scope, password, desired)
+        else:
+            target.Unprotect(password)  # Never omit: a missing password can open a modal prompt.
+        result["state"] = _protection_state(target, scope)
+        result["workbook_structure"] = bool(wb.ProtectStructure)
+        return {**result, "changed": True, "unlocked_cells_applied": applied}
+    except (pywintypes.com_error, ToolError):
+        # COM descriptions may echo the password; do not even translate these exceptions.
+        rolled_back = False
+        try:
+            current = _protection_state(target, scope)
+            if current == before:
+                for rng, value in locked:
+                    _restore_properties(rng, {"Locked": value})
+                rolled_back = True
+        except (pywintypes.com_error, ToolError):
+            pass
+        if rolled_back:
+            cancel_prepared("workbook", app, wb)
+            raise ToolError("Неверный пароль или Excel отклонил операцию защиты; состояние восстановлено.") from None
+        raise PartialChangeError(f"Protection interrupted: unlocked_cells_applied={applied}; protection state may be partially changed.") from None
 
 
 def _num_format(fmt: str) -> str:
@@ -1001,4 +1127,3 @@ def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "
     data = render_range_png(app, wb, ws, rng, max_cells)
     info = {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "png_bytes": len(data)}
     return [json.dumps(info, ensure_ascii=False), Image(data=data, format="png")]
-

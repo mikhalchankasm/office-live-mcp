@@ -10,7 +10,7 @@ import pywintypes
 EXCEL = {
     "_Application": "Hwnd ScreenUpdating ActiveWorkbook ActiveSheet Workbooks DisplayAlerts EnableEvents Calculation ActiveWindow CutCopyMode Calculate Selection Intersect International",
     "Workbooks": "Count Item Add",
-    "_Workbook": "Name FullName Path Names Worksheets Sheets Windows Saved Application Activate Close SlicerCaches",
+    "_Workbook": "Name FullName Path Names Worksheets Sheets Windows Saved Application Activate Close SlicerCaches Date1904 Protect Unprotect ProtectStructure ProtectWindows ReadOnly",
     "_Worksheet": "Names Name Parent Rows Columns Cells Range UsedRange Shapes ListObjects PivotTables Comments CommentsThreaded Index Visible Tab Activate Delete Copy Move StandardWidth ProtectContents",
     "Sheets": "Count Item Add",
     "Names": "Count Item Add",
@@ -46,7 +46,19 @@ EXCEL = {
     "Tab": "Color ColorIndex",
     "Window": "Visible SplitRow SplitColumn FreezePanes Zoom DisplayGridlines DisplayHeadings ScrollRow ScrollColumn",
     "Windows": "Count Item",
+    "Protection": "AllowFormattingCells AllowFormattingColumns AllowFormattingRows AllowInsertingColumns AllowInsertingRows AllowInsertingHyperlinks AllowDeletingColumns AllowDeletingRows AllowSorting AllowFiltering AllowUsingPivotTables",
+    "ListColumns": "Item Count",
+    "ListColumn": "DataBodyRange",
 }
+EXCEL["_Worksheet"] += " Protect Unprotect Protection ProtectDrawingObjects ProtectScenarios ProtectionMode EnableSelection"
+EXCEL["Range"] += " DirectPrecedents DirectDependents HasSpill"
+EXCEL["Areas"] += " Item"
+EXCEL["Name"] += " RefersToRange"
+EXCEL["ListObject"] += " ListColumns"
+EXCEL["ListObjects"] += " Add"
+EXCEL["_Worksheet"] += " Hyperlinks"
+EXCEL["Hyperlinks"] += " Add"
+EXCEL["_Application"] += " Goto"
 WORD = {
     "_Application": "UndoRecord Documents ActiveDocument CompareDocuments AutomationSecurity",
     "_Document": "Name FullName Path Content Paragraphs Tables InlineShapes Sections Comments Footnotes Endnotes Shapes Undo Close Revisions Saved TrackRevisions ProtectionType",
@@ -73,7 +85,31 @@ WORD = {
     "Endnotes": "Count",
     "Shapes": "Count",
 }
+WORD["_Document"] += " Activate Range Bookmarks"
+WORD["_Application"] += " ActiveWindow"
+WORD["Range"] += " Select Start End"
+WORD["Paragraphs"] += " Item"
+WORD["Paragraph"] = "Range"
+WORD["Window"] = "Hwnd ScrollIntoView"
+WORD["Bookmarks"] = "Exists Item"
+WORD["Bookmark"] = "Range"
 CALLS = {
+    "Hyperlinks.Add": ("Anchor", "Address", "SubAddress", "ScreenTip", "TextToDisplay"),
+    "_Application.Goto": ("Reference", "Scroll"),
+    "Window.ScrollIntoView": ("obj", "Start"),
+    "Bookmarks.Exists": ("Name",), "Bookmarks.Item": ("Index",),
+    "_Document.Range": ("Start", "End"), "_Document.Activate": (), "Range.Select": (),
+    "Paragraphs.Item": ("Index",),
+    "_Worksheet.Protect": ("Password", "DrawingObjects", "Contents", "Scenarios", "UserInterfaceOnly", "AllowFormattingCells", "AllowFormattingColumns",
+                           "AllowFormattingRows", "AllowInsertingColumns", "AllowInsertingRows", "AllowInsertingHyperlinks", "AllowDeletingColumns",
+                           "AllowDeletingRows", "AllowSorting", "AllowFiltering", "AllowUsingPivotTables"),
+    "_Worksheet.Unprotect": ("Password",),
+    "_Workbook.Protect": ("Password", "Structure", "Windows"),
+    "_Workbook.Unprotect": ("Password",),
+    "Range.DirectPrecedents": (), "Range.DirectDependents": (), "Range.HasSpill": (), "Range.Locked": (),
+    "Name.RefersToRange": (), "ListColumn.DataBodyRange": (), "ListColumns.Item": ("Index",), "Areas.Item": ("Index",),
+    "_Worksheet.ProtectionMode": (), "_Worksheet.EnableSelection": (), "_Workbook.Date1904": (),
+    "ListObjects.Add": ("SourceType", "Source", "LinkSource", "XlListObjectHasHeaders"),
     "_Application.Intersect": ("Arg1", "Arg2"),
     "Names.Add": ("Name", "RefersTo", "Visible"),
     "Names.Item": ("Index",),
@@ -110,11 +146,12 @@ CALLS = {
     "Table.NestingLevel": (),
     "UndoRecord.StartCustomRecord": ("Name",),
 }
+CALLS.update({"Protection." + member: () for member in EXCEL["Protection"].split()})
 SETTERS = {
     "_Application": "DisplayAlerts EnableEvents Calculation CutCopyMode",
-    "_Workbook": "Saved",
-    "_Worksheet": "Name Visible",
-    "Range": "Value Value2 Formula Formula2 ColumnWidth RowHeight Hidden NumberFormat HorizontalAlignment VerticalAlignment WrapText ShrinkToFit IndentLevel Orientation Style",
+    "_Workbook": "Saved Date1904",
+    "_Worksheet": "Name Visible EnableSelection",
+    "Range": "Value Value2 Formula Formula2 ColumnWidth RowHeight Hidden NumberFormat HorizontalAlignment VerticalAlignment WrapText ShrinkToFit IndentLevel Orientation Style Locked",
     "Font": "Name Size Bold Italic Underline Color Strikethrough ThemeColor TintAndShade",
     "Interior": "Color ThemeColor TintAndShade Pattern",
     "Border": "Color ThemeColor TintAndShade Weight LineStyle",
@@ -122,6 +159,8 @@ SETTERS = {
     "Tab": "Color ColorIndex",
 }
 WORD_SETTERS = {"_Application": "AutomationSecurity"}
+EXCEL_READONLY = {"Range": "DirectPrecedents DirectDependents", "Protection": EXCEL["Protection"],
+                  "_Workbook": "ProtectStructure ProtectWindows", "Name": "RefersToRange"}
 
 
 def verify(guid, major, minor, wanted):
@@ -142,6 +181,12 @@ def verify(guid, major, minor, wanted):
         found[name] = members
         print(name + ": " + wanted[name])
     assert wanted.keys() <= found.keys(), wanted.keys() - found.keys()
+    if wanted is EXCEL:
+        for interface, names in EXCEL_READONLY.items():
+            for member in names.split():
+                entries = found[interface][member]
+                assert any(entry[1] == 2 for entry in entries), (interface, member, "not a property getter")
+                assert not any(entry[1] in (4, 8) for entry in entries), (interface, member, "unexpected setter")
     setters = SETTERS if wanted is EXCEL else WORD_SETTERS
     if setters:
         for interface, names in setters.items():
@@ -149,6 +194,8 @@ def verify(guid, major, minor, wanted):
                 assert any(entry[1] in (4, 8) for entry in found[interface][member]), (interface, member, "read-only")
         print("Verified property setters: " + "; ".join(k + "." + v.replace(" ", ",") for k, v in setters.items()))
     for key, parameters in CALLS.items():
+        if wanted is WORD and key == "Range.End":
+            parameters = ()  # Word property, unlike Excel's Range.End(Direction)
         interface, member = key.split(".")
         if interface not in wanted or member not in wanted[interface].split():
             continue

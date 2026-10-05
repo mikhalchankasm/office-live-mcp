@@ -12,12 +12,12 @@ from .registry import office_tool
 from .safety import EXCEL_EXTS, check_path
 from .util import (
     cell_kind, MAX_COLS, MAX_ROWS, a1_cell, a1_range, col_letter, col_number, parse_a1,
-    parse_color, quote_sheet, smart_number, to_com_grid, to_grid,
+    DATE_FORMATS, excel_date_serial, parse_color, quote_sheet, smart_number, to_com_grid, to_grid,
 )
 from .xl_common import (
-    addr_of, all_workbooks, workbook_allowed, suspend_events, bounded_range, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
+    addr_of, all_workbooks, localize_formula, workbook_allowed, suspend_events, bounded_range, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
     pick_sheet, pick_workbook, preview, read_grid, ref_label, sheet_is_empty, sheet_names, sub_range,
-    validate_sheet_name,
+    validate_sheet_name, number_format_for_write,
 )
 
 Cell = str | int | float | bool | None
@@ -492,6 +492,11 @@ def excel_select_range(workbook: str, sheet: str, cells: str) -> dict:
     """
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
+    return select_resolved_range(app, wb, ws, rng)
+
+
+def select_resolved_range(app, wb, ws, rng):
+    """Shared by the tool and the URI handler after all target validation."""
     try:
         wb.Activate()
         ws.Activate()
@@ -548,33 +553,46 @@ def excel_clean_text(
     operations: list[str],
     decimal_separator: str = "",
     preview: bool = True,
+    date_format: str = "",
+    date_number_format: str = "",
 ) -> dict:
-    """Clean text constants with a preview by default; preserve formulas, literal text and leading-zero codes. Writes only changed cells in vertical runs, verifies their types, and supports office_undo even after a partial COM failure.
+    """Clean text constants or parse dates by an explicit format, with a preview by default; preserve formulas, literal text and leading-zero codes. Writes only changed cells in vertical runs, verifies their types, and supports office_undo even after a partial COM failure.
 
     Args:
         workbook, sheet: exact target workbook and sheet.
         cells: required rectangle (whole rows/columns clipped to used range), at most 100000 cells.
-        operations: nonempty list of trim, clean, upper/lower/proper (at most one case operation), text_to_number. Fixed order: clean, trim, case, number.
+        operations: nonempty list of trim, clean, upper/lower/proper (at most one case operation), text_to_number or text_to_date. Fixed order: clean, trim, case, conversion.
         decimal_separator: comma or dot; empty uses Excel's separator and skips ambiguous 1,234 / 1.234.
+        date_format: required for text_to_date: DD.MM.YYYY, DD/MM/YYYY, MM/DD/YYYY, YYYY-MM-DD, DD-MM-YYYY or YYYY.MM.DD, optionally followed by HH:MM or HH:MM:SS.
+        date_number_format: Excel display code; default is the lower-case date_format. Dates use the workbook's 1900/1904 system; invalid or pre-epoch dates remain unchanged (skipped_not_date).
         preview: true returns counts and up to 50 examples without writes, undo history or change journal; false writes only after the undo snapshot is ready (refuses if it cannot be made; with OFFICE_LIVE_UNDO=0 it writes without one).
 
     Protected sheets and pivot intersections are refused. Non-text, formulas and merged-cell followers are skipped.
     trim collapses spaces/NBSP while preserving newlines; clean removes controls except LF and zero-width characters.
     Text-to-number leaves dates, phone-like strings, leading zeros and numbers beyond 15 digits as text; @ changes to General only for converted numbers.
     """
-    if not isinstance(operations, list) or not operations or any(not isinstance(op, str) or op not in {"trim", "clean", "upper", "lower", "proper", "text_to_number"} for op in operations):
-        raise ToolError("operations must be a nonempty list of trim, clean, upper, lower, proper, text_to_number.")
+    if not isinstance(operations, list) or not operations or any(not isinstance(op, str) or op not in {"trim", "clean", "upper", "lower", "proper", "text_to_number", "text_to_date"} for op in operations):
+        raise ToolError("operations must be a nonempty list of trim, clean, upper, lower, proper, text_to_number, text_to_date.")
     if len(set(operations)) != len(operations) or len(set(operations) & {"upper", "lower", "proper"}) > 1:
         raise ToolError("operations must be unique, with at most one of upper, lower, proper.")
     if decimal_separator not in {"", ",", "."}:
         raise ToolError("decimal_separator must be ',' or '.' or empty.")
+    dates = "text_to_date" in operations
+    if dates and (date_format not in DATE_FORMATS or "text_to_number" in operations):
+        raise ToolError("text_to_date requires a supported date_format and cannot be combined with text_to_number.")
+    if not dates and (date_format or date_number_format):
+        raise ToolError("date_format/date_number_format require text_to_date.")
     app, wb = pick_workbook(workbook)
+    date1904 = bool(wb.Date1904) if dates else False
+    date_style = number_format_for_write(app, date_number_format or date_format.lower()) if dates else None
+    if not preview and wb.ReadOnly:
+        raise ToolError("Workbook is read-only; no cells were changed.")
     ws, rng = bounded_range(app, wb, sheet, cells, 100000)
     if bool(ws.ProtectContents):
         raise ToolError("The sheet is protected (ProtectContents); no cells were changed.")
     result = {"preview": preview, "workbook": wb.Name, "sheet": ws.Name, "changed": 0, "skipped_formulas": 0,
               "skipped_non_text": 0, "skipped_merged": 0, "skipped_ambiguous": 0, "skipped_leading_zero": 0,
-              "ambiguous": [], "examples": [], "format_changed": [], "rewritten_as_text": []}
+              "ambiguous": [], "examples": [], "format_changed": [], "rewritten_as_text": [], "skipped_not_date": 0, "not_date": []}
     if rng is None:
         return result
     pivots = ws.PivotTables()
@@ -603,6 +621,17 @@ def excel_clean_text(
                 continue
             value, reason = _clean_text_value(row[j], operations, separator, bool(decimal_separator))
             address = a1_cell(r1 + i, c1 + j)
+            if dates:
+                cell = cell or ws.Cells(r1 + i, c1 + j)
+                if bool(cell.HasFormula) or bool(cell.HasSpill):
+                    result["skipped_formulas"] += 1
+                    continue
+                value = excel_date_serial(value, date_format, date1904)
+                if value is None:
+                    result["skipped_not_date"] += 1
+                    if len(result["not_date"]) < 50:
+                        result["not_date"].append(address)
+                    continue
             if value == row[j]:
                 if maybe_formula:
                     result["skipped_formulas"] += 1
@@ -643,8 +672,8 @@ def excel_clean_text(
     try:
         for group in groups:
             for change in group:
-                if not isinstance(change["value"], str) and change["format"] == "@":
-                    change["cell"].NumberFormat = "General"
+                if dates or (not isinstance(change["value"], str) and change["format"] == "@"):
+                    change["cell"].NumberFormat = date_style if dates else "General"
                     result["format_changed"].append(change["address"])
             target = sub_range(ws, group[0]["r"], group[0]["c"], group[-1]["r"], group[-1]["c"])
             target.Value2 = tuple((change["input"],) for change in group)
@@ -668,6 +697,153 @@ def excel_clean_text(
             except (pywintypes.com_error, ToolError):
                 unknown += 1
         raise PartialChangeError(f"Clean text interrupted: applied={confirmed}, remaining={len(changes) - confirmed}, unverified={unknown}; "
+                                 f"format_changed={result['format_changed']}. {com.translate(exc)}") from None
+    return {**result, "applied": applied, "remaining": 0}
+
+
+@office_tool("excel_core", "write", title="Split column", preview_arg="preview")
+def excel_split_column(
+    workbook: str, sheet: str, cells: str, delimiter: str = "", widths: list[int] | None = None,
+    max_parts: int = 0, consecutive_as_one: bool = False, trim: bool = True, destination: str = "",
+    types: list[str] | None = None, preview: bool = True,
+) -> dict:
+    """Split text constants in Python, preserving literal text; preview by default. Checks and snapshots the ENTIRE output rectangle before writing, with office_undo and partial-failure recovery.
+
+    Args:
+        workbook, sheet: exact workbook and source sheet; output stays on this sheet.
+        cells: required single column; whole columns clipped to used range. Non-text constants and formulas/spills are refused; blank rows produce blanks.
+        delimiter: comma, semicolon, tab, space, pipe or a literal nonempty string; exactly one of delimiter/widths is required. Quotes have no CSV escaping semantics.
+        widths: positive character widths; an extra final part holds the remainder.
+        max_parts: 0 uses the actual maximum; positive values keep the unsplit remainder in the final part.
+        consecutive_as_one: treat adjacent delimiters as one.
+        trim: strip whitespace from parts.
+        destination: one A1 cell on the same sheet; empty overwrites the source in place. An explicit destination must be entirely empty, including the source.
+        types: text/number for each part, omitted trailing types default to text. Ambiguous numbers and identifiers stay text.
+        preview: true returns output range, counters and up to 20 examples without journal/history; false writes after a successful snapshot (unless undo disabled).
+
+    Refuses protection, merges, tables, pivots, occupied output, sheet overflow and output over 100000 cells.
+    """
+    if bool(delimiter) == (widths is not None):
+        raise ToolError("Pass exactly one nonempty delimiter or widths.")
+    if widths is not None and (not isinstance(widths, list) or not widths or any(type(n) is not int or n < 1 for n in widths)):
+        raise ToolError("widths must be a nonempty list of positive integers.")
+    if type(max_parts) is not int or max_parts < 0:
+        raise ToolError("max_parts must be a nonnegative integer.")
+    if types is not None and (not isinstance(types, list) or any(t not in {"text", "number"} for t in types)):
+        raise ToolError("types must contain only text or number.")
+    sep = {"comma": ",", "semicolon": ";", "tab": "\t", "space": " ", "pipe": "|"}.get(delimiter, delimiter)
+    app, wb = pick_workbook(workbook)
+    # Check the un-clipped shape as well: A:B must not become a single used column.
+    if not preview and wb.ReadOnly:
+        raise ToolError("Workbook is read-only; no cells were changed.")
+    _, original = get_range(wb, sheet, cells, empty_means_used=False)
+    if int(original.Columns.Count) != 1:
+        raise ToolError("cells must be exactly one column.")
+    ws, source = bounded_range(app, wb, sheet, cells, 100000)
+    if bool(ws.ProtectContents):
+        raise ToolError("The sheet is protected; no cells were changed.")
+    result = {"preview": preview, "workbook": wb.Name, "sheet": ws.Name, "parts": 0, "output_range": None,
+              "rows": 0, "output_cells": 0, "converted_numbers": 0, "ambiguous_numbers": [], "examples": [],
+              "rewritten_as_text": [], "format_changed": []}
+    if source is None:
+        return result
+    if source.MergeCells is not False:
+        raise ToolError("Source contains merged cells.")
+    r1, c1, r2, _ = bounds(source)
+    raw = source.Value2
+    rows = raw if isinstance(raw, tuple) and raw and isinstance(raw[0], tuple) else ((raw,),)
+    formulas, nontexts, parts = [], [], []
+    for i, (value,) in enumerate(rows):
+        cell = ws.Cells(r1 + i, c1)
+        if bool(cell.HasFormula) or bool(cell.HasSpill):
+            formulas.append(a1_cell(r1 + i, c1))
+        elif value is not None and not isinstance(value, str):
+            nontexts.append(a1_cell(r1 + i, c1))
+        text = value if isinstance(value, str) else ""
+        if widths is not None:
+            cuts, start = [], 0
+            for width in widths[:max_parts - 1 if max_parts else None]:
+                cuts.append(text[start:start + width])
+                start += width
+            cuts.append(text[start:])
+        else:
+            pattern = "(?:" + re.escape(sep) + ")" + ("+" if consecutive_as_one else "")
+            cuts = [text] if max_parts == 1 else re.split(pattern, text, maxsplit=max_parts - 1 if max_parts else 0)
+        parts.append([p.strip() if trim else p for p in cuts])
+    if formulas or nontexts:
+        raise ToolError(f"Source formulas/spills: {formulas[:50]}; non-text constants: {nontexts[:50]}. No cells were changed.")
+    count = max(map(len, parts))
+    if len(types or []) > count:
+        raise ToolError("types has more entries than output parts.")
+    if destination:
+        try:
+            dr, dc, er, ec = parse_a1(destination)
+        except ValueError:
+            raise ToolError("destination must be one A1 cell on the source sheet.") from None
+        if (dr, dc) != (er, ec):
+            raise ToolError("destination must be one A1 cell.")
+    else:
+        dr, dc = r1, c1
+    end, right = dr + len(parts) - 1, dc + count - 1
+    if dr < 1 or dc < 1 or end > MAX_ROWS or right > MAX_COLS:
+        raise ToolError("Output exceeds sheet boundaries.")
+    if len(parts) * count > 100000:
+        raise ToolError("Output exceeds 100000 cells.")
+    output = sub_range(ws, dr, dc, end, right)
+    if output.MergeCells is not False:
+        raise ToolError("Output contains merged cells.")
+    for collection, attr in ((ws.ListObjects, "Range"), (ws.PivotTables(), "TableRange2")):
+        overlaps = [collection(i).Name for i in range(1, int(collection.Count) + 1)
+                    if app.Intersect(output, getattr(collection(i), attr)) is not None]
+        if overlaps:
+            raise ToolError(f"Output intersects tables/pivots: {overlaps}.")
+    occupied, changes = [], []
+    for j in range(count):
+        for i, row in enumerate(parts):
+            cell = ws.Cells(dr + i, dc + j)
+            address = a1_cell(dr + i, dc + j)
+            in_source = not destination and dc + j == c1 and r1 <= dr + i <= r2
+            if not in_source and (cell.Value2 is not None or bool(cell.HasFormula) or bool(cell.HasSpill)):
+                occupied.append(address)
+            value = row[j] if j < len(row) else ""
+            if len(value) > 32767:
+                raise ToolError("An output part exceeds 32767 characters.")
+            if j < len(types or []) and types[j] == "number":
+                value, reason = _clean_text_value(value, ["text_to_number"], app.International[2], False)
+                if reason == "ambiguous":
+                    result["ambiguous_numbers"].append(address)
+                result["converted_numbers"] += int(not isinstance(value, str))
+            changes.append({"cell": cell, "address": address, "value": value, "input": _clean_input(value, cell.PrefixCharacter),
+                            "format": cell.NumberFormat})
+    if occupied:
+        raise ToolError(f"Output is not empty: {occupied[:50]}; no cells were changed.")
+    result.update(parts=count, rows=len(parts), output_cells=len(changes), output_range=addr_of(output),
+                  examples=[{"source": a1_cell(r1 + i, c1), "before": rows[i][0],
+                             "after": [changes[j * len(parts) + i]["value"] for j in range(count)]} for i in range(min(20, len(parts)))])
+    if preview:
+        return result
+    from .undo import require_undo
+
+    require_undo("workbook", app, wb, plan={"_output_sheet": ws.Name, "_output_range": addr_of(output)})
+    applied = 0
+    try:
+        for j in range(count):
+            group = changes[j * len(parts):(j + 1) * len(parts)]
+            for change in group:
+                if not isinstance(change["value"], str) and change["format"] == "@":
+                    change["cell"].NumberFormat = "General"
+                    result["format_changed"].append(change["address"])
+            sub_range(ws, dr, dc + j, end, dc + j).Value2 = tuple((change["input"],) for change in group)
+            for change in group:
+                if not _clean_matches(change["cell"], change["value"]):
+                    if isinstance(change["value"], str):
+                        change["cell"].Value2 = "'" + change["value"]
+                        result["rewritten_as_text"].append(change["address"])
+                    if not _clean_matches(change["cell"], change["value"]):
+                        raise ToolError(f"Read-back mismatch at {change['address']}.")
+                applied += 1
+    except (pywintypes.com_error, ToolError) as exc:
+        raise PartialChangeError(f"Split interrupted: applied={applied} verified cells, remaining={len(changes) - applied} may include partial writes; "
                                  f"format_changed={result['format_changed']}. {com.translate(exc)}") from None
     return {**result, "applied": applied, "remaining": 0}
 
@@ -1368,7 +1544,9 @@ def excel_copy_range(
             app.CutCopyMode = False
     else:
         raise ToolError("what must be one of: all, values, formulas, formats")
-    return {"ok": True, "from": ref_label(ws, src), "to": ref_label(dws, dest), "what": w, "moved": bool(move)}
+    actual_dest = dest_head if w in {"all", "formats"} and int(dest_head.Rows.Count) * int(dest_head.Columns.Count) > 1 else dest
+    return {"ok": True, "from": ref_label(ws, src), "to": ref_label(dws, actual_dest), "what": w, "moved": bool(move),
+            "source_workbook": wb.FullName, "dest_workbook": dwb.FullName}
 
 
 def _resolve_column(ws, rng, key, header_names: list, has_header: bool) -> int:
@@ -1603,8 +1781,10 @@ def excel_manage_names(workbook: str, action: str = "list", name: str = "", shee
             refers = f"={quote_sheet(ws.Name)}!${col_letter(c1)}${r1}" + (f":${col_letter(c2)}${r2}" if (r1, c1) != (r2, c2) else "")
         else:
             raise ToolError("Pass `cells` (with `sheet`) or `formula` for 'add'.")
-        wb.Names.Add(name, refers)
-        return {"ok": True, "workbook": wb.Name, "added": name, "refers_to": refers}
+        # Names.Add через позднее связывание разбирает формулу по ЛОКАЛЬНЫМ правилам (в русском Excel '=SUM(A1,B1)'
+        # и '=0.2' — ошибка), а RefersTo читается по-английски: переводим, как для условного форматирования.
+        wb.Names.Add(name, localize_formula(app, wb, refers))
+        return {"ok": True, "workbook": wb.Name, "added": name, "refers_to": str(wb.Names(name).RefersTo)}
     if act == "delete":
         wb.Names(name).Delete()
         return {"ok": True, "workbook": wb.Name, "deleted": name}

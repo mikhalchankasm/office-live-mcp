@@ -931,9 +931,15 @@ def word_select(document: str, target: str = "paragraphs", start_paragraph: int 
         rng = doc.Range(e, e)
     else:
         raise ToolError("target must be 'paragraphs', 'find', 'table', 'start' or 'end'.")
+    return select_resolved_range(app, doc, rng)
+
+
+def select_resolved_range(app, doc, rng):
+    """Shared navigation, including scrolling; never edits the document."""
     try:
         doc.Activate()
         rng.Select()
+        app.ActiveWindow.ScrollIntoView(rng, True)
     except pywintypes.com_error as exc:
         raise ToolError("Could not move the selection (the document window may be hidden): " + com.com_error_text(exc)) from None
     return {"ok": True, "document": doc.Name, "selected": [int(rng.Start), int(rng.End)]}

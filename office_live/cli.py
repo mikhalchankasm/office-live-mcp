@@ -441,6 +441,9 @@ def _parse_selection(text: str, detected: dict[str, bool]) -> list[str]:
 def setup_cmd(args, server=None) -> int:
     p = argparse.ArgumentParser(prog="office-live-mcp setup", description="Подключить сервер к ИИ-агентам на этом компьютере (диалог).")
     p.add_argument("--clients", default=None, help="claude-code,claude-desktop,cursor,codex,zcode,vscode | detected | all | none")
+    link_flags = p.add_mutually_exclusive_group()
+    link_flags.add_argument("--links", dest="links", action="store_true", default=None, help="зарегистрировать officelive:// для этой установки")
+    link_flags.add_argument("--no-links", dest="links", action="store_false", help="удалить свою регистрацию officelive://")
     p.add_argument("--readonly", action="store_true", help="режим «только чтение»")
     p.add_argument("--full", action="store_true", help="явно вернуть полный режим (снять ранее заданный «только чтение»)")
     p.add_argument("--reset", action="store_true", help="не переносить настройки уже подключённой записи (по умолчанию они сохраняются)")
@@ -461,7 +464,9 @@ def setup_cmd(args, server=None) -> int:
     if ns.scope == "project" and not ns.project:
         print("Для --scope project укажите --project DIR.", file=sys.stderr)
         return 2
-    interactive = not ns.yes and not ns.dry_run and sys.stdin.isatty()
+    if ns.links is not None and ns.clients is None:
+        ns.clients = "none"
+    interactive = not ns.yes and not ns.dry_run and sys.stdin is not None and sys.stdin.isatty()
     detected = _detect_clients()
     order = [k for k in CLIENT_LABELS if k != "vscode"] + ["vscode"]
 
@@ -484,7 +489,7 @@ def setup_cmd(args, server=None) -> int:
             try:
                 root = reg.identity()[2]
                 selected = list(dict.fromkeys(r["client"] for r in read_state()["registrations"]
-                                              if reg.same_path(r["root"], root)))
+                                              if r.get("kind") != "protocol" and reg.same_path(r["root"], root)))
                 selected = list(dict.fromkeys([*selected, *_parse_selection("detected", detected)]))
             except (OSError, ValueError) as exc:
                 print(str(exc), file=sys.stderr)
@@ -513,6 +518,16 @@ def setup_cmd(args, server=None) -> int:
     if ns.config and len(selected) != 1:
         print("--config требует ровно одного клиента в --clients.", file=sys.stderr)
         return 2
+    if ns.links is not None:
+        from .protocol import configure
+
+        try:
+            dirs = ns.allowed_dirs.split(";") if ns.allowed_dirs else None
+            if not configure(ns.links, dry_run=ns.dry_run, server=server, allowed_dirs=dirs):
+                return 1
+        except (OSError, ValueError) as exc:
+            print(f"Не удалось изменить схему: {exc}", file=sys.stderr)
+            return 1
     if not selected:
         print(f"\nНи к какому агенту не подключаю. Подключить позже: {_self_cmd()} setup")
         return 0
@@ -585,6 +600,10 @@ def _utf8_output() -> None:
 
 def run(cmd: str, args: list[str]) -> int:
     _utf8_output()
+    if cmd == "open-link":
+        from .protocol import open_link
+
+        return open_link(args)
     if cmd == "doctor":
         return doctor()
     if cmd == "tools":
@@ -597,5 +616,5 @@ def run(cmd: str, args: list[str]) -> int:
         from .install import install_cmd, uninstall_cmd
 
         return install_cmd(args) if cmd == "install" else uninstall_cmd(args)
-    print(f"Использование: {_self_cmd()} [serve | install | uninstall | setup | doctor | tools [--markdown|--json] | config <client> [--write]]", file=sys.stderr)
+    print(f"Использование: {_self_cmd()} [serve | install | uninstall | setup | open-link <uri> | doctor | tools [--markdown|--json] | config <client> [--write]]", file=sys.stderr)
     return 2

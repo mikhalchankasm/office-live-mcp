@@ -443,3 +443,27 @@ def test_restoring_a_deleted_sheet_does_not_carry_the_backup_marker_into_the_use
     o.call("office_undo", file=o.wb.Name)
     assert not xl_common.is_undo_workbook(o.wb)
     assert o.call("office_undo", file=o.wb.Name, action="history")["file"] == o.wb.Name  # книгу снова видно инструментам
+
+
+def test_screen_updating_is_restored_even_if_hiding_the_backup_window_fails():
+    class Win:
+        def __init__(self):
+            self._visible = False
+
+        @property
+        def Visible(self):  # noqa: N802
+            return self._visible
+
+        @Visible.setter
+        def Visible(self, value):  # noqa: N802
+            if not value:
+                raise RuntimeError("cannot hide")
+            self._visible = value
+
+    app = NS(ScreenUpdating=True)
+    backup = NS(Application=app, Windows=lambda i: win)
+    win = Win()
+    with pytest.raises(RuntimeError, match="cannot hide"):
+        with undo._shown(backup):
+            assert app.ScreenUpdating is False
+    assert app.ScreenUpdating is True

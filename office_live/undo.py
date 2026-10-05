@@ -75,8 +75,10 @@ def _shown(backup):
         win.Visible = True
         yield
     finally:
-        win.Visible = False
-        app.ScreenUpdating = updating
+        try:
+            win.Visible = False
+        finally:  # даже если окно не спряталось, перерисовка экрана у пользователя не должна остаться выключенной
+            app.ScreenUpdating = updating
 
 
 @contextlib.contextmanager

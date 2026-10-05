@@ -46,7 +46,9 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 
 ## Safety
 
-- **Read-only mode** (`OFFICE_LIVE_MODE=readonly`): writing tools are not even registered.
+- **Read-only mode** (`OFFICE_LIVE_MODE=readonly`): writing tools are not registered; multi-action tools keep only
+  their read actions. The range snapshot (PNG) is the one read tool with a side effect: a temporary chart on the sheet
+  marks the workbook as modified.
 - **Allowed folders** (`OFFICE_LIVE_ALLOWED_DIRS`): files elsewhere are invisible to the agent; nothing is saved
   automatically and existing files are never overwritten without `overwrite=true`.
 - Workbooks with **AutoSave** (OneDrive/SharePoint) are refused for changes; Excel events and macros stay off while the agent writes.

@@ -13,7 +13,8 @@ Office Live MCP runs locally as a child process of your AI agent and talks to it
 It acts with your Windows user's rights inside Excel and Word, so the main risks are an agent changing documents you
 did not intend to change and document content reaching the model.
 
-- `OFFICE_LIVE_MODE=readonly` registers no writing tools at all.
+- `OFFICE_LIVE_MODE=readonly` registers no writing tools; multi-action tools keep only their read actions; the range
+  snapshot (PNG) briefly adds a temporary chart and marks the workbook as modified.
 - `OFFICE_LIVE_ALLOWED_DIRS` hides and protects every file outside the listed folders (open, save, export, insert).
 - Changes to AutoSave (cloud) documents are refused by default; Excel events and macros are disabled while the agent writes.
 - Every change is journaled per document; `office_undo` reverts the agent's steps and refuses when the user edited the

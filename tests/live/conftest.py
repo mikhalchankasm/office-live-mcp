@@ -18,11 +18,13 @@ EXCEL_BEFORE: set[int] = set()  # процессы Excel до прогона (и
 SESSION = {"started": False}
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _fresh_excel_between_modules(request):
+@pytest.fixture(autouse=True)
+def _fresh_excel_when_bloated():
+    # после КАЖДОГО теста: тестовый Excel, разбухший от создания/закрытия книг, закрывается штатно, следующий тест
+    # запускает свежий — пользователю не приходится снимать его в диспетчере задач
     yield
     if SESSION["started"]:  # до запуска сервера список «чужих» процессов ещё не снят
-        quit_excel_if_idle(EXCEL_BEFORE, gdi_over=5000)
+        quit_excel_if_idle(EXCEL_BEFORE, gdi_over=3000, mem_over_mb=600)  # свежий Excel 365 сам по себе ~250–450 МБ
 
 
 @pytest.fixture(scope="session")

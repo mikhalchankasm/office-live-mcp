@@ -7,6 +7,7 @@ Excel — так же, но по процессам: закрывается то
 """
 
 import ctypes
+import gc
 import subprocess
 
 import pythoncom
@@ -35,11 +36,13 @@ def quit_word_if_idle(started_by_tests: bool = False) -> str:
             w = win32com.client.GetActiveObject("Word.Application")
         except pythoncom.com_error:
             return "word not running"
-        if w.Documents.Count == 0:
+        count = w.Documents.Count
+        if count == 0:
             w.Quit(0)
-            return "word quit (started by the tests and idle)"
-        return f"word left running ({w.Documents.Count} documents open)"
+        del w  # ссылку отпускаем ДО CoUninitialize: иначе Word прячется, но процесс остаётся жить
+        return "word quit (started by the tests and idle)" if count == 0 else f"word left running ({count} documents open)"
     finally:
+        gc.collect()
         pythoncom.CoUninitialize()
 
 
@@ -64,11 +67,38 @@ def gdi_objects(pid: int) -> int:
             ctypes.windll.kernel32.CloseHandle(handle)
 
 
-def quit_excel_if_idle(pids_before: set[int], gdi_over: int = 0) -> str:
-    """Закрывает Excel, ТОЛЬКО если его процесс появился во время прогона и в нём нет ни одной книги.
+def working_set_mb(pid: int) -> int:
+    """Рабочий набор процесса в МБ (GetProcessMemoryInfo; Excel не трогается)."""
+    class Counters(ctypes.Structure):
+        _fields_ = [("cb", ctypes.c_ulong), ("PageFaultCount", ctypes.c_ulong)] + [
+            (name, ctypes.c_size_t) for name in ("PeakWorkingSetSize", "WorkingSetSize", "QuotaPeakPagedPoolUsage",
+                                                 "QuotaPagedPoolUsage", "QuotaPeakNonPagedPoolUsage", "QuotaNonPagedPoolUsage",
+                                                 "PagefileUsage", "PeakPagefileUsage")]
+    handle = ctypes.windll.kernel32.OpenProcess(0x0410, False, pid)  # QUERY_INFORMATION | VM_READ
+    if not handle:
+        return 0
+    try:
+        counters = Counters()
+        counters.cb = ctypes.sizeof(Counters)
+        ok = ctypes.windll.psapi.GetProcessMemoryInfo(handle, ctypes.byref(counters), counters.cb)
+        return int(counters.WorkingSetSize // (1024 * 1024)) if ok else 0
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
-    gdi_over > 0 — закрывать лишь при утечке: Excel 16 теряет ~120–250 GDI-объектов на каждую пару
-    Workbooks.Add/Close, и за один прогон тестовый экземпляр подходит к лимиту Windows (10 000).
+
+def _is_undo_book(book) -> bool:
+    try:
+        book.Names("__OfficeLiveUndo")  # служебная скрытая книга снимков отмены (office_live.undo.MARKER)
+        return True
+    except pythoncom.com_error:
+        return False
+
+
+def quit_excel_if_idle(pids_before: set[int], gdi_over: int = 0, mem_over_mb: int = 0) -> str:
+    """Закрывает Excel, ТОЛЬКО если его процесс появился во время прогона и в нём нет книг, кроме служебной книги отмены.
+
+    Пороги (gdi_over/mem_over_mb > 0) — закрывать лишь при разбухании: Excel 16 теряет память и ~120–250 GDI-объектов на
+    каждую пару Workbooks.Add/Close, а почти каждый тест создаёт свою книгу. Без порогов — закрывать всегда (конец прогона).
     """
     new = excel_pids() - pids_before
     if not new:
@@ -79,13 +109,20 @@ def quit_excel_if_idle(pids_before: set[int], gdi_over: int = 0) -> str:
             app = win32com.client.GetActiveObject("Excel.Application")
         except pythoncom.com_error:
             return "excel not registered - left alone"
-        if _pid_of(app) not in new:
+        pid = _pid_of(app)
+        if pid not in new:
             return "active excel was running before the tests - left alone"
-        if app.Workbooks.Count:
-            return f"excel left running ({app.Workbooks.Count} workbooks open)"
-        if gdi_over and gdi_objects(_pid_of(app)) <= gdi_over:
-            return "excel kept (GDI below the threshold)"
+        books = [app.Workbooks(i) for i in range(1, app.Workbooks.Count + 1)]
+        if any(not _is_undo_book(b) for b in books):
+            return f"excel left running ({len(books)} workbooks open)"
+        if (gdi_over or mem_over_mb) and gdi_objects(pid) <= gdi_over and working_set_mb(pid) <= mem_over_mb:
+            return "excel kept (below the thresholds)"
+        for book in books:  # снимки отмены закрытых тестовых книг больше не нужны; без этого Quit спросил бы о сохранении
+            book.Close(False)
         app.Quit()
         return "excel quit (started by the tests and idle)"
     finally:
+        # все ссылки на Excel отпускаем ДО CoUninitialize: иначе после Quit он прячется, но процесс живёт (~400 МБ)
+        app = books = book = None  # noqa: F841
+        gc.collect()
         pythoncom.CoUninitialize()

@@ -5,6 +5,7 @@
 """
 
 import tempfile
+import os
 import uuid
 
 import pytest
@@ -22,7 +23,9 @@ def srv():
     quit_word_if_idle(started_by_tests=not word_was_running)
 
 
-RUN_TAG = f"ol_pytest_{uuid.uuid4().hex[:8]}"  # уникальна для этого запуска: файлы других запусков и пользователя не совпадут
+# уникальна для этого запуска: файлы других запусков и пользователя не совпадут. Через окружение — потому что модуль
+# грузится дважды (pytest как conftest и тесты как tests.live.conftest), а метка должна быть одна.
+RUN_TAG = os.environ.setdefault("OFFICE_LIVE_TEST_RUN_TAG", f"ol_pytest_{uuid.uuid4().hex[:8]}")
 
 
 def _in_run_dir(path) -> bool:

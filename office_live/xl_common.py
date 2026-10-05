@@ -252,6 +252,20 @@ def clip_to_used(app, ws, rng):
     return rng
 
 
+def bounded_range(app, wb, sheet, cells, limit):
+    """Обязательный прямоугольник с лимитом до чтения данных."""
+    ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
+    if int(rng.Areas.Count) != 1:
+        raise ToolError("Multi-area ranges are not supported; select one rectangle.")
+    ws = rng.Worksheet
+    if ws.Parent.FullName != wb.FullName:
+        raise ToolError("The range must belong to the selected workbook.")
+    rng = clip_to_used(app, ws, rng)
+    if rng is not None and int(rng.Rows.Count) * int(rng.Columns.Count) > limit:
+        raise ToolError(f"Range exceeds {limit} cells; narrow the range.")
+    return ws, rng
+
+
 def count_nonempty(app, rng) -> int:
     try:
         return int(app.WorksheetFunction.CountA(rng))

@@ -1,6 +1,8 @@
 """Excel: умные таблицы, сводные таблицы, диаграммы, профилирование данных, поиск проблем."""
 
 import json
+import datetime
+import math
 import os
 import re
 import shutil
@@ -16,14 +18,231 @@ from . import com, config
 from .errors import ToolError
 from .registry import office_tool
 from .safety import check_path
-from .util import EXCEL_ERRORS, a1_cell, col_letter, parse_color, smart_number, to_grid
+from .util import EXCEL_ERRORS, a1_cell, a1_range, col_letter, col_number, norm_value, parse_color, smart_number, split_sheet_ref, to_grid
 from .excel_format import NUMBER_FORMATS
 from .xl_common import (
-    number_format_for_write, addr_of, bounds, clip_to_used, get_range, pick_sheet, pick_workbook, preview, sheet_is_empty, sheet_names,
+    number_format_for_write, addr_of, bounded_range, bounds, clip_to_used, get_range, pick_sheet, pick_workbook, preview, sheet_is_empty, sheet_names,
     sub_range, validate_sheet_name,
 )
 
 MISSING = pythoncom.Missing
+
+
+def _compare_text(value, ignore_case, ignore_whitespace):
+    if isinstance(value, str):
+        if ignore_whitespace:
+            value = " ".join(value.split())
+        if ignore_case:
+            value = value.casefold()
+    return value
+
+
+def _compare_type(value):
+    if value is None or value == "":
+        return "empty"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (float, int)):
+        return "number"
+    return "text"
+
+
+def _compare_short(value):
+    if isinstance(value, dict):
+        return {k: _compare_short(v) for k, v in value.items()}
+    return value[:185] + "... [truncated]" if isinstance(value, str) and len(value) > 200 else value
+
+
+def _compare_values(rng):
+    """Value2 сохраняет точность чисел, Value даёт тип даты, как excel_read_range."""
+    values = to_grid(rng.Value2)
+    raw = rng.Value
+    dates = raw if isinstance(raw, tuple) and raw and isinstance(raw[0], tuple) else ((raw,),)
+    for i, row in enumerate(dates):
+        for j, value in enumerate(row):
+            if isinstance(value, (datetime.date, datetime.time)):
+                values[i][j] = norm_value(value)
+    return values
+
+
+@office_tool("excel_analysis", "read", title="Compare ranges")
+def excel_compare_ranges(
+    cells_a: str,
+    workbook_a: str = "",
+    sheet_a: str = "",
+    workbook_b: str = "",
+    sheet_b: str = "",
+    cells_b: str = "",
+    compare: str = "values",
+    match: str = "position",
+    key_column: str = "",
+    ignore_case: bool = False,
+    ignore_whitespace: bool = False,
+    tolerance: float = 0,
+    max_differences: int = 200,
+) -> dict:
+    """Compare two rectangles by position or unique row keys, across sheets, workbooks or Excel instances; never modifies either range. Reports values/types, formula text or five direct formats, with bounded differences.
+
+    Args:
+        cells_a: required A1 rectangle or name; whole rows/columns are clipped to the used range.
+        workbook_a, sheet_a: first workbook and sheet (empty = active).
+        workbook_b, sheet_b, cells_b: second target; omitted fields inherit A. Targets must differ.
+        compare: values (Value2, dates as ISO), formulas (English Formula), or formats (NumberFormat, bold, italic, font/fill color).
+        match: position (intersection plus extra rectangles), or key (first row contains unique headers).
+        key_column: required for key matching: header text or absolute sheet column letter; resolves separately in each range.
+        ignore_case, ignore_whitespace: normalize text, including keys/headers; whitespace trims and collapses NBSP and other whitespace.
+        tolerance: finite nonnegative absolute numeric tolerance; keys always match exactly by type and value.
+        max_differences: 1..2000, default 200. Texts over 200 characters are marked as truncated.
+
+    Limits: 200000 cells per range for values/formulas; 5000 for formats. Empty keys are skipped and counted; duplicate keys/headers are refused.
+    """
+    if compare not in {"values", "formulas", "formats"} or match not in {"position", "key"}:
+        raise ToolError("compare must be values, formulas or formats; match must be position or key.")
+    if not math.isfinite(tolerance) or tolerance < 0:
+        raise ToolError("tolerance must be finite and nonnegative.")
+    if isinstance(max_differences, bool) or not isinstance(max_differences, int) or not 1 <= max_differences <= 2000:
+        raise ToolError("max_differences must be an integer between 1 and 2000.")
+    if match == "key" and not key_column.strip():
+        raise ToolError("key_column is required for match='key'.")
+    aa, wa = pick_workbook(workbook_a)
+    ab, wb = pick_workbook(workbook_b) if workbook_b else (aa, wa)
+    limit = 5000 if compare == "formats" else 200000
+    sa, ra = bounded_range(aa, wa, sheet_a, cells_a, limit)
+    second_cells = cells_b or split_sheet_ref(cells_a)[1]
+    second_sheet = sheet_b or ("" if split_sheet_ref(second_cells)[0] else sa.Name)
+    sb, rb = bounded_range(ab, wb, second_sheet, second_cells, limit)
+    if (int(aa.Hwnd), wa.FullName.casefold(), sa.Name.casefold(), cells_a if ra is None else addr_of(ra)) == (
+            int(ab.Hwnd), wb.FullName.casefold(), sb.Name.casefold(), second_cells if rb is None else addr_of(rb)):
+        raise ToolError("Choose different workbooks, sheets or cell addresses.")
+
+    def load(ws, rng):
+        if rng is None:
+            return {"values": [], "rows": 0, "cols": 0, "r": 1, "c": 1, "data": []}
+        r, c, end, right = bounds(rng)
+        values = _compare_values(rng) if compare != "formats" or match == "key" else []
+        data = values
+        if compare == "formulas":
+            formulas = to_grid(rng.Formula)
+            data = [[(f, True) if isinstance(f, str) and f.startswith("=") and bool(ws.Cells(r + i, c + j).HasFormula)
+                     else (values[i][j], False) for j, f in enumerate(row)] for i, row in enumerate(formulas)]
+        elif compare == "formats":
+            data = []
+            for row in range(r, end + 1):
+                line = []
+                for col in range(c, right + 1):
+                    cell = ws.Cells(row, col)
+                    line.append({"number_format": cell.NumberFormat, "bold": bool(cell.Font.Bold), "italic": bool(cell.Font.Italic),
+                                 "font_color": cell.Font.Color, "fill_color": cell.Interior.Color})
+                data.append(line)
+        return {"values": values, "rows": end - r + 1, "cols": right - c + 1, "r": r, "c": c, "data": data}
+
+    a, b = load(sa, ra), load(sb, rb)
+    summary = {"compared_cells": 0, "compared_rows": 0, "differences": dict.fromkeys(("value", "type", "formula", "format"), 0),
+               "rows_only_in_a": 0, "rows_only_in_b": 0, "skipped_empty_keys_a": 0, "skipped_empty_keys_b": 0}
+    differences, only_a, only_b = [], [], []
+    headers_only_a, headers_only_b = [], []
+
+    def address(side, row, col):
+        return a1_cell(side["r"] + row, side["c"] + col)
+
+    def normalized(value):
+        value = _compare_text(value, ignore_case, ignore_whitespace)
+        return _compare_type(value), None if value is None or value == "" else value
+
+    def compare_cell(ar, ac, br, bc, extra):
+        x, y = a["data"][ar][ac], b["data"][br][bc]
+        summary["compared_cells"] += 1
+        kind = None
+        if compare == "formats":
+            kind = "format" if x != y else None
+        else:
+            formula = False
+            if compare == "formulas":
+                (x, xf), (y, yf) = x, y
+                formula = xf or yf
+                if xf != yf:
+                    kind = "formula"
+            tx, nx = normalized(x)
+            ty, ny = normalized(y)
+            if kind is None:
+                if tx != ty:
+                    kind = "type"
+                elif tx == "number":
+                    kind = "value" if abs(nx - ny) > tolerance else None
+                elif nx != ny:
+                    kind = "value"
+            if formula and kind:
+                kind = "formula"
+        if kind:
+            summary["differences"][kind] += 1
+            if len(differences) < max_differences:
+                differences.append({"cell_a": address(a, ar, ac), "cell_b": address(b, br, bc), "kind": kind,
+                                    "a": _compare_short(x), "b": _compare_short(y), **extra})
+
+    if match == "position":
+        rows, cols = min(a["rows"], b["rows"]), min(a["cols"], b["cols"])
+        for r in range(rows):
+            for c in range(cols):
+                compare_cell(r, c, r, c, {})
+        summary["compared_rows"] = rows
+        for name, side, output in (("a", a, only_a), ("b", b, only_b)):
+            summary["rows_only_in_" + name] = side["rows"] - rows
+            if side["rows"] > rows and side["cols"]:
+                output.append(a1_range(side["r"] + rows, side["c"], side["r"] + side["rows"] - 1, side["c"] + side["cols"] - 1))
+            if side["cols"] > cols and rows:
+                output.append(a1_range(side["r"], side["c"] + cols, side["r"] + rows - 1, side["c"] + side["cols"] - 1))
+    else:
+        def index(side, label):
+            if not side["values"]:
+                raise ToolError(f"Range {label} needs a header row for key matching.")
+            headers, keys, duplicates = {}, {}, []
+            for i, value in enumerate(side["values"][0]):
+                key = normalized(value)
+                if key in headers:
+                    raise ToolError(f"Duplicate header in {label}: {_compare_short(value)!r}")
+                headers[key] = i
+            needle = normalized(key_column)
+            col = headers.get(needle)
+            if col is None and re.fullmatch(r"[A-Za-z]{1,3}", key_column):
+                candidate = col_number(key_column) - side["c"]
+                if 0 <= candidate < side["cols"]:
+                    col = candidate
+            if col is None:
+                raise ToolError(f"key_column {key_column!r} not found in {label}.")
+            for i, row in enumerate(side["values"][1:], 1):
+                key = normalized(row[col])
+                if key[0] == "empty":
+                    summary["skipped_empty_keys_" + label.lower()] += 1
+                elif key in keys:
+                    if len(duplicates) < 10:
+                        duplicates.append(_compare_short(row[col]))
+                else:
+                    keys[key] = i
+            if duplicates:
+                raise ToolError(f"Duplicate keys in {label}: {duplicates}")
+            return headers, keys, col
+
+        ha, ka, ca = index(a, "A")
+        hb, kb, _ = index(b, "B")
+        headers_only_a = [_compare_short(a["values"][0][c]) for h, c in ha.items() if h not in hb]
+        headers_only_b = [_compare_short(b["values"][0][c]) for h, c in hb.items() if h not in ha]
+        for key, ar in ka.items():
+            if key not in kb:
+                only_a.append(a1_range(a["r"] + ar, a["c"], a["r"] + ar, a["c"] + a["cols"] - 1))
+                continue
+            br = kb[key]
+            summary["compared_rows"] += 1
+            for header, ac in ha.items():
+                if header in hb:
+                    compare_cell(ar, ac, br, hb[header], {"key": _compare_short(a["values"][ar][ca]), "column": _compare_short(a["values"][0][ac])})
+        only_b = [a1_range(b["r"] + br, b["c"], b["r"] + br, b["c"] + b["cols"] - 1) for key, br in kb.items() if key not in ka]
+        summary.update(rows_only_in_a=len(only_a), rows_only_in_b=len(only_b))
+    total = sum(summary["differences"].values())
+    # списки строк «только в A/B» при сравнении по ключу растут со строками — режем тем же лимитом
+    return {"summary": summary, "differences": differences, "truncated": total > len(differences), "remaining_differences": total - len(differences),
+            "only_in_a": only_a[:max_differences], "only_in_b": only_b[:max_differences],
+            "only_truncated": len(only_a) > max_differences or len(only_b) > max_differences,
+            "headers_only_in_a": headers_only_a, "headers_only_in_b": headers_only_b}
 
 # ================================================================== умные таблицы (ListObject)
 
@@ -866,4 +1085,3 @@ def excel_find_issues(workbook: str = "", sheet: str = "", cells: str = "", max_
         "summary": f"{sum(e['count'] for e in ordered)} findings of {len(ordered)} types" if ordered else "No issues found.",
         "issues": ordered,
     }
-

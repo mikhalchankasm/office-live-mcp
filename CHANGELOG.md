@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add `excel_compare_ranges`: position/key matching across workbooks and instances, values/types, formulas or direct formats,
+  duplicate-key/header refusal, bounded differences and explicit unmatched ranges/headers. Available in readonly mode.
+- Add `excel_clean_text`: preview by default without change logging, fixed cleanup order, conservative numeric conversion,
+  formula/merge/pivot/protection guards, changed-cell runs, literal text read-back and number-format restoration.
+- Add `word_compare_documents`: a new unsaved revision document, same-instance sources, hidden read-only temporary files,
+  macro suppression and guaranteed cleanup attempts. Source revisions produce warnings; discard by closing the result.
+- Add `word_sort_table`: up to three text/number/date keys, full preflight checks, locale-aware typed-key validation and native undo.
+- Clean/sort prepare undo only after preflight succeeds and refuse to write when the undo snapshot cannot be made
+  (with `OFFICE_LIVE_UNDO=0` they write without one); partial COM failures keep the history.
+- Packaged `install.cmd` warns when the extracted `app\_internal` path exceeds 200 characters, then continues installation.
+  Unit tests isolate the installer profile and use temporary folders, including the exact 200/201 boundary.
+- Add unit/refusal/undo regressions, Office type-library signature checks and opt-in live scenarios for all four tools.
+  Update the generated catalog and EN/RU documentation to 109 tools.
 - CI can be started by hand (`workflow_dispatch`).
 - Known limitation documented: the PyInstaller build does not start when the full path of its libraries exceeds
   260 characters (very deep extraction folder, long `--target` or user profile).

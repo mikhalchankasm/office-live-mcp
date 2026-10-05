@@ -918,6 +918,33 @@ def test_failed_validation_leaves_previous_undo_available(office):
     assert o.ws.Range("A1").Value is None
 
 
+def test_clean_text_snapshot_failure_keeps_previous_undo_available(office, monkeypatch):
+    o = office
+    write(o, " x ")
+    previous = stack(o)[-1]
+
+    def fail(*args, **kwargs):
+        raise ValueError("snapshot interrupted")
+
+    monkeypatch.setattr(undo, "_snapshots", fail)
+    with pytest.raises(ToolError, match="could not prepare office_undo"):
+        o.call("excel_clean_text", workbook=o.wb.Name, sheet="Data", cells="A1", operations=["trim"], preview=False)
+    assert stack(o) == [previous] and previous.undoable and o.ws.Range("A1").Value == " x "
+    revert(o)
+    assert o.ws.Range("A1").Value is None
+
+
+def test_sort_validation_does_not_start_a_word_record_or_poison_history(office):
+    o = office
+    o.word_write("prior")
+    with pytest.raises(ToolError, match="1..3"):
+        o.call("word_sort_table", document=o.doc.Name, table_index=1, keys=[])
+    assert len(o.word.starts) == o.word.ends == 1
+    assert o.call("office_undo", file=o.doc.Name, action="history")["history"][0]["undoable"]
+    o.call("office_undo", file=o.doc.Name)
+    assert o.doc.Content.Text == "original"
+
+
 def test_interleaved_user_edit_still_blocks_older_excel_undo(office):
     o = office
     write(o, 1)

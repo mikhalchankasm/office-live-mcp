@@ -1,9 +1,12 @@
 """Word: таблицы — чтение, создание, запись ячеек, строки/столбцы, объединение, оформление."""
 
+import ctypes
+import re
+
 import pywintypes
 
 from . import com
-from .errors import ToolError
+from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .util import clean_word_text, cm_to_points, parse_color, to_com_grid, to_word_text
 from .wd_common import (
@@ -261,6 +264,114 @@ def word_write_table(
 
 
 # ================================================================== структура
+
+
+def _sort_value(text, kind, language):
+    """Разбор Windows с тем же LCID, который явно передаём Word.Sort."""
+    text = text.strip().replace("\u00a0", " ").replace("\u202f", " ")
+    if not text or "\n" in text or (kind == "date" and not re.search(r"\b\d{4}\b", text)):
+        return None
+    library = ctypes.WinDLL("oleaut32")
+    parse = library.VarDateFromStr if kind == "date" else library.VarR8FromStr
+    parse.argtypes = (ctypes.c_wchar_p, ctypes.c_ulong, ctypes.c_ulong, ctypes.POINTER(ctypes.c_double))
+    parse.restype = ctypes.c_long
+    result = ctypes.c_double()
+    if parse(text, language, 2 if kind == "date" else 0, ctypes.byref(result)) < 0:
+        return None
+    return result.value
+
+
+def _sort_rows(tbl, rows, cols):
+    return [[clean_word_text(tbl.Cell(r, c).Range.Text) for c in range(1, cols + 1)] for r in range(1, rows + 1)]
+
+
+@office_tool("word_tables", "write", title="Sort table")
+def word_sort_table(document: str, table_index: int, keys: list[dict], header: bool = True, case_sensitive: bool = False) -> dict:
+    """Sort a plain Word table by 1..3 columns, preserving its header by default; supports office_undo and refuses later user edits on undo. Returns the first 20 rows.
+
+    Args:
+        document: exact open document name.
+        table_index: 1-based table index.
+        keys: 1..3 unique keys {column: 1-based integer, order: asc/desc (default asc), type: text/number/date (default text)}.
+        header: true keeps the first row in place and requires at least one data row.
+        case_sensitive: case-sensitive text sorting, false by default.
+
+    Refuses merged/nested tables, tracking or document protection, and unparseable numeric/date keys before any edit.
+    Windows parses typed keys using the table's language (Windows locale for mixed language); dates require a four-digit year. This same language is passed to Word.Sort.
+    """
+    if not isinstance(keys, list) or not 1 <= len(keys) <= 3:
+        raise ToolError("keys must contain 1..3 sort keys.")
+    plan, columns = [], set()
+    for key in keys:
+        if not isinstance(key, dict):
+            raise ToolError("Each key must be an object with column, order and type.")
+        column, order, kind = key.get("column"), key.get("order", "asc"), key.get("type", "text")
+        if isinstance(column, bool) or not isinstance(column, int) or column < 1:
+            raise ToolError("column must be a positive 1-based integer.")
+        if column in columns:
+            raise ToolError("Duplicate sort column.")
+        if order not in {"asc", "desc"} or kind not in {"text", "number", "date"}:
+            raise ToolError("order must be asc/desc; type must be text/number/date.")
+        columns.add(column)
+        plan.append((column, kind, order))
+    if isinstance(table_index, bool) or not isinstance(table_index, int) or table_index < 1:
+        raise ToolError("table_index must be a positive 1-based integer.")
+    app, doc = pick_document(document)
+    tbl = get_table(doc, table_index)
+    if bool(doc.TrackRevisions):
+        raise ToolError("Turn off Track Changes first: sorting would create many tracked insertions/deletions.")
+    if int(doc.ProtectionType) != -1:
+        raise ToolError("The document is protected; no rows were changed.")
+    if not bool(tbl.Uniform):
+        raise ToolError("Merged or nonuniform tables cannot be sorted.")
+    try:
+        rows, cols = int(tbl.Rows.Count), int(tbl.Columns.Count)
+    except pywintypes.com_error:
+        raise ToolError("Merged or nonuniform tables cannot be sorted.") from None
+    if int(tbl.Range.Cells.Count) != rows * cols:
+        raise ToolError("Merged cells cannot be sorted.")
+    if int(tbl.Tables.Count) or int(tbl.NestingLevel) != 1:
+        raise ToolError("Nested tables cannot be sorted.")
+    if rows < (2 if header else 1):
+        raise ToolError("The table has no data rows to sort with this header setting.")
+    if max(columns) > cols:
+        raise ToolError(f"Sort column is outside the table (1..{cols}).")
+    language = int(tbl.Range.LanguageID)
+    if language in {0, 1024, 9999999}:
+        language = int(ctypes.WinDLL("kernel32").GetUserDefaultLCID())
+    before = _sort_rows(tbl, rows, cols)
+    invalid = []
+    for col, kind, _ in plan:
+        if kind == "text":
+            continue
+        for r in range(1 if header else 0, rows):
+            text = before[r][col - 1]
+            if _sort_value(text, kind, language) is None:
+                invalid.append({"row": r + 1, "column": col, "type": kind, "text": text[:200]})
+    if invalid:
+        raise ToolError(f"Unparseable sort cells ({len(invalid)}): {invalid}; no rows were changed.")
+    from .undo import require_undo
+
+    require_undo("document", app, doc)
+    args = [bool(header)]
+    for col, kind, order in plan:
+        args.extend((str(col), {"text": 0, "number": 1, "date": 2}[kind], 0 if order == "asc" else 1))
+    for _ in range(3 - len(plan)):
+        args.extend(("", 0, 0))
+    args.extend((bool(case_sensitive), False, False, False, False, False, language))
+    try:
+        tbl.Sort(*args)
+        after = _sort_rows(tbl, rows, cols)
+    except (pywintypes.com_error, ToolError) as exc:
+        try:
+            current = _sort_rows(tbl, rows, cols)
+            applied = sum(a != b for a, b in zip(before, current, strict=True))
+            progress = f"applied={applied} row positions changed, unchanged={rows - applied}"
+        except (pywintypes.com_error, ToolError):
+            progress = "applied=unknown (Word failed to read back row positions)"
+        raise PartialChangeError(f"Sort interrupted: {progress}. {com.translate(exc)}") from None
+    return {"document": doc.Name, "table": table_index, "rows": rows, "columns": cols, "uniform": True,
+            "sorted_rows": rows - int(header), "values": after[:20], "truncated": rows > 20, "language_id": language}
 
 
 @office_tool("word_tables", "write", title="Modify table structure", destructive=True)
@@ -548,4 +659,3 @@ def _line_width(points: float) -> int:
     """pt -> WdLineWidth (константы фиксированного набора)."""
     table = [(0.25, 2), (0.5, 4), (0.75, 6), (1.0, 8), (1.5, 12), (2.25, 18), (3.0, 24), (4.5, 36), (6.0, 48)]
     return min(table, key=lambda t: abs(t[0] - points))[1]
-

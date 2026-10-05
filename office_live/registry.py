@@ -57,6 +57,7 @@ class ToolInfo:
     doc: str
     read_actions: tuple = ()  # действия многоактного инструмента, доступные и в режиме readonly
     file_args: tuple = ()  # параметры-пути, запись в которые попадает в аудит даже у читающего действия
+    preview_arg: str = ""
 
 
 CATALOG: dict[str, ToolInfo] = {}  # все объявленные инструменты (в т.ч. отключённые настройками) — для документации
@@ -159,6 +160,7 @@ def office_tool(
     destructive: bool | None = None,
     read_only: bool | None = None,
     file_args: tuple | None = None,
+    preview_arg: str = "",
 ):
     """Регистрирует функцию как MCP-инструмент.
 
@@ -170,6 +172,7 @@ def office_tool(
     destructive: переопределить подсказку destructiveHint (инструмент с действием delete/clear и т. п.).
     read_only: переопределить readOnlyHint (False — инструмент доступен в readonly, но на мгновение меняет документ, например снимок диапазона).
     file_args: параметры-пути, запись в которые делает даже «читающий» вызов (export_path): такой вызов попадает в журнал аудита.
+    preview_arg: булев параметр предпросмотра; true выполняется как чтение без журнала и отмены.
     Функция выполняется в COM-контексте (CoInitialize, повторы при «Office занят», перевод ошибок в ToolError).
     """
     if kind not in config.ALL_KINDS:
@@ -180,7 +183,7 @@ def office_tool(
         settings = config.SETTINGS
         readonly_partial = bool(read_actions) and settings.readonly and settings.group_selected(group) and kind not in config.READ_KINDS
         enabled = settings.enabled(group, kind) or readonly_partial
-        CATALOG[name] = ToolInfo(name, group, kind, enabled, (fn.__doc__ or "").strip(), tuple(read_actions or ()), tuple(file_args or ()))
+        CATALOG[name] = ToolInfo(name, group, kind, enabled, (fn.__doc__ or "").strip(), tuple(read_actions or ()), tuple(file_args or ()), preview_arg)
         if not enabled:
             return fn
         sig = inspect.signature(fn)
@@ -202,6 +205,8 @@ def office_tool(
                 raise ToolError(str(exc)) from None
             arguments = dict(bound.arguments)
             bound.apply_defaults()
+            if preview_arg and bound.arguments.get(preview_arg):
+                is_read_action, audited = True, False
 
             def invoke(*call_args, **call_kwargs):
                 from .undo import record_call

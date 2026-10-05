@@ -114,6 +114,29 @@ class Range:
         self.Rows = NS(Count=self.r2 - self.Row + 1)
         self.Columns = NS(Count=self.c2 - self.Column + 1)
         self.Address = a1_range(self.Row, self.Column, self.r2, self.c2)
+        self.Areas = Collection([self])
+
+    @property
+    def HasFormula(self):
+        return any(isinstance(self.Worksheet.data.get(rc), str) and self.Worksheet.data[rc].startswith("=")
+                   and self.Worksheet.prefixes.get(rc) != "'" for rc in self.positions())
+
+    @property
+    def HasSpill(self):
+        return any(rc in self.Worksheet.spills for rc in self.positions()) if hasattr(self.Worksheet, "spills") else False
+
+    @property
+    def PrefixCharacter(self):
+        values = {self.Worksheet.prefixes.get(rc, "") for rc in self.positions()}
+        return values.pop() if len(values) == 1 else None
+
+    @property
+    def MergeArea(self):
+        for area in self.Worksheet.merges:
+            rng = self.Worksheet.Range(area)
+            if rng.Row <= self.Row <= rng.r2 and rng.Column <= self.Column <= rng.c2:
+                return rng
+        return self
 
     def positions(self):
         return ((r, c) for r in range(self.Row, self.r2 + 1) for c in range(self.Column, self.c2 + 1))
@@ -130,13 +153,15 @@ class Range:
 
     @property
     def Value(self):
-        return self.Formula
+        values = tuple(tuple(self.Worksheet.results.get((r, c), self.Worksheet.data.get((r, c))) for c in range(self.Column, self.c2 + 1)) for r in range(self.Row, self.r2 + 1))
+        return values[0][0] if self.Rows.Count == self.Columns.Count == 1 else values
 
     @Value.setter
     def Value(self, value):
         self._assign(value)
 
     Formula2 = Formula
+    Value2 = Value
 
     def _assign(self, value, formula=False):
         grid = to_grid(value)
@@ -146,6 +171,9 @@ class Range:
                 item = int(item)  # ловушка Excel: '007' через Formula становится числом
             if isinstance(item, str) and item.startswith("'"):
                 item = item[1:]
+                self.Worksheet.prefixes[r, c] = "'"
+            else:
+                self.Worksheet.prefixes.pop((r, c), None)
             self.Worksheet.data[r, c] = item
 
     @property
@@ -203,13 +231,20 @@ class Range:
         self._copy_to(destination, formats=True)
 
     def _copy_to(self, destination, *, formats):
-        grid = to_grid(self.Formula)
+        raw = self.Formula
+        grid = raw if isinstance(raw, tuple) and raw and isinstance(raw[0], tuple) else ((raw,),)
         for i, row in enumerate(grid):
             for j, value in enumerate(row):
-                if self.Worksheet.Parent is not destination.Worksheet.Parent and isinstance(value, str) and value.startswith("="):
+                if (self.Worksheet.Parent is not destination.Worksheet.Parent and isinstance(value, str) and value.startswith("=")
+                        and self.Worksheet.prefixes.get((self.Row + i, self.Column + j)) != "'"):
                     value = "=[other.xlsx]" + value[1:]
                 destination.Worksheet.data[destination.Row + i, destination.Column + j] = value
                 rc = (destination.Row + i, destination.Column + j)
+                prefix = self.Worksheet.prefixes.get((self.Row + i, self.Column + j))
+                if prefix:
+                    destination.Worksheet.prefixes[rc] = prefix
+                else:
+                    destination.Worksheet.prefixes.pop(rc, None)
                 if formats:
                     source_format = self.Worksheet.formats.get((self.Row + i, self.Column + j))
                     if source_format:
@@ -319,6 +354,8 @@ class Sheet:
         self.Visible = -1
         self.Tab = NS(ColorIndex=-4142, Color=0)
         self.data, self.columns, self.rows, self.formats = {}, {}, {}, {}
+        self.prefixes, self.results, self.merges = {}, {}, []
+        self.ProtectContents = False
         self.StandardWidth = 8.43
         self.dimension_reads = []
         self.format_reads = []
@@ -424,6 +461,7 @@ class Excel:
         self.Workbooks = Books(self)
         self.ActiveWorkbook = None
         self.Selection = None
+        self.International = {2: ",", 3: " ", 4: ";"}
         self.WorksheetFunction = NS(CountA=lambda rng: sum(v is not None for row in to_grid(rng.Value) for v in row))
 
     @property
@@ -436,6 +474,12 @@ class Excel:
 
     def Calculate(self):
         pass
+
+    def Intersect(self, a, b, /):
+        if a.Worksheet is not b.Worksheet:
+            return None
+        r, c, end, right = max(a.Row, b.Row), max(a.Column, b.Column), min(a.r2, b.r2), min(a.c2, b.c2)
+        return a.Worksheet.Range(a1_range(r, c, end, right)) if r <= end and c <= right else None
 
 
 class HeaderFooter:
@@ -473,6 +517,8 @@ class Content:
         noise = f'w14:paraId="{Content._reads:08X}" w14:textId="77777777" w:rsidR="{Content._reads:08X}"'
         doc = self._doc
         parts = [("/word/document.xml", f"<w:body><w:p {noise}><w:t>{self.Text}</w:t></w:p></w:body>")]
+        if any(hasattr(table, "data") for table in doc.Tables):
+            parts[0] = (parts[0][0], parts[0][1] + repr([table.data for table in doc.Tables]))
         number = 0
         for section in doc.__dict__.get("_xml_sections") or doc.Sections:  # тест может спрятать Sections от кода
             for kind in ("Headers", "Footers"):
@@ -493,6 +539,8 @@ class Document:
         self.Application = app
         self.Name, self.FullName, self.Path = "Draft.docx", "Draft.docx", ""
         self.AutoSaveOn = False
+        self.Saved, self.ReadOnly, self.TrackRevisions, self.ProtectionType = True, False, False, -1
+        self.Revisions = Collection()
         self.Content = Content(self, "original")
         self.Paragraphs, self.Tables, self.InlineShapes = Collection([NS()]), Collection(), Collection()
         self.Sections, self.Comments = Collection([Section()]), Collection()
@@ -511,12 +559,17 @@ class Document:
         self.__dict__.update(self.states.pop())
         return True
 
+    def Close(self, save, /):
+        assert save == 0
+        self.Application.Documents.items.remove(self)
+
 
 class Word:
     def __init__(self):  # как у настоящего Word.Application: свойства Hwnd нет
         self.Documents = Collection([Document(self)])
         self.ActiveDocument = self.Documents(1)
         self.starts, self.ends = [], 0
+        self.AutomationSecurity = 1
         self.UndoRecord = NS(IsRecordingCustomRecord=False, StartCustomRecord=self.start, EndCustomRecord=self.end)
 
     def start(self, label):
@@ -531,7 +584,7 @@ class Word:
 
 @pytest.fixture(name="office")
 def fake_office(monkeypatch, tmp_path):
-    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, registry, templates, undo, wd_common
+    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, registry, templates, undo, wd_common, word_core, word_tables
 
     excel, word = Excel(), Word()
     wb = excel.Workbooks.Add()
@@ -543,12 +596,12 @@ def fake_office(monkeypatch, tmp_path):
     saved_catalog = dict(registry.CATALOG)
     registered = {}
     monkeypatch.setattr(registry, "mcp", NS(add_tool=lambda fn, name, **kw: registered.__setitem__(name, fn)))
-    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, undo)
+    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, undo, word_core, word_tables)
 
     def call(tool_name, **kwargs):
         fn = next(getattr(m, tool_name) for m in modules if hasattr(m, tool_name))
         info = registry.CATALOG[tool_name]
-        registry.office_tool(info.group, info.kind, read_actions=info.read_actions, file_args=info.file_args)(fn)
+        registry.office_tool(info.group, info.kind, read_actions=info.read_actions, file_args=info.file_args, preview_arg=info.preview_arg)(fn)
         return registered[tool_name](**kwargs)
 
     def word_write(text, fail=False, tool="word_insert_text"):

@@ -46,12 +46,12 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 
 ## What it can do
 
-105 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`) — full list in [docs/TOOLS.md](docs/TOOLS.md).
+109 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`) — full list in [docs/TOOLS.md](docs/TOOLS.md).
 
 | Group | Highlights |
 |---|---|
-| Excel | read/write ranges, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
-| Word | structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
+| Excel | read/write ranges, **compare ranges by position or key**, **clean text with a preview and undo**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
+| Word | **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
 | Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF, inspect a file without opening it |
 | History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes |
 

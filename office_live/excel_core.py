@@ -2,19 +2,20 @@
 
 import os
 import re
+import unicodedata
 
 import pywintypes
 
 from . import com
-from .errors import ToolError
+from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .safety import EXCEL_EXTS, check_path
 from .util import (
     cell_kind, MAX_COLS, MAX_ROWS, a1_cell, a1_range, col_letter, col_number, parse_a1,
-    parse_color, quote_sheet, to_com_grid, to_grid,
+    parse_color, quote_sheet, smart_number, to_com_grid, to_grid,
 )
 from .xl_common import (
-    addr_of, all_workbooks, workbook_allowed, suspend_events, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
+    addr_of, all_workbooks, workbook_allowed, suspend_events, bounded_range, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
     pick_sheet, pick_workbook, preview, read_grid, ref_label, sheet_is_empty, sheet_names, sub_range,
     validate_sheet_name,
 )
@@ -501,6 +502,174 @@ def excel_select_range(workbook: str, sheet: str, cells: str) -> dict:
 
 
 # ================================================================== запись
+
+
+def _clean_text_value(value, operations, decimal_separator, explicit_decimal):
+    if "clean" in operations:
+        value = "".join(c for c in value if (unicodedata.category(c) != "Cc" or c == "\n") and c not in "\u200b\u200c\u200d\ufeff")
+    if "trim" in operations:
+        value = re.sub(r" +", " ", value.replace("\u00a0", " ").replace("\u202f", " ")).strip(" ")
+    for op in ("upper", "lower", "proper"):
+        if op in operations:
+            value = value.title() if op == "proper" else getattr(value, op)()
+    reason = ""
+    if "text_to_number" in operations:
+        core = value.strip().removesuffix("%").strip().strip("()").lstrip("+-").strip()
+        if re.match(r"^0\d", core):
+            reason = "leading_zero"
+        elif not explicit_decimal and re.fullmatch(r"\d+[.,]\d{3}", core):
+            reason = "ambiguous"
+        elif not re.fullmatch(r"\+\d{7,}", value.strip()):
+            number = smart_number(value, decimal_separator)
+            if number is not None:
+                value = number
+    return value, reason
+
+
+def _clean_input(value, prefix):
+    if isinstance(value, str) and (prefix == "'" or value.startswith(("=", "+", "-", "@", "'"))
+                                   or any(c.isdigit() for c in value) or value.casefold() in {"true", "false", "истина", "ложь"}):
+        return "'" + value
+    return value
+
+
+def _clean_matches(cell, expected):
+    actual = cell.Value2
+    if isinstance(expected, str):
+        return not bool(cell.HasFormula) and (actual == expected or (expected == "" and actual is None))
+    return not isinstance(actual, (str, bool)) and actual == expected
+
+
+@office_tool("excel_core", "write", title="Clean text", preview_arg="preview")
+def excel_clean_text(
+    workbook: str,
+    sheet: str,
+    cells: str,
+    operations: list[str],
+    decimal_separator: str = "",
+    preview: bool = True,
+) -> dict:
+    """Clean text constants with a preview by default; preserve formulas, literal text and leading-zero codes. Writes only changed cells in vertical runs, verifies their types, and supports office_undo even after a partial COM failure.
+
+    Args:
+        workbook, sheet: exact target workbook and sheet.
+        cells: required rectangle (whole rows/columns clipped to used range), at most 100000 cells.
+        operations: nonempty list of trim, clean, upper/lower/proper (at most one case operation), text_to_number. Fixed order: clean, trim, case, number.
+        decimal_separator: comma or dot; empty uses Excel's separator and skips ambiguous 1,234 / 1.234.
+        preview: true returns counts and up to 50 examples without writes, undo history or change journal; false writes only after the undo snapshot is ready (refuses if it cannot be made; with OFFICE_LIVE_UNDO=0 it writes without one).
+
+    Protected sheets and pivot intersections are refused. Non-text, formulas and merged-cell followers are skipped.
+    trim collapses spaces/NBSP while preserving newlines; clean removes controls except LF and zero-width characters.
+    Text-to-number leaves dates, phone-like strings, leading zeros and numbers beyond 15 digits as text; @ changes to General only for converted numbers.
+    """
+    if not isinstance(operations, list) or not operations or any(not isinstance(op, str) or op not in {"trim", "clean", "upper", "lower", "proper", "text_to_number"} for op in operations):
+        raise ToolError("operations must be a nonempty list of trim, clean, upper, lower, proper, text_to_number.")
+    if len(set(operations)) != len(operations) or len(set(operations) & {"upper", "lower", "proper"}) > 1:
+        raise ToolError("operations must be unique, with at most one of upper, lower, proper.")
+    if decimal_separator not in {"", ",", "."}:
+        raise ToolError("decimal_separator must be ',' or '.' or empty.")
+    app, wb = pick_workbook(workbook)
+    ws, rng = bounded_range(app, wb, sheet, cells, 100000)
+    if bool(ws.ProtectContents):
+        raise ToolError("The sheet is protected (ProtectContents); no cells were changed.")
+    result = {"preview": preview, "workbook": wb.Name, "sheet": ws.Name, "changed": 0, "skipped_formulas": 0,
+              "skipped_non_text": 0, "skipped_merged": 0, "skipped_ambiguous": 0, "skipped_leading_zero": 0,
+              "ambiguous": [], "examples": [], "format_changed": [], "rewritten_as_text": []}
+    if rng is None:
+        return result
+    pivots = ws.PivotTables()
+    overlaps = [pivots(i).Name for i in range(1, int(pivots.Count) + 1) if app.Intersect(rng, pivots(i).TableRange2) is not None]
+    if overlaps:
+        raise ToolError(f"Range intersects pivot tables: {overlaps}; no cells were changed.")
+    separator = decimal_separator or app.International[2]
+    r1, c1, _, _ = bounds(rng)
+    raw, raw_formulas = rng.Value2, rng.Formula
+    values = raw if isinstance(raw, tuple) and raw and isinstance(raw[0], tuple) else ((raw,),)
+    formulas = raw_formulas if isinstance(raw_formulas, tuple) and raw_formulas and isinstance(raw_formulas[0], tuple) else ((raw_formulas,),)
+    any_merged = rng.MergeCells is not False  # None — частично объединён
+    changes = []
+    # Массивы читаются один раз; поячеечные вызовы COM — только для ячеек, которые действительно изменятся.
+    for j in range(int(rng.Columns.Count)):
+        for i, row in enumerate(values):
+            cell = None
+            if any_merged:  # поячеечная проверка объединений — только если они есть в диапазоне
+                cell = ws.Cells(r1 + i, c1 + j)
+                if bool(cell.MergeCells) and (int(cell.MergeArea.Row), int(cell.MergeArea.Column)) != (r1 + i, c1 + j):
+                    result["skipped_merged"] += 1
+                    continue
+            maybe_formula = isinstance(formulas[i][j], str) and formulas[i][j].startswith("=")
+            if not isinstance(row[j], str):
+                result["skipped_formulas" if maybe_formula else "skipped_non_text"] += 1
+                continue
+            value, reason = _clean_text_value(row[j], operations, separator, bool(decimal_separator))
+            address = a1_cell(r1 + i, c1 + j)
+            if value == row[j]:
+                if maybe_formula:
+                    result["skipped_formulas"] += 1
+                elif reason:
+                    result["skipped_" + reason] += 1
+                    if reason == "ambiguous":
+                        result["ambiguous"].append(address)
+                continue
+            cell = cell or ws.Cells(r1 + i, c1 + j)
+            # «=…» в массиве Formula бывает и у текста с апострофом; спрашиваем ячейку только у реальных изменений
+            if (maybe_formula and bool(cell.HasFormula)) or bool(cell.HasSpill):  # HasSpill — часть растёкшегося массива
+                result["skipped_formulas"] += 1
+                continue
+            if reason:
+                result["skipped_" + reason] += 1
+                if reason == "ambiguous":
+                    result["ambiguous"].append(address)
+            if isinstance(value, str) and len(value) > 32767:
+                raise ToolError(f"Cleaned text in {address} exceeds 32767 characters; no cells were changed.")
+            changes.append({"r": r1 + i, "c": c1 + j, "address": address, "cell": cell, "value": value,
+                            "input": _clean_input(value, cell.PrefixCharacter), "format": cell.NumberFormat, "merged": bool(cell.MergeCells)})
+            if len(result["examples"]) < 50:
+                result["examples"].append({"cell": address, "before": row[j], "after": value})
+    result["changed"] = len(changes)
+    if preview or not changes:
+        return result
+    from .undo import require_undo
+
+    require_undo("workbook", app, wb)
+    groups = []
+    for change in changes:
+        previous = groups[-1][-1] if groups else None
+        if previous and previous["c"] == change["c"] and previous["r"] + 1 == change["r"] and not (previous["merged"] or change["merged"]):
+            groups[-1].append(change)
+        else:
+            groups.append([change])
+    applied = 0
+    try:
+        for group in groups:
+            for change in group:
+                if not isinstance(change["value"], str) and change["format"] == "@":
+                    change["cell"].NumberFormat = "General"
+                    result["format_changed"].append(change["address"])
+            target = sub_range(ws, group[0]["r"], group[0]["c"], group[-1]["r"], group[-1]["c"])
+            target.Value2 = tuple((change["input"],) for change in group)
+            for change in group:
+                if not _clean_matches(change["cell"], change["value"]):
+                    if isinstance(change["value"], str):
+                        change["cell"].Value2 = "'" + change["value"]
+                        result["rewritten_as_text"].append(change["address"])
+                    if not _clean_matches(change["cell"], change["value"]):
+                        raise ToolError(f"Read-back mismatch at {change['address']}.")
+                applied += 1
+                change["verified"] = True
+    except (pywintypes.com_error, ToolError) as exc:
+        confirmed = applied
+        unknown = 0
+        for change in changes:
+            if change.get("verified"):
+                continue
+            try:
+                confirmed += int(_clean_matches(change["cell"], change["value"]))
+            except (pywintypes.com_error, ToolError):
+                unknown += 1
+        raise PartialChangeError(f"Clean text interrupted: applied={confirmed}, remaining={len(changes) - confirmed}, unverified={unknown}; "
+                                 f"format_changed={result['format_changed']}. {com.translate(exc)}") from None
+    return {**result, "applied": applied, "remaining": 0}
 
 
 def _assign_formula(rng, value, r1c1: bool = False):

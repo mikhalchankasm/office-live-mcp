@@ -2,6 +2,8 @@
 режим и запуск дочерних exe подменяются."""
 
 import sys
+import os
+import subprocess
 from types import SimpleNamespace
 import json
 import base64
@@ -13,6 +15,11 @@ from office_live import __main__ as entry
 from office_live import cli, install
 
 REAL_STARTS = install._starts
+
+
+@pytest.fixture(autouse=True)
+def isolated_install_profile(tmp_path, monkeypatch):
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "profile"))
 
 
 @pytest.fixture
@@ -391,3 +398,30 @@ def test_a_hanging_doctor_does_not_stop_the_installation(bundle, monkeypatch, ca
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
     assert seen[0] == ("doctor", install.DOCTOR_TIMEOUT) and seen[-1][0] == "setup"  # проверка запуска и подключение состоялись
     assert "doctor не ответил" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("length,warning", [(199, False), (200, False), (201, True), (220, True)])
+def test_packaged_cmd_long_path_warns_but_continues_in_isolated_profile(tmp_path, length, warning):
+    source = (Path(__file__).parents[1] / "packaging" / "install.cmd").read_text(encoding="ascii")
+    invocation = '"app\\office-live-mcp.exe" install %*'
+    assert invocation in source
+    # В копии теста заменяем только запуск exe на безопасную заглушку cmd; Office/установщик не запускаются.
+    source = source.replace(invocation, 'call "app\\probe.cmd" install %*')
+    base = tmp_path / "with spaces & apostrophe's !"
+    count = length - len(str(base / "app" / "_internal")) - 1
+    assert count > 0
+    root = base / ("x" * count)
+    app = root / "app"
+    app.mkdir(parents=True)
+    assert len(str(app / "_internal")) == length
+    (app / "office-live-mcp.exe").write_text("never executed", encoding="ascii")
+    (root / "install.cmd").write_text(source, encoding="ascii")
+    (app / "probe.cmd").write_text('@echo off\necho PROBE_CALLED %*\necho PROFILE=%LOCALAPPDATA%\nexit /b 7\n', encoding="ascii")
+    profile = tmp_path / "profile"
+    env = {**os.environ, "LOCALAPPDATA": str(profile), "OFFICE_LIVE_NO_PAUSE": "1"}
+    result = subprocess.run(["cmd.exe", "/d", "/v:on", "/c", r".\install.cmd", "--yes"], cwd=root, env=env, capture_output=True, text=True, timeout=20)
+    assert result.returncode == 7, result.stdout + result.stderr
+    assert ("WARNING:" in result.stdout) is warning
+    assert "PROBE_CALLED install --yes" in result.stdout and str(profile) in result.stdout
+    if warning:
+        assert "shorter folder" in result.stdout and "Downloads" in result.stdout

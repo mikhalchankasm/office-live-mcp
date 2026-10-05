@@ -3,7 +3,7 @@
 Сгенерировано командой `python -m office_live tools --markdown`. Описания — на английском: их читает агент.
 Вид `write (readonly: list)` — многоактный инструмент: в режиме `OFFICE_LIVE_MODE=readonly` доступны только перечисленные действия чтения.
 
-### excel_core (33)
+### excel_core (34)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -19,6 +19,7 @@
 | `excel_find` | read | Search cell values or formulas. Returns matching cells with their address and content. |
 | `excel_get_selection` | read | What the user currently has selected in Excel (active workbook/sheet/range) and the values in it. Use this for requests like 'format what I selected' or 'sum this column'. |
 | `excel_select_range` | ui | Activate a sheet and select (and scroll to) a range so the user sees it - useful to point at a result. |
+| `excel_clean_text` | write | Clean text constants with a preview by default; preserve formulas, literal text and leading-zero codes. Writes only changed cells in vertical runs, verifies their types, and supports office_undo even after a partial COM failure. |
 | `excel_write_range` | write | Write a block of values. Pass a single top-left cell (e.g. 'B2') and the block is placed from there; rows shorter than the widest are padded with blanks; a single value fills the whole target range. Returns a read-back. |
 | `excel_set_formula` | write | Put formulas into a cell or fill a whole range. A single formula string assigned to a multi-cell range is filled like Excel's fill-down: relative references adjust per cell (write '=A2*B2' with cells='C2:C100'). A 2-D array assigns each cell its own formula. Dynamic-array formulas (SORT, FILTER, UNIQUE, SEQUENCE) spill normally. Returns computed values and any error cells. |
 | `excel_clear_range` | destructive | Clear parts of a range. |
@@ -56,10 +57,11 @@
 | `excel_page_setup` | write | Print settings of a sheet (the needed printer driver must be available to Windows). |
 | `excel_render_range_image` | read | Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content is unchanged, but Excel marks the workbook as modified and the Undo history is cleared; AutoSave is paused meanwhile). |
 
-### word_core (20)
+### word_core (21)
 
 | Tool | Kind | What it does |
 |---|---|---|
+| `word_compare_documents` | write | Compare two versions into a new unsaved Word document with revisions, leaving both sources unchanged. To undo, close the result without saving; this tool has no office_undo entry. |
 | `word_list_documents` | read | List every open Word document across ALL running Word instances: name, path, saved flag, page/paragraph counts, and which one is active. Call this first. Returns an empty list (not an error) when Word has no documents. |
 | `word_get_structure` | read | Overview of a document: counts (pages, words, paragraphs, tables, images, comments, tracked changes, bookmarks, fields), the heading outline with paragraph numbers, a summary of every table, and sections. Use it to navigate a long document before reading parts of it. |
 | `word_open_document` | open | Open an existing document file in Word (starts Word if needed). Macros are disabled while opening. If the file is already open it is returned instead of opened twice. |
@@ -99,7 +101,7 @@
 | `word_document_properties` | write (readonly: get) | Read or set built-in document properties (File > Info): Title, Subject, Author, Keywords, Comments, Category, Company, Manager. |
 | `word_render_page_image` | read | Render one page of a Word document exactly as laid out (fonts, tables, pictures, headers/footers) and return it as a PNG image - use it to visually verify a document. Needs the Pillow package. The user's document window is switched to Print Layout briefly and restored. |
 
-### word_tables (6)
+### word_tables (7)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -107,6 +109,7 @@
 | `word_read_table` | read | Read a table as a grid of cell texts (rows x columns). Tables with merged cells come back as a list of {row, col, text} cells instead. |
 | `word_create_table` | write | Create a table from a 2-D array of values (the first row is the header by default) and return its index. |
 | `word_write_table` | write | Write a block of values into an existing table starting at (start_row, start_col). Rows are appended when the data runs past the last row (add_rows=true). Not supported for tables with merged cells in the target area. |
+| `word_sort_table` | write | Sort a plain Word table by 1..3 columns, preserving its header by default; supports office_undo and refuses later user edits on undo. Returns the first 20 rows. |
 | `word_modify_table` | write | Change a table's structure. |
 | `word_format_table` | write | Format a table or a block of its cells. Only the properties you pass are changed. Cell block = row_from..row_to x col_from..col_to (all zero = the whole table). |
 
@@ -128,10 +131,11 @@
 |---|---|---|
 | `office_run_python` | destructive | ADVANCED / DANGEROUS: run Python code with live COM objects when no dedicated tool covers a need. Predefined names: `excel` (Excel.Application or None), `wb` (workbook or None), `ws` (its active sheet), `word` (Word.Application or None), `doc` (document or None), `pythoncom`, `win32com`. Set `result = ...` to return a value; print() output is returned too. COM rules: pass arguments POSITIONALLY (no name=value), use None for skipped optional arguments, and avoid Range.Resize/Offset (they misbehave in late binding). Only available when the server was started with OFFICE_LIVE_ALLOW_EVAL=1. |
 
-### excel_analysis (13)
+### excel_analysis (14)
 
 | Tool | Kind | What it does |
 |---|---|---|
+| `excel_compare_ranges` | read | Compare two rectangles by position or unique row keys, across sheets, workbooks or Excel instances; never modifies either range. Reports values/types, formula text or five direct formats, with bounded differences. |
 | `excel_manage_tables` | write (readonly: list) | Work with Excel tables (the structured 'Format as Table' objects with filter buttons and auto-growing ranges). |
 | `excel_create_pivot_table` | write | Create a PivotTable ('сводная таблица') from a data block or an Excel table. The first row of the source must contain unique header names. |
 | `excel_manage_pivot_tables` | write (readonly: list) | List, refresh or delete pivot tables. |

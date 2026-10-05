@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 import pywintypes
 
 from . import com, config, journal, wd_common as wd, xl_common as xl
-from .errors import ToolError
+from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .util import clean_word_text, parse_a1, to_com_grid, to_grid
 
@@ -520,6 +520,8 @@ def excel_fingerprint(app, wb, entry):
         modes = {op.get("restore", "all") for op in ops} or {"all"}
         state.append([area, _formula_state(rng) if modes & {"all", "contents"} else None,
                       _format_state(rng) if modes & {"all", "formats"} else None])
+        if entry.tool == "excel_clean_text":
+            state.append([_property_state(rng, p) for p in ("NumberFormat", "PrefixCharacter")])
         for mode in modes & {"all", "formats", "comments", "validation"}:
             state.append(_metadata_state(rng, mode))
     for name in entry.used:
@@ -592,6 +594,12 @@ def _write_range(app, wb, entry, args):
         grid = to_com_grid(value)
         rng, _ = _prepare_target(ws, rng, len(grid), len(grid[0]))
     _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
+
+
+def _clean_text(app, wb, entry, args):
+    _, rng = xl.bounded_range(app, wb, args["sheet"], args["cells"], 100000)
+    if rng is not None:
+        _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
 
 
 def _autofill(app, wb, entry, args):
@@ -792,6 +800,7 @@ RESOLVERS = dict.fromkeys((
     "excel_manage_comments", "excel_add_hyperlink", "excel_sort_range", "excel_remove_duplicates",
 ), _simple_range)
 RESOLVERS.update({
+    "excel_clean_text": _clean_text,
     "excel_write_range": _write_range, "excel_set_formula": _write_range, "excel_autofill": _autofill,
     "excel_replace": _replace, "excel_set_dimensions": _dimensions_plan, "excel_hide_rows_columns": _hidden,
     "excel_insert_rows_columns": _rows_columns, "excel_delete_rows_columns": _rows_columns,
@@ -917,7 +926,9 @@ def restore_excel(app, wb, entry):
 
 
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
-            "excel_close_workbook", "word_close_document"}
+            "excel_close_workbook", "word_close_document", "word_compare_documents"}
+
+DEFERRED = {"excel_clean_text", "word_sort_table"}
 
 
 class Recording:
@@ -930,7 +941,7 @@ class Recording:
         self.resolved = False
         self.enabled = config.SETTINGS.undo and kind in {"write", "destructive"} and tool not in EXCLUDED
 
-    def target(self, kind, app, obj):
+    def target(self, kind, app, obj, ready=False):
         if self.preparing:
             return
         if self.tool.startswith("bridge_"):
@@ -939,6 +950,8 @@ class Recording:
                 return  # источник моста только читается
         key = stack_key(kind, app, obj)
         self.targets[key] = (app, obj)
+        if self.tool in DEFERRED and not ready:
+            return
         if not self.enabled or key in self.pending:
             return
         if self.tool == "excel_calculate" and not self.args.get("mode"):
@@ -1041,7 +1054,7 @@ class Recording:
                     if entry.kind == "document":
                         entry.barrier(f"Could not end Word undo record: {exc}")
 
-    def finish(self, result):
+    def finish(self, result, partial=False):
         self.end_records()
         if self.tool in {"excel_close_workbook", "word_close_document"}:
             for key, (app, _) in self.targets.items():
@@ -1077,7 +1090,10 @@ class Recording:
                 try:
                     _finish_excel(obj, entry, result if isinstance(result, dict) else {})
                 except Exception as exc:  # noqa: BLE001
-                    entry.barrier(f"Could not finish undo snapshot: {exc}")
+                    if partial:
+                        entry.force_reason = f"Could not read the partial result: {exc}; pass force=true to restore the pre-call snapshot."
+                    else:
+                        entry.barrier(f"Could not finish undo snapshot: {exc}")
         if self.kind in {"write", "destructive"} and self.tool != "office_undo":
             for key, (app, obj) in self.targets.items():
                 if key[0] == "workbook":
@@ -1091,7 +1107,10 @@ class Recording:
                 try:
                     entry.fingerprint = word_fingerprint(obj) if entry.kind == "document" else excel_fingerprint(app, obj, entry)
                 except Exception as exc:  # noqa: BLE001
-                    entry.barrier(f"Could not fingerprint the result: {exc}")
+                    if partial:
+                        entry.force_reason = f"Could not fingerprint the partial result: {exc}; pass force=true to restore the pre-call state."
+                    else:
+                        entry.barrier(f"Could not fingerprint the result: {exc}")
             if not entry.undoable:
                 _drop(app, entry)
             if entry.kind == "document" and entry.undoable and entry.fingerprint == entry.before_fingerprint:
@@ -1134,6 +1153,23 @@ def selected(kind, app, obj):
         _active.target(kind, app, obj)
 
 
+def require_undo(kind, app, obj):
+    """Новые операции начинаются только после проверок и успешной подготовки отмены."""
+    if _active is None:
+        raise ToolError("This operation requires the office_tool undo context.")
+    if not config.SETTINGS.undo:
+        return  # отмена выключена владельцем (OFFICE_LIVE_UNDO=0): работаем, как остальные инструменты
+    if not _active.enabled:
+        raise ToolError("This operation requires the office_tool undo context.")
+    _active.target(kind, app, obj, ready=True)
+    entry = _active.pending.get(stack_key(kind, app, obj))
+    if entry is None or not entry.undoable:
+        if entry is not None:
+            _drop(app, entry)
+            _active.pending.pop(stack_key(kind, app, obj), None)
+        raise ToolError("No changes made: could not prepare office_undo. " + (entry.reason if entry else "No snapshot."))
+
+
 def record_call(fn, args, kwargs, tool, kind, arguments, supplied):
     global _active
     recording = Recording(tool, kind, arguments, supplied)
@@ -1145,6 +1181,15 @@ def record_call(fn, args, kwargs, tool, kind, arguments, supplied):
             recording.finish(result)
             success = True
         return result
+    except PartialChangeError as exc:
+        result = {}
+        recording.finish(result, partial=True)
+        success = True
+        status = result.get("undo", "not available: no change detected")
+        hint = "office_undo will restore the state before this call." if status == "available" else f"office_undo: {status}."
+        if result.get("undo_warning"):
+            hint += " " + result["undo_warning"]
+        raise ToolError(f"{exc} {hint}") from None
     finally:
         recording.close(success)
         _active = previous

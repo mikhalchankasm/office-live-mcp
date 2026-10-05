@@ -39,6 +39,104 @@ def _word_running() -> bool:
 # ================================================================== документы
 
 
+@office_tool("word_core", "write", title="Compare documents", file_args=("original", "revised"))
+def word_compare_documents(
+    original: str,
+    revised: str,
+    granularity: str = "word",
+    compare_formatting: bool = True,
+    compare_case: bool = True,
+    compare_whitespace: bool = True,
+    compare_tables: bool = True,
+    compare_headers: bool = True,
+    compare_footnotes: bool = True,
+    compare_comments: bool = True,
+    compare_moves: bool = True,
+    author: str = "Office Live",
+) -> dict:
+    """Compare two versions into a new unsaved Word document with revisions, leaving both sources unchanged. To undo, close the result without saving; this tool has no office_undo entry.
+
+    Args:
+        original, revised: exact open document names or file paths inside allowed directories; both must use the same Word instance.
+        granularity: word (default) or character.
+        compare_formatting, compare_case, compare_whitespace, compare_tables, compare_headers, compare_footnotes, compare_comments, compare_moves: comparison options, all true by default. Textboxes and fields are always compared.
+        author: revision author for the result, default Office Live.
+
+    Closed files open temporarily, hidden and read-only, with macros disabled and no recent-file entry, then close without saving even on failure.
+    Word treats existing source revisions as accepted for comparison; warnings report this. Modal comparison warnings are disabled.
+    """
+    if granularity not in {"word", "character"}:
+        raise ToolError("granularity must be word or character.")
+    if not original.strip() or not revised.strip():
+        raise ToolError("original and revised are required; pass exact names or file paths.")
+    if not author.strip():
+        raise ToolError("author must not be empty.")
+    # Пути обоих источников проверяем до открытия первого временного документа.
+    sources = []
+    for name in (original, revised):
+        is_path = os.path.isabs(name) or "/" in name or "\\" in name
+        path = check_path(name, "read") if is_path else None
+        sources.append({"name": name, "path": path, "app": None, "doc": None})
+    for source in sources:
+        try:
+            source["app"], source["doc"] = pick_document(source["path"] or source["name"])
+        except ToolError as exc:
+            if not source["path"] or not any(s in str(exc) for s in ("not found. Open documents", "has no open documents")):
+                raise
+            if not os.path.isfile(source["path"]):
+                raise ToolError(f"File not found: {source['path']}") from None
+    opened_apps = [s["app"] for s in sources if s["app"] is not None]
+    app = opened_apps[0] if opened_apps else com.apps("word")[0]
+    if any(com.raw(a) is not com.raw(app) and not com._same_app(com.raw(a), com.raw(app)) for a in opened_apps):
+        raise ToolError("Both documents must be in the same Word instance; close and reopen one in the other's instance.")
+    temporary, warnings, result_name = [], [], ""
+    try:
+        for source in sources:
+            if source["doc"] is None:
+                existing = next((d for d in temporary if os.path.normcase(d.FullName) == os.path.normcase(source["path"])), None)
+                if existing is not None:
+                    source["doc"] = existing
+            if source["doc"] is None:
+                with com.macros_disabled(app):
+                    # Open: Visible — 12-й, NoEncodingDialog — 15-й; пароли-пустышки исключают диалоги.
+                    doc = app.Documents.Open(source["path"], False, True, False, "__office_live_no_password__",
+                                             "__office_live_no_password__", False, "__office_live_no_password__",
+                                             "__office_live_no_password__", 0, None, False, False, None, True)
+                temporary.append(doc)
+                _, source["doc"] = pick_document(source["path"])
+            if int(source["doc"].Revisions.Count):
+                warnings.append(f"{source['doc'].Name}: existing revisions are treated as accepted for comparison; the source is unchanged.")
+        result = app.CompareDocuments(sources[0]["doc"], sources[1]["doc"], 2, 1 if granularity == "word" else 0,
+                                      bool(compare_formatting), bool(compare_case), bool(compare_whitespace), bool(compare_tables),
+                                      bool(compare_headers), bool(compare_footnotes), True, True, bool(compare_comments),
+                                      bool(compare_moves), author, True)
+        result_name = result.Name
+        counts = dict.fromkeys(("insertion", "deletion", "format", "move", "other"), 0)
+        revisions = []
+        total = int(result.Revisions.Count)
+        for i in range(1, total + 1):
+            revision = result.Revisions(i)
+            code = int(revision.Type)
+            kind = ("insertion" if code in {1, 16, 19} else "deletion" if code in {2, 17, 20} else "move" if code in {14, 15}
+                    else "format" if code in {3, 4, 8, 10, 11, 12, 13} else "other")
+            counts[kind] += 1
+            if len(revisions) < 30:
+                text, truncated = truncate(clean_word_text(revision.Range.Text), 200)
+                revisions.append({"type": kind, "type_code": code, "author": revision.Author, "text": text, "text_truncated": truncated})
+        return {"document": result_name, "saved": bool(result.Saved), "revision_count": total, "counts": counts,
+                "revisions": revisions, "truncated": total > 30, "warnings": warnings,
+                "undo_note": "Close the result without saving to discard the comparison; office_undo does not record this tool."}
+    finally:
+        failures = []
+        for doc in reversed(temporary):
+            try:
+                doc.Close(0)
+            except (pywintypes.com_error, ToolError) as exc:
+                failures.append(com.translate(exc))
+        if failures:
+            raise ToolError(f"Comparison result: {result_name or 'not created'}. Could not close temporary read-only sources: {failures}")
+
+
 @office_tool("word_core", "read", title="List open documents")
 def word_list_documents() -> dict:
     """List every open Word document across ALL running Word instances: name, path, saved flag, page/paragraph counts, and which one is active. Call this first. Returns an empty list (not an error) when Word has no documents."""
@@ -839,4 +937,3 @@ def word_select(document: str, target: str = "paragraphs", start_paragraph: int 
     except pywintypes.com_error as exc:
         raise ToolError("Could not move the selection (the document window may be hidden): " + com.com_error_text(exc)) from None
     return {"ok": True, "document": doc.Name, "selected": [int(rng.Start), int(rng.End)]}
-

@@ -6,7 +6,11 @@ ToolError, поэтому все сообщения для агента обяз
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-__all__ = ["ToolError", "AppBusyError"]
+__all__ = ["ToolError", "AppBusyError", "PartialChangeError"]
+
+
+class PartialChangeError(ToolError):
+    """Запись оборвалась после подготовки отмены; снимок нужно сохранить в истории."""
 
 
 class AppBusyError(ToolError):

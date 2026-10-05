@@ -37,17 +37,21 @@ def _hash(value):
     return hashlib.sha1(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8")).hexdigest()
 
 
-_DOCUMENT_PART = re.compile(r'<pkg:part pkg:name="/word/document\.xml".*?</pkg:part>', re.S)
-_XML_NOISE = re.compile(r'<w:proofErr\b[^>]*/>|\sw:rsid\w*="[^"]*"')
+_PART = re.compile(r'<pkg:part pkg:name="(/word/[^"]+)"(.*?)</pkg:part>', re.S)
+# Части, которые меняет пользователь: тело, колонтитулы, примечания, сноски, стили, нумерация. settings/theme/шрифты — нет.
+_USER_PARTS = re.compile(r"/word/(document|header\d*|footer\d*|comments\w*|footnotes|endnotes|styles|numbering)\.xml")
+# Что Word генерирует сам при каждом чтении WordOpenXML (проверено на живом Word): идентификаторы абзацев и текста
+# (w14:paraId/textId), сеансов правки (rsid), пометки фоновой проверки орфографии (proofErr).
+_XML_NOISE = re.compile(r'<w:proofErr\b[^>]*/>|\s(?:w14:paraId|w14:textId|w:rsid\w*)="[^"]*"')
 
 
 def _word_body_xml(doc):
-    """Тело документа из WordOpenXML без того, что Word меняет сам: пометки фоновой проверки орфографии (proofErr) и
-    идентификаторы сеансов правки (rsid), а также без частей пакета вроде settings.xml. Иначе отпечаток «менялся бы»
-    без участия пользователя и отмена ложно отказывала бы."""
+    """Пользовательские части документа из WordOpenXML без шума — без единого обращения к колонтитулам через COM:
+    даже Headers(i).Exists создаёт в документе пустые колонтитулы (живая проверка), то есть меняет документ пользователя
+    и сам отпечаток. WordOpenXML всей области Content уже содержит колонтитулы, примечания и сноски."""
     xml = doc.Content.WordOpenXML
-    match = _DOCUMENT_PART.search(xml)
-    return _XML_NOISE.sub("", match.group(0) if match else xml)
+    parts = [(name, _XML_NOISE.sub("", body)) for name, body in _PART.findall(xml) if _USER_PARTS.fullmatch(name)]
+    return parts or _XML_NOISE.sub("", xml)
 
 
 def word_fingerprint(doc):
@@ -56,17 +60,23 @@ def word_fingerprint(doc):
         state.append(_word_body_xml(doc))  # замечает и ручное форматирование: без этого Undo(1) отменил бы правку пользователя
     except (AttributeError, pywintypes.com_error):
         pass
-    sections = doc.Sections
-    for i in range(1, int(sections.Count) + 1):
-        section = sections(i)
-        for collection in (section.Headers, section.Footers):
-            # wdHeaderFooterPrimary/FirstPage/EvenPages; отсутствующие части не читаем и не создаём.
-            state.append([part.Range.Text if part.Exists else None for part in (collection(j) for j in (1, 2, 3))])
-    comments = doc.Comments
-    count = int(comments.Count)
-    state.append([count, [comments(i).Range.Text for i in range(1, count + 1)]])
-    state.extend([int(doc.Footnotes.Count), int(doc.Endnotes.Count), int(doc.Shapes.Count)])
+    state.extend([int(doc.Comments.Count), int(doc.Footnotes.Count), int(doc.Endnotes.Count), int(doc.Shapes.Count)])
     return _hash(state)
+
+
+@contextlib.contextmanager
+def _shown(backup):
+    """Worksheet.Copy в книгу со скрытым окном Excel отклоняет (живая проверка): на время копирования окно служебной книги
+    показываем при выключенной перерисовке экрана и сразу прячем обратно."""
+    app, win = backup.Application, backup.Windows(1)
+    updating = app.ScreenUpdating
+    app.ScreenUpdating = False
+    try:
+        win.Visible = True
+        yield
+    finally:
+        win.Visible = False
+        app.ScreenUpdating = updating
 
 
 @contextlib.contextmanager
@@ -121,6 +131,22 @@ def _process_alive(pid):
         return not kernel.GetExitCodeProcess(handle, ctypes.byref(code)) or code.value == 259  # STILL_ACTIVE
     finally:
         kernel.CloseHandle(handle)
+
+
+def _close_orphan_backups(app):
+    """Если в экземпляре Excel не осталось книг пользователя, закрываем наши служебные книги (и книги умерших серверов):
+    отменять там больше нечего, а скрытая книга держала бы Excel в памяти без единого окна (живая проверка)."""
+    books = [app.Workbooks(i) for i in range(1, int(app.Workbooks.Count) + 1)]
+    if not books or not all(xl.is_undo_workbook(wb) for wb in books):
+        return
+    for wb in books:
+        owner = re.fullmatch(r'="([0-9]+):([0-9a-f]{32}):[0-9a-f]{32}"', str(wb.Names(MARKER).RefersTo))
+        if owner is None:
+            continue
+        pid, session = int(owner[1]), owner[2]
+        if (pid == os.getpid() and session == SESSION) or not _process_alive(pid):
+            with _internal_events(app), _quiet(app):
+                wb.Close(False)
 
 
 def _backup(app, token=None):
@@ -422,6 +448,15 @@ def _view(app, wb, sheet, value=None):
         _restore_view(app, previous)
 
 
+def _forget_marker(wb):
+    """Удаляет перенесённую копированием метку служебной книги (уровня книги и уровня листа) из книги пользователя."""
+    names = wb.Names
+    for i in range(int(names.Count), 0, -1):
+        item = names(i)
+        if item.Name == MARKER or str(item.Name).endswith("!" + MARKER):
+            item.Delete()
+
+
 def _name_state(wb, name):
     try:
         item = wb.Names(name)
@@ -644,7 +679,8 @@ def _delete_sheet(app, wb, entry, args):
         backup = _backup(app)
         entry.backup_token = str(backup.Names(MARKER).RefersTo)
         try:
-            ws.Copy(None, backup.Sheets(backup.Sheets.Count))
+            with _shown(backup):
+                ws.Copy(None, backup.Sheets(backup.Sheets.Count))
             saved = backup.Sheets(backup.Sheets.Count)
             entry.backup_sheets.append(saved.Name)
             unique = "Undo_" + uuid.uuid4().hex[:20]
@@ -834,7 +870,12 @@ def restore_excel(app, wb, entry):
             index = min(op["index"], int(wb.Sheets.Count) + 1)
             before = wb.Sheets(index) if index <= int(wb.Sheets.Count) else None
             after = None if before is not None else wb.Sheets(wb.Sheets.Count)
+            had_marker = _name_state(wb, MARKER) is not None
             backup.Sheets(op["backup_sheet"]).Copy(before, after)
+            if not had_marker:
+                # Copy листа между книгами переносит и имена уровня книги — в том числе метку служебной книги
+                # (живая проверка). С меткой книга пользователя стала бы «служебной» и пропала бы из всех инструментов.
+                _forget_marker(wb)
             ws = wb.Sheets(index)
             ws.Name, ws.Visible = op["name"], op["visible"]
             _repair_formulas(ws.Range(op["address"]), op["formulas"], op["formula_property"])
@@ -1004,6 +1045,11 @@ class Recording:
             for key, (app, _) in self.targets.items():
                 for entry in STACKS.pop(key, []):
                     _drop(app, entry)
+                if key[0] == "workbook":
+                    try:
+                        _close_orphan_backups(app)
+                    except Exception:  # noqa: BLE001 — уборка не должна портить успешное закрытие книги
+                        pass
             return  # закрытый документ уже нельзя читать или дополнять листом «Лог»
         if self.kind == "save":
             for key, (app, obj) in self.targets.items():

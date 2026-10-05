@@ -392,3 +392,54 @@ def test_copy_without_move_has_no_dependency_warning(office):
     result = o.call("excel_copy_range", workbook=o.wb.Name, sheet="Data", source="A1", dest_cell="C1")
     assert "undo_warning" not in result
     assert "warning" not in o.call("office_undo", file=o.wb.Name)
+
+
+class _NoTouch:
+    def __getattr__(self, name):
+        raise AssertionError("the fingerprint must not touch headers/footers through COM: even Exists creates them in Word")
+
+    def __iter__(self):
+        raise AssertionError("the fingerprint must not touch headers/footers through COM")
+
+
+def test_word_fingerprint_reads_headers_only_from_openxml_and_ignores_per_read_noise(office):
+    """Живой Word: Headers(i).Exists/Range создают пустые колонтитулы, а каждое чтение WordOpenXML даёт новые
+    w14:paraId/textId и rsid. Отпечаток не обращается к колонтитулам и не меняется от шума."""
+    doc = office.doc
+    doc.Sections(1).Headers(1).Exists = True
+    doc.Sections(1).Headers(1)._range.Text = "header text"
+    first = undo.word_fingerprint(doc)
+    sections = doc.Sections
+    doc._xml_sections, doc.Sections = sections, _NoTouch()
+    try:
+        assert undo.word_fingerprint(doc) == first  # шум разный при каждом чтении — отпечаток тот же
+    finally:
+        doc.Sections = sections
+        del doc._xml_sections
+    sections(1).Headers(1)._range.Text = "edited by the user"
+    assert undo.word_fingerprint(doc) != first  # правка колонтитула видна через его часть в WordOpenXML
+
+
+def test_deleting_a_sheet_works_although_the_backup_workbook_is_hidden(office):
+    """Живой Excel отклоняет Worksheet.Copy в книгу со скрытым окном; подставной Excel ведёт себя так же."""
+    o = office
+    o.call("excel_add_worksheet", workbook=o.wb.Name, name="Other")
+    result = o.call("excel_delete_sheet", workbook=o.wb.Name, sheet="Data", confirm=True)
+    assert result["undo"] == "available"
+    backup = next(w for w in o.excel.Workbooks if w is not o.wb)
+    assert backup.Windows(1).Visible is False and o.excel.ScreenUpdating is True  # снова скрыта, перерисовка возвращена
+    o.call("office_undo", file=o.wb.Name)
+    assert "Data" in [s.Name for s in o.wb.Sheets]
+
+
+def test_restoring_a_deleted_sheet_does_not_carry_the_backup_marker_into_the_users_workbook(office):
+    """Живой Excel: Copy листа из служебной книги перенёс её метку __OfficeLiveUndo в книгу пользователя, и та исчезла
+    из всех инструментов («Excel has no open workbooks»)."""
+    from office_live import xl_common
+
+    o = office
+    o.call("excel_add_worksheet", workbook=o.wb.Name, name="Other")
+    o.call("excel_delete_sheet", workbook=o.wb.Name, sheet="Data", confirm=True)
+    o.call("office_undo", file=o.wb.Name)
+    assert not xl_common.is_undo_workbook(o.wb)
+    assert o.call("office_undo", file=o.wb.Name, action="history")["file"] == o.wb.Name  # книгу снова видно инструментам

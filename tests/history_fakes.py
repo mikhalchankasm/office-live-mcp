@@ -359,7 +359,14 @@ class Sheet:
 
     def Copy(self, before=None, after=None):
         target = before.Parent if before is not None else after.Parent
+        if not target.Windows(1).Visible:  # как настоящий Excel: «Метод Copy из класса Worksheet завершён неверно»
+            raise pywintypes.com_error(-2147352567, "Exception occurred.", (0, "Microsoft Excel", "Copy method of Worksheet class failed", None, 0, -2146827284), None)
         sheet = target.Sheets.Add(before, after)
+        source_book = self.Parent
+        if source_book is not target:  # как настоящий Excel: имена уровня книги переезжают вместе с листом
+            for item in list(source_book.Names):
+                if not any(n.Name == item.Name for n in target.Names):
+                    target.Names.Add(item.Name, item.RefersTo, item.Visible)
         sheet.data, sheet.columns, sheet.rows, sheet.formats = copy.deepcopy((self.data, self.columns, self.rows, self.formats))
         sheet.StandardWidth = self.StandardWidth
         sheet.Shapes, sheet.ListObjects, sheet.conditions = copy.deepcopy((self.Shapes, self.ListObjects, self.conditions), {id(self): sheet})
@@ -412,7 +419,7 @@ class Workbook:
 class Excel:
     def __init__(self):
         self.Hwnd = 42
-        self.EnableEvents = self.DisplayAlerts = True
+        self.EnableEvents = self.DisplayAlerts = self.ScreenUpdating = True
         self.Calculation = -4105
         self.Workbooks = Books(self)
         self.ActiveWorkbook = None
@@ -448,6 +455,37 @@ class Section:
         self.Footers = Collection(HeaderFooter() for _ in range(3))
 
 
+class Content:
+    """Range документа. WordOpenXML собирается из состояния документа, как у настоящего Word: колонтитулы, примечания и
+    сноски — отдельные части пакета, а идентификаторы абзацев и сеансов правки при каждом чтении новые (шум)."""
+
+    _reads = 0
+
+    def __init__(self, doc, text):
+        self._doc, self.Text = doc, text
+
+    def __deepcopy__(self, memo):
+        return Content(self._doc, self.Text)
+
+    @property
+    def WordOpenXML(self):  # noqa: N802
+        Content._reads += 1
+        noise = f'w14:paraId="{Content._reads:08X}" w14:textId="77777777" w:rsidR="{Content._reads:08X}"'
+        doc = self._doc
+        parts = [("/word/document.xml", f"<w:body><w:p {noise}><w:t>{self.Text}</w:t></w:p></w:body>")]
+        number = 0
+        for section in doc.__dict__.get("_xml_sections") or doc.Sections:  # тест может спрятать Sections от кода
+            for kind in ("Headers", "Footers"):
+                for part in getattr(section, kind):
+                    number += 1
+                    if part.Exists:
+                        parts.append((f"/word/{kind[:-1].lower()}{number}.xml", f"<w:p {noise}><w:t>{part._range.Text}</w:t></w:p>"))
+        if doc.Comments.Count:
+            parts.append(("/word/comments.xml", "".join(f"<w:comment><w:p {noise}><w:t>{c.Range.Text}</w:t></w:p></w:comment>" for c in doc.Comments)))
+        parts.append(("/word/settings.xml", f'<w:rsids><w:rsid w:val="{Content._reads:08X}"/></w:rsids>'))
+        return "<pkg:package>" + "".join(f'<pkg:part pkg:name="{n}">{b}</pkg:part>' for n, b in parts) + "</pkg:package>"
+
+
 class Document:
     native_fields = ("Content", "Paragraphs", "Tables", "InlineShapes", "Sections", "Comments", "Footnotes", "Endnotes", "Shapes")
 
@@ -455,7 +493,7 @@ class Document:
         self.Application = app
         self.Name, self.FullName, self.Path = "Draft.docx", "Draft.docx", ""
         self.AutoSaveOn = False
-        self.Content = NS(Text="original", WordOpenXML="")
+        self.Content = Content(self, "original")
         self.Paragraphs, self.Tables, self.InlineShapes = Collection([NS()]), Collection(), Collection()
         self.Sections, self.Comments = Collection([Section()]), Collection()
         self.Footnotes, self.Endnotes, self.Shapes = Collection(), Collection(), Collection()

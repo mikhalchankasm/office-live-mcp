@@ -8,7 +8,7 @@ import pywintypes
 
 
 EXCEL = {
-    "_Application": "Hwnd ActiveWorkbook ActiveSheet Workbooks DisplayAlerts EnableEvents Calculation ActiveWindow CutCopyMode Calculate Selection Intersect",
+    "_Application": "Hwnd ScreenUpdating ActiveWorkbook ActiveSheet Workbooks DisplayAlerts EnableEvents Calculation ActiveWindow CutCopyMode Calculate Selection Intersect",
     "Workbooks": "Count Item Add",
     "_Workbook": "Name FullName Path Names Worksheets Sheets Windows Saved Application Activate Close SlicerCaches",
     "_Worksheet": "Names Name Parent Rows Columns Cells Range UsedRange Shapes ListObjects PivotTables Comments CommentsThreaded Index Visible Tab Activate Delete Copy Move StandardWidth",

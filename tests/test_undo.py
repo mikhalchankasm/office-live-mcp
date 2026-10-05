@@ -842,11 +842,16 @@ def test_snapshot_service_respects_events_opt_in_for_the_tool_body(office, monke
     assert write(o, 1)["undo"] == "available"
 
 
-def test_close_drops_history_and_backups_without_adding_a_step(office):
+@pytest.mark.parametrize("other_user_book", [False, True])
+def test_close_drops_history_and_backups_without_adding_a_step(office, other_user_book):
+    """Без книг пользователя служебная книга закрывается: иначе она держала бы Excel в памяти без окна (живой прогон)."""
     from office_live import registry
 
     o = office
     write(o, 1)
+    if other_user_book:
+        other = o.excel.Workbooks.Add()
+        o.wb.Activate()
     registered = []
     old = registry.mcp
     registry.mcp = NS(add_tool=lambda fn, **kw: registered.append(fn))
@@ -860,7 +865,12 @@ def test_close_drops_history_and_backups_without_adding_a_step(office):
         registry.mcp = old
     result = registered[0](workbook=o.wb.Name)
     assert "undo" not in result and not undo.STACKS
-    assert o.excel.Workbooks(1).Sheets.Count == 1
+    books = list(o.excel.Workbooks)
+    if other_user_book:
+        assert other in books and any(xl.is_undo_workbook(w) for w in books)  # другая книга пользователя — служебная остаётся
+        assert next(w for w in books if xl.is_undo_workbook(w)).Sheets.Count == 1  # но без снимков
+    else:
+        assert books == []
 
 
 def test_save_as_moves_history_to_new_identity_without_new_step(office):

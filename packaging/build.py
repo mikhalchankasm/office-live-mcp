@@ -70,6 +70,7 @@ def main() -> int:
     with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
         z.write(ROOT / "packaging" / "install.cmd", f"{name}/install.cmd")
         z.write(ROOT / "packaging" / "README.txt", f"{name}/README.txt")
+        z.write(ROOT / "LICENSE", f"{name}/LICENSE.txt")
         for f in sorted(app.rglob("*")):
             if f.is_file():
                 z.write(f, f"{name}/app/{f.relative_to(app).as_posix()}")

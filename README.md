@@ -1,378 +1,89 @@
 # Office Live MCP
 
-MCP-сервер, который позволяет **любому ИИ-агенту** (Claude, ChatGPT-совместимые клиенты, Codex, Cursor, ZCode…) управлять
-**уже открытыми** документами Excel и Word так, как это делают встроенные ассистенты Office: форматировать таблицы,
-подсвечивать данные, писать формулы, искать особенности в данных, строить сводные таблицы со срезами и диаграммы,
-переносить таблицу из Word в Excel и обратно, собирать документ по образцу. Сервер цепляется к запущенному
-приложению через COM: ищет экземпляры Excel/Word в таблице запущенных объектов Windows (ROT) и работает с открытыми в них
-файлами — все изменения мгновенно видны пользователю на экране. Экземпляры из другого сеанса Windows или с другим уровнем
-прав, а также файлы в «Защищённом просмотре» через COM недоступны.
+[![CI](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+![Python](https://img.shields.io/badge/python-3.10%E2%80%933.13-blue)
 
-> Windows + установленные Microsoft Excel/Word (десктопные). Проверено на Microsoft 365 (16.0), русская локаль.
+**English** · [Русский](README.ru.md)
 
-## Установка за 3 шага
+An MCP server that lets any AI agent (Claude, Cursor, Codex, ZCode, VS Code…) work in the Excel and Word documents
+**you already have open** — the way Office's built-in assistants do. Changes appear on screen immediately, and you keep
+working next to the agent.
 
-Нужны только Windows 10/11 (64-бит) и настольные Excel и/или Word. Python, git, winget и права администратора **не нужны**.
+It attaches to running Excel/Word through COM, so it sees exactly what you see: unsaved edits, recalculated formulas,
+pivot tables, slicers, charts, the current selection.
 
-1. Откройте [Releases](https://github.com/mikhalchankasm/office-live-mcp/releases/latest), скачайте
-   `office-live-mcp-<версия>-win64.zip` и **распакуйте архив целиком** (правой кнопкой → «Извлечь все…»).
-2. Дважды щёлкните **`install.cmd`** в распакованной папке. Установщик по шагам проверит Windows и Office,
-   скопирует программу в `%LOCALAPPDATA%\Programs\office-live-mcp`, проверит её и спросит:
-   * какой доступ дать агентам — **полный** или **только чтение**;
-   * к каким агентам подключить (Claude Code, Claude Desktop, Cursor, Codex, ZCode — найденные отмечены).
-3. Перезапустите агента и попросите, например: «покажи, какие книги открыты в Excel».
+## Install
 
-* **Обновление:** скачать новый архив, распаковать, снова запустить `install.cmd`. Настройки сохраняются; если программа
-  занята, установщик попросит закрыть агентов.
-* **Удаление:** `"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall`.
-* **Без вопросов** (для администраторов): `install.cmd --yes --clients claude-code,cursor --readonly`.
-* Если Windows пишет «Windows защитила ваш компьютер» — «Подробнее» → «Выполнить в любом случае» (программа не подписана
-  сертификатом). Smart App Control или корпоративный антивирус может заблокировать запуск — тогда нужен администратор.
-* Сам агент работает через интернет; Office Live — только на этом компьютере, документы никуда не отправляет
-  (но то, что агент прочитал, попадает в контекст модели).
+Requirements: Windows 10/11 (64-bit) and desktop Excel and/or Word. No Python, git, winget or admin rights needed.
 
-Подробности, установка из исходников и ручное подключение — в разделе [Установка](#установка) ниже.
+1. Download `office-live-mcp-<version>-win64.zip` from [Releases](https://github.com/mikhalchankasm/office-live-mcp/releases/latest)
+   and **extract the whole archive**.
+2. Double-click **`install.cmd`**. It checks Windows and Office, copies the program to
+   `%LOCALAPPDATA%\Programs\office-live-mcp`, verifies it and asks which access to grant (full or read-only) and which
+   agents to connect (detected ones are preselected).
+3. Restart your agent and ask: *"show me which workbooks are open in Excel"*.
 
-## Что умеет (105 инструментов)
+Update: run `install.cmd` from a newer archive (settings are kept). Uninstall:
+`"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall`.
+Unattended: `install.cmd --yes --clients claude-code,cursor --readonly`.
 
-| Набор (`OFFICE_LIVE_TOOLSETS`) | Инструментов | Что внутри |
-|---|---|---|
-| `excel_core` | 33 | книги (открыть/создать/закрыть/сохранить/PDF, **копия из образца**), листы, чтение/запись диапазонов, формулы (A1 и R1C1, динамические массивы), поиск/замена, сортировка, фильтр, дубликаты, **скрытие строк/столбцов (по номерам и по условию)**, группы, объединение, имена, копирование (с тиражированием образца), автозаполнение, выделение пользователя |
-| `excel_format` | 10 | шрифты, заливка, границы, числовые форматы, **условное форматирование** (правила по значению/формуле/тексту, шкалы, гистограммы, значки, топ-N, дубликаты), проверка данных (списки и пр.), ссылки, примечания, картинки, вид листа (заморозка, зум), печать, **снимок диапазона в PNG** (агент «видит» результат) |
-| `excel_analysis` | 13 | умные таблицы, **сводные таблицы** (создание, фильтры по элементам/подписи/значению/топ-N, **срезы и временные шкалы**, поля, сортировка, группировка дат, вычисляемые поля, параметры), диаграммы (включая комбинированные и сводные), **профиль данных**, **поиск проблем** (ошибки, числа-как-текст, несогласованные формулы…), **чертёж листа** для работы по образцу |
-| `word_core` | 20 | документы, структура и заголовки, чтение (страницами/по абзацам), поиск, **точная замена**, вставка текста в нужное место (в т. ч. в закладку), форматирование (стили, шрифты, абзацы, выделение маркером), списки, выделение пользователя, **подстановка `{{меток}}` в шаблон** |
-| `word_tables` | 6 | таблицы: список, чтение, создание, запись ячеек, строки/столбцы/объединение, оформление |
-| `word_layout` | 13 | поля и ориентация страницы, колонтитулы и номера страниц, оглавление, картинки, разрывы, комментарии, исправления (Track Changes), закладки, ссылки, сноски, свойства, **снимок страницы в PNG** |
-| `bridge` | 7 | **таблица Word → Excel** (числа становятся числами, коды `007` остаются текстом), **диапазон Excel → таблица Word** или картинка, диаграмма → Word, текст Word → Excel, **слияние Excel → набор документов Word (+PDF)**, **разбор файла без открытия** (листы, правила, макросы) |
-| `eval` | 1 | `office_run_python` — произвольный Python с живыми COM-объектами; выключен по умолчанию |
-| `history` | 2 | `office_journal` — журнал и лист «Лог»; `office_undo` — история и отмена. Включается автоматически с `excel_core` или `word_core`, отдельно не выбирается |
+The executable is not code-signed yet: SmartScreen may warn ("More info" → "Run anyway"), and Smart App Control or a
+corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip install .` and
+`python -m office_live setup` — see the [guide](docs/GUIDE.ru.md).
 
-Полный список с описаниями: [docs/TOOLS.md](docs/TOOLS.md) (генерируется: `python -m office_live tools --markdown`).
+## What it can do
 
-## Установка
+105 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`) — full list in [docs/TOOLS.md](docs/TOOLS.md).
 
-### Готовый архив — на любую машину с Office (рекомендуется)
-
-Ничего, кроме Windows 10/11 (64-бит) и настольных Excel/Word, не нужно: Python и зависимости уже внутри `office-live-mcp.exe`,
-winget, git и доступ к PyPI не требуются.
-
-1. Скачайте `office-live-mcp-<версия>-win64.zip` (GitHub → Releases или артефакт последней сборки CI) и **распакуйте целиком**.
-2. Дважды щёлкните **`install.cmd`**. Он по шагам проверит Windows и Office, скопирует программу в
-   `%LOCALAPPDATA%\Programs\office-live-mcp\app` (без прав администратора), проверит установленную копию и спросит,
-   какой доступ дать и к каким агентам подключить (как ниже).
-3. Перезапустите агента.
-
-* Обновление: распаковать новый архив и снова запустить `install.cmd` — путь в конфигах агентов не меняется, настройки сохраняются.
-  Если программа занята, установщик попросит закрыть агентов.
-* Без вопросов: `install.cmd --yes --clients claude-code,cursor --readonly`.
-* Удаление: `"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall`.
-* Сборка архива: `python packaging/build.py` (нужен `pyinstaller`); CI собирает его при каждом пуше, а при теге `v*` прикладывает к релизу.
-* Exe не подписан: SmartScreen может предупредить («Подробнее» → «Выполнить в любом случае»), а Smart App Control или
-  корпоративный антивирус — заблокировать. Для широкого распространения нужен сертификат подписи кода.
-
-### Из исходников одним кликом (для разработки)
-
-1. Скопируйте папку проекта на компьютер: `git clone <адрес репозитория>` или архив **без** папки `.venv` (окружение привязано
-   к компьютеру и не переносится). Путь может содержать пробелы.
-2. Дважды щёлкните **`install.cmd`** (из терминала — `.\install.cmd`; голое `install.cmd` Windows может не найти в текущей папке).
-3. Установщик найдёт Python 3.10+, создаст `.venv` рядом с проектом (права администратора не нужны), поставит зависимости,
-   покажет диагностику Excel/Word и спросит:
-   * какой доступ дать агентам — **полный** или **только чтение**;
-   * к каким агентам подключить: отмечает найденные на компьютере (Claude Code, Claude Desktop, Cursor, Codex, ZCode;
-     VS Code — по номеру, его конфиг лежит в папке проекта).
-4. Перезапустите агента и напишите ему, например: «покажи, какие книги открыты в Excel».
-
-Что нужно на компьютере: Windows 10/11, настольные Excel/Word (проверено на Microsoft 365), Python 3.10+
-(нет — `winget install Python.Python.3.13` или python.org с галочкой «Add python.exe to PATH»), доступ к PyPI.
-
-Полезно знать:
-
-* Всё работает **локально**: агент сам запускает сервер как подпроцесс на этом же компьютере, портов и облака нет. То, что
-  агент прочитал из документов, попадает в контекст модели — «только чтение» защищает документы от изменения, но не от чтения; для конфиденциальных файлов ограничьте папки (`--allowed-dirs`) и закройте лишнее.
-* Записи в конфигурации агентов содержат абсолютные пути этого компьютера — готовый конфиг от коллеги копировать нельзя, на каждом ПК
-  запускается свой `install.cmd`. Повторный запуск безопасен: записи заменяются с сохранением прежних ограничений (`--reset` — начать заново), чужие серверы в конфигах не затрагиваются
-  (перед записью остаётся датированная копия `.bak-…`).
-* Без вопросов (для скриптов): `.\install.cmd --yes --clients claude-code,cursor --readonly`.
-* Обновление: `git pull` и перезапуск агента (если менялся `requirements.txt` — ещё раз `install.cmd`).
-* Отключить сервер от агентов: `.venv\Scripts\python -m office_live setup --remove`.
-
-### Вручную
-
-```bat
-cd C:\path\to\office-live-mcp
-C:\Python313\python.exe -m venv .venv
-.venv\Scripts\pip install -r requirements.txt
-.venv\Scripts\python -m office_live doctor
-.venv\Scripts\python -m office_live setup
-```
-
-`doctor` проверяет Python, зависимости, установленные и запущенные Excel/Word и текущие настройки; `setup` — тот же диалог
-подключения, что и в установщике (`--yes --clients …` для работы без вопросов).
-
-### Подключение агента вручную
-
-Обычно достаточно `setup`/`install.cmd`. Команда `config` печатает готовый фрагмент конфигурации для одного агента; с `--write` — записывает его
-(атомарно; рядом остаётся датированная копия `<файл>.bak-ГГГГММДД-ЧЧММСС`, прежние копии не затираются). Существующая запись `office-live`
-заменяется, **а её настройки `OFFICE_LIVE_*` сохраняются** — повторная установка не снимает «только чтение» и ограничения по папкам.
-Явно изменить: `--readonly`, `--full` (вернуть полный режим), `--toolsets`, `--allowed-dirs`, `--env OFFICE_LIVE_AUTOSAVE=allow`;
-начать с нуля — `--reset`. Если `claude mcp add` не удался, прежняя запись Claude Code восстанавливается.
-Если прежние настройки прочитать не удаётся (битый файл или Codex `config.toml` на Python 3.10 без пакета `tomli`, который ставится
-вместе с зависимостями), либо запись в `config.toml` оформлена так, что её нельзя заменить построчно, файл не меняется, а установщик
-сообщает причину.
-
-```bat
-.venv\Scripts\python -m office_live config claude-code            :: печатает команду `claude mcp add ...`
-.venv\Scripts\python -m office_live config claude-desktop --write
-.venv\Scripts\python -m office_live config cursor --write
-.venv\Scripts\python -m office_live config vscode --write         :: .vscode\mcp.json в текущей папке
-.venv\Scripts\python -m office_live config codex --write
-.venv\Scripts\python -m office_live config zcode --write
-.venv\Scripts\python -m office_live config generic --path my.json --write
-```
-
-Любая команда принимает `--readonly`, `--toolsets core`, `--allowed-dirs "D:\Work;D:\Docs"` — они попадут в переменные окружения сервера
-(то же для `setup`: `--readonly`, `--full`, `--reset`, `--toolsets`, `--allowed-dirs`).
-Для остальных клиентов: `command` = `…\.venv\Scripts\python.exe`, `args` = `["…\\server.py"]` (или `["-m", "office_live"]`).
-После изменения конфигурации перезапустите агента. Excel/Word запускать заранее не обязательно: инструменты
-`*_open_*`/`*_new_*` запускают их сами.
-
-### Размер описаний инструментов в контексте агента
-
-| Профиль | Инструментов | ≈ токенов |
-|---|---|---|
-| все (по умолчанию; `office_run_python` выключен) | 104 | 35 000 |
-| `OFFICE_LIVE_TOOLSETS=core` (excel_core + word_core + bridge) | 62 | 17 000 |
-| `excel_core,excel_format` | 45 | 12 700 |
-| `OFFICE_LIVE_MODE=readonly` (чтение + чтение внутри многоактных инструментов) | 43 | 13 000 |
-
-Оценка по размеру описаний (символы / 3,7); точное число зависит от клиента.
-
-Клиентам с лимитом на число инструментов (например, 40) подойдёт набор из нужных групп.
-
-## Как с этим работает агент
-
-Сервер при подключении отдаёт агенту инструкцию. Суть: **список → осмотр → правка → проверка**.
-
-```
-excel_list_workbooks / word_list_documents      что открыто, что активно
-excel_workbook_info · excel_read_range ·        осмотреться
-excel_profile_range · word_get_structure
-excel_write_range · excel_format_range ·        изменить (ответ содержит контрольное чтение)
-excel_pivot_filter · word_insert_text …
-excel_render_range_image · excel_find_issues    проверить глазами/аудитом
-```
-
-Примеры запросов пользователя и цепочек:
-
-* **«Отформатируй таблицу, подсвети просроченное»** → `excel_get_selection` (что выделено) → `excel_format_range` (шапка, границы, форматы чисел) → `excel_conditional_format(rule="formula", formula='=AND($C2<TODAY(),$D2="")')` → `excel_render_range_image`.
-* **«Сделай сводную по регионам, отфильтруй топ‑3, добавь срез по продукту»** → `excel_create_pivot_table` → `excel_pivot_filter(action="top", …)` → `excel_manage_slicers(action="add", …)`.
-* **«Скрой выполненные строки»** → `excel_hide_rows_columns(where={"column": "Статус", "operator": "equals", "value": "Выполнено"})`; в сводной — `excel_pivot_filter(mode="hide")`.
-* **«Перенеси таблицу из Word в Excel»** → `word_list_tables` → `bridge_word_table_to_excel`; **обратно** — `bridge_excel_range_to_word_table` (или `…_to_word_picture`, `bridge_excel_chart_to_word`).
-* **«Разошли акты по строкам таблицы»** → `bridge_excel_to_word_documents` (шаблон с `{{Колонка}}`, на выходе .docx и по желанию PDF).
-
-### Сделать аналог образца с новыми данными
-
-Образец — любой существующий файл (например, график выпуска документации `.xlsm` с шапкой, цветовыми уровнями и макросами):
-
-1. `office_inspect_file(path=…)` — без открытия: листы, объединения, заморозка, **правила условного форматирования**, макросы (имена процедур и, по запросу, исходный код).
-2. `excel_create_from_template(template_path=…, new_path=…)` — точная копия (формат, ширины столбцов, объединения, условное форматирование, формулы, имена, макросы). Образец не меняется.
-3. `excel_describe_layout` — **чертёж**: где кончается шапка (заморозка), столбцы (заголовки RU/EN, ширина, скрытые, формат, тип данных, типичные значения, формула столбца — в A1 и R1C1), **виды строк по внешнему виду** (с учётом условного форматирования) и иерархия кодов (`048.01.03` → уровень по числу точек), правила в английской записи с цветами.
-4. `excel_clear_range(what="contents")` на области данных → `excel_write_range` с новыми данными (`value_mode="text"` для кодов) → `excel_set_formula(formula=<formula_r1c1>, r1c1=true)` или `excel_autofill` для формул → при необходимости `excel_copy_range(dest_cell="A200:AT300")`, чтобы растиражировать оформление строки.
-5. `excel_render_range_image` — убедиться, что цвета уровней и просрочки на месте; `excel_save`.
-
-Готовый «чертёж» в JSON без участия агента: `python examples\analyze_sample.py "путь\к\образцу.xlsm"`.
-
-## Журнал и отмена
-
-Пишущие вызовы, сохранение, открытие и экспорт в файл оставляют строку в отдельном Markdown-журнале каждого
-фактически выбранного документа: `%LOCALAPPDATA%\office-live-mcp\journal`. Ошибки также записываются, длинные текстовые
-аргументы по умолчанию скрыты. Прочитать последние строки: `office_journal(workbook="Книга.xlsx", action="read", lines=50)`
-или передать `document` для Word; `action="status"` показывает путь и состояние журнала.
-Имя файла: `<имя документа> [<первые 12 hex-символов SHA-1 пути или имени в нижнем регистре>].md`.
-Старые журналы с 8 символами остаются на диске; новые записи и чтение используют имя с 12 символами.
-
-Перед первой правкой книги агент один раз предлагает вести лист **«Лог»**. `office_journal(workbook="Книга.xlsx",
-action="enable_sheet")` включает его; настройка хранится в скрытом имени книги `OfficeLive_Log` и сохраняется вместе с ней.
-`disable_sheet` отключает записи, сохраняя лист; `delete_sheet=true` также удаляет его. Word ведёт только журнал на диске.
-
-`office_undo(file="Книга.xlsx", action="history")` показывает стек, `office_undo(file="Книга.xlsx", steps=1)` отменяет
-последнюю правку. Для Word передайте имя документа. По умолчанию хранятся 50 шагов и не более 200000 ячеек на снимок Excel.
-Excel использует скрытую служебную книгу, Word — собственные записи UndoRecord. История Excel **Ctrl+Z всё равно очищается**
-COM-правками. Снимки и стек доступны только в текущем сеансе сервера; закрытие служебной книги делает её снимки недоступными.
-
-Неподдерживаемые изменения (например, сводные таблицы и фильтры) и превышение лимита создают **барьер**: отмена останавливается
-на нём, не перескакивая к более старым правкам. Открытие, создание, сохранение, экспорт и закрытие файлов не добавляют шагов.
-Расхождение отпечатка формул/значений, агрегированного оформления проверяемой области или структуры листов после агента
-блокирует отмену. Оформление Excel проверяется целиком по диапазону: числовой формат, имя/размер/жирность/курсив/подчёркивание/
-цвет шрифта, цвет/узор заливки, выравнивание, перенос текста и объединение. **Правка оформления одной ячейки внутри уже
-смешанного диапазона может остаться незамеченной**, если агрегированное значение по-прежнему смешанное (`None`).
-Word дополнительно проверяет текст существующих колонтитулов всех разделов, число и тексты комментариев, число сносок,
-концевых сносок и фигур; пометки фоновой проверки орфографии и идентификаторы сеансов правки игнорируются.
-Отмена создания или копирования листа требует `force=true`, если при завершении операции на нём были фигуры (включая
-диаграммы, надписи, изображения и срезы), таблицы, сводные таблицы, условное форматирование, проверка данных, заметки или
-обсуждения: их ручные правки нельзя надёжно выявить по отпечатку; причина показана в `history`.
-
-`force=true` разрешает потерю поздних правок. В Word он **также отменяет поздние ручные действия пользователя**, пока не
-достигнуто состояние перед шагом агента, максимум за 20 нативных отмен на один шаг агента. Ответ содержит `native_steps`
-(суммарно и для каждого отменённого шага). Если исходное состояние не достигнуто, шаг остаётся барьером, а сообщение указывает,
-сколько нативных действий уже отменено, включая ручные правки; частичная отмена не откатывается обратно.
-
-Удалённые листы, строки и столбцы восстанавливаются, но формулы вне снимка, которые ссылались на удалённое, остаются `#REF!`.
-Отмена `excel_copy_range(move=true)` копирует назад снимки источника и назначения: формулы вне этих снимков, перенаправленные
-перемещением, продолжают ссылаться на назначение. Эти ограничения возвращаются предупреждением вместе с результатом.
-Действия `history`, `read` и `status` доступны и в режиме только чтения.
-
-## Проверка живым агентом
-
-Сервер подключён к Claude Code (`claude mcp add --scope user …`, статус `✔ Connected`) и к ZCode (запись `office-live` в
-`~/.zcode/cli/config.json` указывает на `server.py`; после перезапуска ZCode видит 102 инструмента). Кроме автотестов он проверен
-настоящим агентом Claude Code в headless-режиме (`claude -p`, MCP-конфиг со строгим режимом целей и доступом только к папке теста):
-
-| Задание | Результат |
+| Group | Highlights |
 |---|---|
-| Новая книга: данные, оформление, условное форматирование, формула, сводная с топ‑2 и срезом, диаграмма, проверка снимком и аудитом; затем отчёт Word с таблицей из Excel и диаграммой, PDF | 57 вызовов, 217 с, без ошибок инструментов (две ожидаемые: Excel и Word не были запущены — агент запустил их сам) |
-| **Аналог образца** `sample.xlsm` с новыми данными (копия, чертёж, очистка, ввод, формулы, проверка) | 27 вызовов, 139 с; шапка, заморозка, скрытые столбцы, 9 правил подсветки, макросы и формулы сохранены, уровни кода подсвечиваются как в образце |
+| Excel | read/write ranges, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
+| Word | structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
+| Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF, inspect a file without opening it |
+| History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes |
 
-Замечания самих агентов вошли в код: перенос оформления Excel→Word (`keep_formatting`), вставка «после таблицы N» без счёта абзацев
-(`after_table`/`before_table`), оси и цвета диаграмм, типы ячеек в ответе записи, аудит по отдельным блокам и `has_header`,
-скалярное значение в `excel_write_range`, зависимости правил подсветки от скрытых столбцов (`hidden_columns_drive_formatting`),
-снимок страницы Word. Прогон выявил и исправленный дефект снимка диапазона: при свёрнутом окне книги (как в образце) картинка
-выходила пустой — теперь окно временно разворачивается и возвращается.
+## Safety
 
-## Безопасность
+- **Read-only mode** (`OFFICE_LIVE_MODE=readonly`): writing tools are not even registered.
+- **Allowed folders** (`OFFICE_LIVE_ALLOWED_DIRS`): files elsewhere are invisible to the agent; nothing is saved
+  automatically and existing files are never overwritten without `overwrite=true`.
+- Workbooks with **AutoSave** (OneDrive/SharePoint) are refused for changes; Excel events and macros stay off while the agent writes.
+- **Journal and undo**: every change is logged per document; `office_undo` reverts the agent's steps (Word's own undo
+  history; Excel snapshots) and refuses when you edited the same content afterwards unless `force=true`.
+- Optional audit log (`OFFICE_LIVE_AUDIT_LOG`) and strict targeting (`OFFICE_LIVE_STRICT_TARGET`).
 
-Сервер даёт агенту реальный доступ к вашим документам и работает с **правами пользователя** — это не песочница. Что именно он гарантирует
-и чего не гарантирует:
+Everything runs locally; the server opens no ports. What the agent reads ends up in the model's context — limit the folders
+for confidential files. Details and limits: [guide](docs/GUIDE.ru.md) · [SECURITY.md](SECURITY.md).
 
-**Гарантирует (проверено автотестами):**
+## How it compares
 
-* Ничего не сохраняется само; `*_save_as` и экспорт (PDF, PNG диаграммы) не перезаписывают файл без `overwrite=true`; расширения ограничены, запись
-  в системные папки и автозагрузку (`XLSTART`, `Startup`, `Windows`, `Program Files`) запрещена — и при сохранении уже открытого файла, а не только «Сохранить как».
-* **AutoSave.** Книги и документы с включённым автосохранением (OneDrive/SharePoint) записываются в облако после каждой правки, до того как пользователь
-  успеет что-то проверить, поэтому пишущие инструменты на них **отказывают** (читать, сохранять, закрывать можно). Выключите AutoSave у файла или
-  задайте `OFFICE_LIVE_AUTOSAVE=allow`.
-* Закрытие книги/документа с несохранёнными изменениями — только с явным `save=true` или `discard=true`; удаление листа — только с `confirm=true`;
-  сами приложения сервер не закрывает. Перевод формул на язык интерфейса идёт во временной скрытой книге, а не во временном листе вашей книги. Снимок диапазона
-  (`excel_render_range_image`) на долю секунды ставит на лист временную диаграмму и тут же удаляет её. Это **изменение книги**, поэтому инструмент объявлен не
-  «только читающим» (`readOnlyHint=false`), хотя в режиме `readonly` доступен: содержимое остаётся прежним, но Excel помечает книгу как изменённую (флаг
-  «сохранено» сервер намеренно не подменяет — иначе мог бы скрыть настоящую правку, сделанную в те же миллисекунды), а история отмены (Ctrl+Z) очищается.
-  AutoSave на время снимка приостанавливается, а если приостановить нельзя — снимок отклоняется; события Excel на это время отключены.
-* **Макросы.** Файлы открываются с отключёнными макросами (`AutomationSecurity = ForceDisable`); если отключить не удалось — файл **не открывается**.
-  На время пишущих вызовов (и снимка диапазона) Excel не вызывает события (`Worksheet_Change`, `BeforeSave`, `SheetActivate` …) уже открытых книг;
-  если отключить их не удалось, вызов **отклоняется** — `OFFICE_LIVE_ENABLE_EVENTS=1` разрешает события осознанно.
-  Сервер не запускает макросы, но не может остановить макросы, надстройки и события, которые пользователь уже включил в своей сессии.
-  Открытие использует подставной пароль (чтобы зашифрованный файл вызвал ошибку, а не диалог; на реальном зашифрованном файле не проверялось).
-* Цель правки названа точно: при `OFFICE_LIVE_STRICT_TARGET=1` пишущие инструменты принимают только точное имя/путь книги или документа и явное имя листа;
-  без него допустима уникальная подстрока и «активная». Если лист указан дважды по-разному (`sheet` и `Лист!A1`), это ошибка.
-* Закрытие и удаление не происходят «заодно»: деструктивные действия многоактных инструментов помечены `destructiveHint`, а ответы пишущих
-  инструментов говорят, что реально изменилось (число изменённых ячеек, созданные файлы, оставшиеся после сбоя объекты).
-* Текст внутри ячеек и документов считается недоверенными данными (инструкция агенту это говорит прямо).
+The popular Office MCP servers edit **files on disk**; a few drive the **running** application.
 
-**Не гарантирует:**
+| Project | Approach | Pros | Cons |
+|---|---|---|---|
+| **Office Live MCP** (this) | Live COM, attaches to the files you have open; Excel **and** Word | sees unsaved edits and recalculated values; works next to you; pivots, slicers, charts; Word↔Excel bridges; read-only mode, allowed folders, journal, undo; one-file installer | Windows + desktop Office only; COM is slower than file editing; Excel's own Ctrl+Z history is cleared by automation |
+| [haris-musa/excel-mcp-server](https://github.com/haris-musa/excel-mcp-server) | Files via openpyxl | cross-platform, no Excel needed, `uvx` install, HTTP transport, read-only and folder limits | no live workbooks; formulas are not recalculated; pivot "tables" are static summaries; no Word |
+| [sbroenne/mcp-server-excel](https://github.com/sbroenne/mcp-server-excel) | Live COM (.NET), Excel only | very broad Excel coverage: Power Query, DAX, Power Pivot, VBA, 300+ operations | asks you to close your open workbooks first; no Word; Windows only |
+| [negokaz/excel-mcp-server](https://github.com/negokaz/excel-mcp-server) | Files (Go), live editing on Windows | `npx` install, cross-platform file mode, screenshots on Windows | small toolset (8 tools); no Word |
+| [GongRzhe/Office-Word-MCP-Server](https://github.com/GongRzhe/Office-Word-MCP-Server) | Files via python-docx | no Word needed, rich document creation, PDF export | no live documents, no track changes; archived (read-only) since March 2026 |
+| [OfficeMCP/OfficeMCP](https://github.com/OfficeMCP/OfficeMCP) | Live COM via generic `RunPython` | many Office apps (Outlook, PowerPoint, Access…) | no typed tools, no safety limits — the agent runs arbitrary code |
 
-* `readonly` защищает документы **от изменения**, а не от чтения: агент по-прежнему видит содержимое всего открытого, и оно попадает в контекст модели.
-  Для конфиденциального используйте `OFFICE_LIVE_ALLOWED_DIRS` (и/или закройте лишние файлы). `office_inspect_file(include_vba_source=true)` показывает и код макросов.
-* `OFFICE_LIVE_ALLOWED_DIRS` ограничивает **файлы**: открытие/сохранение/вставку по пути и видимость уже открытых документов (файл вне зоны не виден в списках
-  и недоступен по имени). Симлинки и junction разрешаются до реального пути. Несохранённый документ без пути считается разрешённым; содержимое,
-  которое агент скопировал в разрешённый документ, зона не контролирует.
-* `OFFICE_LIVE_ALLOW_EVAL=1` (`office_run_python`) обходит все ограничения выше — это консоль с правами пользователя; включайте осознанно.
+Pick a file-based server for headless or cross-platform pipelines; pick Office Live MCP when the agent should assist a
+person in documents that are open right now.
 
-Настройки — переменные окружения (задаются в конфигурации клиента, см. `config --readonly` и др.). Неверное значение ограничивающей настройки
-(`OFFICE_LIVE_TOOLSETS` без единой известной группы, `OFFICE_LIVE_AUTOSAVE` не из `block|allow`) **останавливает запуск** с понятным сообщением, а не включает все инструменты:
-
-| Переменная | Значение |
-|---|---|
-| `OFFICE_LIVE_MODE` | `full` (по умолчанию) или `readonly` — пишущие инструменты **не регистрируются вовсе** (многоактные — только их действия чтения), файлы открываются только на чтение; создание новой книги/документа тоже запрещено |
-| `OFFICE_LIVE_TOOLSETS` | `all`, `core`, `excel`, `word` или список групп через запятую |
-| `OFFICE_LIVE_ALLOWED_DIRS` | каталоги через `;` — открывать/сохранять/вставлять файлы только оттуда; остальные открытые файлы не видны |
-| `OFFICE_LIVE_STRICT_TARGET` | `1` — пишущие инструменты требуют точное имя книги/документа и имя листа (без «активного» и без подстрок) |
-| `OFFICE_LIVE_AUTOSAVE` | `block` (по умолчанию) — не писать в файлы с включённым AutoSave; `allow` — разрешить |
-| `OFFICE_LIVE_ENABLE_EVENTS` | `1` — не отключать события Excel на время пишущих вызовов |
-| `OFFICE_LIVE_AUDIT_LOG` | путь к jsonl-журналу пишущих вызовов: запись `start` до выполнения и `end` после (результат, длительность, реально выбранные книги/документы); длинные текстовые аргументы скрыты |
-| `OFFICE_LIVE_AUDIT_CONTENT` | `1` — писать в журнал фрагменты текстовых аргументов (по умолчанию скрыты: в них может быть содержимое документов) |
-| `OFFICE_LIVE_JOURNAL` | `on` (по умолчанию) / `off` — Markdown-журналы документов |
-| `OFFICE_LIVE_JOURNAL_DIR` | каталог журналов; по умолчанию `%LOCALAPPDATA%\office-live-mcp\journal` |
-| `OFFICE_LIVE_UNDO` | `on` (по умолчанию) / `off` — запись отмены |
-| `OFFICE_LIVE_UNDO_DEPTH` | положительное целое, по умолчанию `50`; старые снимки удаляются вместе с записями |
-| `OFFICE_LIVE_UNDO_MAX_CELLS` | положительное целое, по умолчанию `200000`; большие изменения создают барьер |
-| `OFFICE_LIVE_ALLOW_EVAL` | `1` — включить `office_run_python` (эквивалент выдачи агенту консоли) |
-| `OFFICE_LIVE_BUSY_TIMEOUT` | сколько секунд ждать, пока Office «занят» (редактирование ячейки, диалог); по умолчанию 20 |
-
-Если пользователь редактирует ячейку или открыт диалог, COM-вызовы отклоняются: сервер сам повторяет их, а по истечении
-таймаута просит агента попросить пользователя выйти из режима редактирования.
-
-## Особенности COM (важно при доработке)
-
-Найдены живыми пробами на этой машине; закреплены в коде и тестах:
-
-* **Только позиционные аргументы.** В late-binding pywin32 именованные аргументы молча превращаются в позиционные по порядку
-  (`Worksheets.Add(After=x)` вставляет лист *перед* x). Прокси `office_live.com.Proxy` запрещает `kwargs`.
-  Пропущенные необязательные Variant-аргументы — `None`; `pythoncom.Missing` в первой позиции «роняет» остальные аргументы,
-  а для типизированных параметров нужно явное значение по умолчанию.
-* **`Range.Resize()` и `Offset()`** в late-binding возвращают не тот диапазон — адреса считаются по `parse_a1`/`a1_range`.
-* **Региональные настройки.** Через COM `NumberFormat` принимает формат в *локальной* записи (в русском: `0,00`; `0.00` отвергается),
-  а формулы условного форматирования и проверки данных — на *локальном* языке функций. Сервер сам переводит: агент пишет и читает
-  `#,##0.00` и английские формулы. `Range.Formula` при этом всегда английская.
-* **Excel `Value=` разбирает строки как ввод** (`"123"` → число, `"=A1"` → формула, `"2026-10-04"` → дата) — для кодов есть `value_mode="text"`.
-* **Word `Find.Execute(Replace=all)`** подстраивает регистр замены под найденное и трактует `\1` как группу — буквальная замена делается через `Range.Text`.
-  Для несохранённого документа `ExportAsFixedFormat` обнуляет имя документа — поэтому сначала `word_save_as`.
-* **Соседние таблицы Word сливаются**, а «пустой абзац перед таблицей» нельзя вставить в начало ячейки — см. `ensure_free_anchor`.
-* **COM-объекты нельзя освобождать после `CoUninitialize`**: `run_com` освобождает прокси и `gc.collect()` до выхода из апартамента.
-* Снимок диапазона (`CopyPicture`) рисует только видимое: свёрнутое или маленькое окно книги даёт пустую картинку — сервер временно разворачивает окно, ждёт перерисовки, делает снимок через временную диаграмму на самом листе и возвращает прежнее состояние окон (но не флаг «сохранено»). Проверено на стенде: вставка в диаграмму ДРУГОЙ книги даёт пустую картинку, а внешнее чтение буфера обмена (`ImageGrab`) роняло Excel (исключение `0xC015000F`) — оба способа отвергнуты. Если снимок пуст при непустых данных — честная ошибка с причиной.
-* **pywin32 прячет «приложение занято» за `AttributeError`** (сбой `GetIDsOfNames`): `Proxy` выясняет настоящую причину и повторяет вызов, а не принимает занятость за отсутствие свойства.
-* Перевод формул на язык интерфейса (для условного форматирования и проверки данных) идёт через временную скрытую книгу; ссылки на другие книги в таких формулах не поддерживаются (Excel открыл бы диалог выбора файла).
-* `Table.Split()` в Word здесь отвечает «Неверный параметр» — абзац над таблицей создаётся разрезом предыдущего абзаца (или `Selection.SplitTable` для таблицы в начале документа).
-* Автоматизация очищает историю отмены (Ctrl+Z) пользователя.
-
-## Ограничения
-
-* Только Windows и десктопные Excel/Word. Режим защищённого просмотра и файлы с паролем не поддерживаются; экземпляры другого сеанса/уровня прав не видны.
-* Файлы с включённым AutoSave (OneDrive/SharePoint) — только чтение, пока AutoSave не выключен.
-* Макросы не запускаются (читаются только их исходники); создавать VBA-код нельзя. Для остального есть `office_run_python` (по явному включению).
-* Диаграммы-«chartex» (воронка, водопад, гистограмма нового типа) и сводные по модели данных не поддерживаются.
-* `Comment.Done` (пометить комментарий решённым) в ряде сборок Word недоступен через автоматизацию — инструмент сообщает об этом.
-* План «этап A» (надстройка Office.js + HTTPS-мост, чтобы работать без COM) пока не реализован; COM-бэкенд остаётся основным.
-
-## Тесты
+## Development
 
 ```bat
-.venv\Scripts\pip install -e .[dev]
-.venv\Scripts\python -m pytest tests                                   :: юнит-тесты, Office не нужен
-set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live   :: живые тесты с реальными Excel и Word
+python -m venv .venv && .venv\Scripts\pip install -r requirements.txt pytest ruff
+.venv\Scripts\python -m pytest tests -q          :: unit tests, no Office needed
+set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q   :: real Excel/Word
+.venv\Scripts\python packaging\build.py          :: build the installer archive (needs pyinstaller)
 ```
 
-Для каждого исправленного дефекта есть регрессионный тест: юнит на подделках COM (`tests/test_audit_infra.py` и др.) и живой
-(`tests/live/test_live_audit.py`). Живые тесты создают собственные черновые книги/документы во временной папке и закрывают **только их**;
-Word закрывается, лишь если его запустили сами тесты (до прогона он не работал) и в нём не осталось документов; Excel не закрывается.
-Ваши открытые файлы не затрагиваются, но прогон занимает буфер обмена и временно сворачивает/разворачивает окна своих книг —
-не работайте в Excel во время живого прогона.
+Architecture, COM pitfalls and all settings: [docs/GUIDE.ru.md](docs/GUIDE.ru.md) (Russian). Changes: [CHANGELOG.md](CHANGELOG.md).
 
-## Структура проекта
+## License
 
-```
-install.cmd                установщик в один клик (venv + зависимости + подключение агентов)
-server.py                  совместимая точка входа (python server.py)
-office_live/
-  app.py                   сборка сервера; __main__.py / cli.py — setup, doctor, tools, config
-  config.py · safety.py    настройки (env), проверка путей
-  com.py                   COM-слой: прокси с повторами, поиск всех экземпляров, перевод ошибок, run_com
-  registry.py              декоратор @office_tool: группы, режимы, аннотации (readOnly/destructive), аудит
-  journal.py · undo.py      журналы документов, лист «Лог», сеансовая отмена и скрытые снимки Excel
-  util.py                  чистая логика: адреса, цвета, значения, форматы чисел, разбор текста
-  xl_common.py · wd_common.py        выбор книги/листа/диапазона, документов, стилей, якорей вставки
-  excel_core.py · excel_format.py · excel_analysis.py · excel_pivot.py
-  word_core.py · word_tables.py · word_layout.py   (включая снимок страницы Word через EMF + Pillow)
-  bridge.py                мосты Word ↔ Excel
-  templates.py · inspect_file.py · vba.py     работа по образцу: разбор файла, копия, чертёж, макросы
-  evaltool.py              office_run_python (по флагу)
-tests/                     юнит-тесты; tests/live — живые
-examples/analyze_sample.py чертёж образца в JSON
-legacy/                    файлы версии 0.1 (см. legacy/README.md)
-```
-
-## Что изменилось в 0.2 относительно 0.1
-
-Исправлены найденные при проверке проблемы: необработанные COM-ошибки превращались в «Error executing tool» (теперь всегда понятное
-сообщение и повтор при «Excel занят»); `list_*` падали без открытых документов; `close_scratch.py` мог закрыть чужие данные (перенесён
-в `legacy/`); не было лимитов чтения, экранирования в замене Word и проверки путей; тесты не проверяли отказ перезаписи; README
-считал 10 Excel-инструментов вместо 9. Из одного файла на 15 инструментов сервер вырос в пакет на 103 инструмента.
+[MIT](LICENSE)

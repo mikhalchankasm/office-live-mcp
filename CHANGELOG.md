@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.1 — 2026-10-05
 
 Fixes for defects reproduced on real Excel/Word (Russian-locale Office 365) while filming the demo on 2026-10-05.
 
@@ -38,7 +38,9 @@ Fixes for defects reproduced on real Excel/Word (Russian-locale Office 365) whil
 - Remember successful Excel/Word Save As aliases only in the current server session, return links using the new path,
   and give the separate link handler a clear renamed/closed error without guessing similar filenames.
 - Add fake Win32/DLL tests, native window/COM guards and Office type-library checks. Add opt-in live window tests using
-  only fixture documents with chat disabled and restoration in finally; these tests have not been run. No version bump.
+  only fixture documents with chat disabled and restoration in finally. Full live run: 119/119 on real Excel and Word.
+- Installer: folder renames during install/update retry when Windows briefly refuses access right after the MCP check
+  (antivirus or the just-started exe holding the folder); a copy held by a running agent still gives up quickly.
 
 ## 0.4.0
 

@@ -24,6 +24,7 @@ from .cli import CLIENT_LABELS, _atomic_write, _office_installed, setup_cmd
 EXE_NAME = "office-live-mcp.exe"
 MARKER = "office-live-mcp.install"
 PRODUCT = "office-live-mcp"
+DOCTOR_TIMEOUT = 120  # секунд на информационную проверку doctor при установке
 
 
 def frozen() -> bool:
@@ -199,7 +200,11 @@ def _install(ns, setup_args: list[str]) -> int:
     # doctor — для информации: он «падает» и на машине без Word (или без Excel), где программа полностью рабочая, поэтому
     # судить об исправности копии по нему нельзя. Решает запуск установленного exe с загрузкой всех инструментов.
     try:
-        subprocess.call([str(exe), "doctor"])
+        # doctor обращается к запущенным Excel/Word: зависший Office (диалог, «не отвечает») не должен навсегда
+        # остановить установку. По таймауту subprocess.call сам завершает дочерний процесс.
+        subprocess.call([str(exe), "doctor"], timeout=DOCTOR_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"  ВНИМАНИЕ doctor не ответил за {DOCTOR_TIMEOUT} с — вероятно, Excel или Word завис. Проверка прервана, установка продолжается.")
     except OSError as exc:
         print(f"  FAIL doctor: {exc}")
     rc = _starts(exe)

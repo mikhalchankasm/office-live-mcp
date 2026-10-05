@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Installer: the informational `doctor` step is limited to 120 s, so a hung Excel/Word no longer stops the
+  installation before the program check and the agent connection.
+
 ## 0.3.0 — 2026-10-05
 
 - **Installer for a bare machine**: `office-live-mcp-<version>-win64.zip` with a self-contained `office-live-mcp.exe`

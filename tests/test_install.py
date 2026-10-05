@@ -26,7 +26,7 @@ def bundle(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "executable", str(src / install.EXE_NAME))
     monkeypatch.setattr(install, "_office_installed", lambda progid: True)
     calls = []
-    monkeypatch.setattr(install.subprocess, "call", lambda cmd: calls.append([Path(cmd[0]).name, *cmd[1:]]) or 0)
+    monkeypatch.setattr(install.subprocess, "call", lambda cmd, **kw: calls.append([Path(cmd[0]).name, *cmd[1:]]) or 0)
     monkeypatch.setattr(install, "_starts", lambda exe: calls.append([exe.name, "tools", "--json"]) or 0)
     return SimpleBundle(src, tmp_path / "root", calls)
 
@@ -307,7 +307,7 @@ def test_doctor_failure_alone_does_not_roll_back_an_update(bundle, monkeypatch):
     bundle.app.mkdir(parents=True)
     install._write_marker(bundle.root)
     (bundle.app / install.EXE_NAME).write_text("old")
-    monkeypatch.setattr(install.subprocess, "call", lambda cmd: 1 if cmd[1] == "doctor" else 0)
+    monkeypatch.setattr(install.subprocess, "call", lambda cmd, **kw: 1 if cmd[1] == "doctor" else 0)
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
     assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
 
@@ -373,3 +373,21 @@ def test_uninstall_of_an_owned_folder_without_app_still_cleans_up(tmp_path, monk
     monkeypatch.setattr(install, "frozen", lambda: False)
     assert install.uninstall_cmd(["--target", str(root)]) == 0
     assert not (root / install.MARKER).exists() and (root / "user.txt").read_text() == "keep"
+
+
+def test_a_hanging_doctor_does_not_stop_the_installation(bundle, monkeypatch, capsys):
+    """doctor обращается к запущенному Office; зависший Excel/Word не должен навсегда остановить установку."""
+    import subprocess
+
+    seen = []
+
+    def call(cmd, timeout=None):
+        seen.append((cmd[1], timeout))
+        if cmd[1] == "doctor":
+            raise subprocess.TimeoutExpired(cmd, timeout)
+        return 0
+
+    monkeypatch.setattr(install.subprocess, "call", call)
+    assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
+    assert seen[0] == ("doctor", install.DOCTOR_TIMEOUT) and seen[-1][0] == "setup"  # проверка запуска и подключение состоялись
+    assert "doctor не ответил" in capsys.readouterr().out

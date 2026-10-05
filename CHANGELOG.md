@@ -25,6 +25,10 @@ Fixes for defects reproduced on real Excel/Word (Russian-locale Office 365) whil
   builds the table with Word screen updating off. The cell-look step of a 44x5 banded range takes ~4.6 s instead of
   ~17.5 s; mixed rows and hidden columns still go cell by cell.
 - Unit regressions with COM fakes and live scenarios (`tests/live/test_live_demo_fixes.py`, `test_live_undo.py`).
+- Fix `word_compare_documents` changing the user's active document (usually the original source) when a closed file is
+  opened as a temporary copy: a hidden `Documents.Open` makes Word add footnote/endnote separators and header/footer styles
+  to the active document without clearing its saved flag. The copy now opens visible with screen updating off, its window
+  is hidden at once and the previously active window is restored; a copy whose window cannot be hidden is closed.
 
 ## 0.4.0
 

@@ -128,9 +128,61 @@ def test_uninstall_without_marker_keeps_every_file(tmp_path, monkeypatch, capsys
     (tmp_path / "app").mkdir()
     important = tmp_path / "app" / "important.txt"
     important.write_text("keep")
-    monkeypatch.setattr(install, "setup_cmd", lambda args: 0)
+    monkeypatch.setattr(install, "setup_cmd", lambda args: pytest.fail("must validate ownership before disconnecting"))
     assert install.uninstall_cmd(["--target", str(tmp_path)]) != 0
     assert important.read_text() == "keep" and install.MARKER in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("problem", ["invalid-marker", "wrong-product", "root-reparse", "app-reparse", "app-file"])
+def test_uninstall_invalid_target_does_not_disconnect_or_change_files(tmp_path, monkeypatch, problem):
+    import stat
+
+    root = tmp_path / "install"
+    app = root / "app"
+    root.mkdir()
+    if problem == "app-file":
+        app.write_text("keep app file")
+    elif problem != "app-missing":
+        app.mkdir()
+        (app / install.EXE_NAME).write_text("keep exe")
+    install._write_marker(root)
+    marker = root / install.MARKER
+    if problem == "invalid-marker":
+        marker.write_text("{broken")
+    elif problem == "wrong-product":
+        marker.write_text('{"product": "other"}')
+    if problem in {"root-reparse", "app-reparse"}:
+        target = root if problem == "root-reparse" else app
+        lstat = Path.lstat
+
+        def reparse(path, *args, **kwargs):
+            result = lstat(path, *args, **kwargs)
+            return SimpleNamespace(st_file_attributes=result.st_file_attributes | stat.FILE_ATTRIBUTE_REPARSE_POINT) if path == target else result
+
+        monkeypatch.setattr(Path, "lstat", reparse)
+    before = {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()}
+    monkeypatch.setattr(install, "setup_cmd", lambda args: pytest.fail("must validate target before disconnecting"))
+    monkeypatch.setattr(install.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not detach"))
+    assert install.uninstall_cmd(["--target", str(root)]) == 1
+    assert {p.relative_to(root): p.read_bytes() for p in root.rglob("*") if p.is_file()} == before
+
+
+def test_uninstall_keep_files_disconnects_without_folder_checks(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(install, "setup_cmd", lambda args: calls.append(args) or 0)
+    monkeypatch.setattr(install, "_owned", lambda root: pytest.fail("must not check ownership"))
+    monkeypatch.setattr(install, "_plain_dir", lambda path: pytest.fail("must not check folders"))
+    assert install.uninstall_cmd(["--target", str(tmp_path), "--keep-files"]) == 0
+    assert len(calls) == 1 and calls[0][:2] == ["--remove", "--yes"]
+
+
+def test_uninstall_missing_root_disconnects_and_reports_no_files(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "missing"
+    calls = []
+    monkeypatch.setattr(install, "setup_cmd", lambda args: calls.append(args) or 0)
+    assert install.uninstall_cmd(["--target", str(root)]) == 0
+    assert len(calls) == 1 and calls[0][:2] == ["--remove", "--yes"]
+    assert not root.exists() and "файлов не было" in capsys.readouterr().out.lower()
 
 
 def test_install_does_not_claim_an_existing_unmarked_app(bundle):
@@ -260,12 +312,17 @@ def test_doctor_failure_alone_does_not_roll_back_an_update(bundle, monkeypatch):
     assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
 
 
-def test_first_install_keeps_copy_when_it_does_not_start(bundle, monkeypatch):
+def test_first_install_keeps_copy_but_does_not_connect_when_it_does_not_start(bundle, monkeypatch, capsys):
     monkeypatch.setattr(install, "_starts", lambda exe: 1)
-    assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
-    assert (bundle.app / install.EXE_NAME).exists()
+    assert install.install_cmd(["--target", str(bundle.root), "--yes", "--clients", "cursor", "--readonly"]) == 1
+    assert bundle.calls == [[install.EXE_NAME, "doctor"]]
+    assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
+    assert (bundle.app / "_internal" / "lib.pyd").exists()
     marker = json.loads((bundle.root / install.MARKER).read_text())
     assert marker["product"] == install.PRODUCT and marker["version"] and marker["created"]
+    output = capsys.readouterr().out
+    assert "Файлы сохранены" in output and "Повторить" in output
+    assert "install --target" in output and "--clients cursor --readonly" in output
 
 
 def test_uninstall_disconnect_failure_keeps_program_and_marker(tmp_path, monkeypatch):
@@ -304,3 +361,15 @@ def test_double_click_installs_but_an_agent_with_pipes_gets_the_server(monkeypat
     monkeypatch.setattr(app, "main", lambda: ran.append("serve"))
     entry.main([])
     assert ran == [expected or "serve"]
+
+
+def test_uninstall_of_an_owned_folder_without_app_still_cleans_up(tmp_path, monkeypatch):
+    """Прерванная установка или частичное удаление: метка есть, app нет — остатки удаляются, а не «отказ навсегда»."""
+    root = tmp_path / "install"
+    root.mkdir()
+    install._write_marker(root)
+    (root / "user.txt").write_text("keep")
+    monkeypatch.setattr(install, "setup_cmd", lambda args: 0)
+    monkeypatch.setattr(install, "frozen", lambda: False)
+    assert install.uninstall_cmd(["--target", str(root)]) == 0
+    assert not (root / install.MARKER).exists() and (root / "user.txt").read_text() == "keep"

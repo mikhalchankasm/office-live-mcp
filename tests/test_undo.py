@@ -196,6 +196,107 @@ def test_add_sheet_inverse_detects_created_sheet(office):
     assert xl.sheet_names(o.wb) == ["Data"]
 
 
+@pytest.mark.parametrize("dimension,index", [("ColumnWidth", 1), ("ColumnWidth", 10), ("RowHeight", 1), ("RowHeight", 10), ("StandardWidth", None)])
+def test_created_sheet_undo_refuses_manual_dimension_change(office, dimension, index):
+    o = office
+    assert o.call("excel_add_worksheet", workbook=o.wb.Name, name="New")["undo"] == "available"
+    ws = o.wb.Worksheets("New")
+    target = ws if index is None else ws.Columns(index) if dimension == "ColumnWidth" else ws.Rows(index)
+    setattr(target, dimension, 30)
+    with pytest.raises(ToolError, match="later edits"):
+        revert(o)
+    assert o.wb.Worksheets("New") is ws and len(stack(o)) == 1
+    assert getattr(target, dimension) == 30
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"]
+
+
+@pytest.mark.parametrize("axis,dimension", [("Columns", "ColumnWidth"), ("Rows", "RowHeight")])
+def test_copied_sheet_undo_checks_used_dimensions_when_aggregate_stays_mixed(office, axis, dimension):
+    o = office
+    o.ws.Range("B2:C3").Value = "used"
+    setattr(getattr(o.ws, axis)(2), dimension, 25)
+    assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
+    ws = o.wb.Worksheets("Copied")
+    assert getattr(ws.Cells, dimension) is None
+    setattr(getattr(ws, axis)(3), dimension, 35)
+    assert getattr(ws.Cells, dimension) is None
+    with pytest.raises(ToolError, match="later edits"):
+        revert(o)
+    assert o.wb.Worksheets("Copied") is ws and len(stack(o)) == 1
+
+
+@pytest.mark.parametrize("member,value", [("Name", "Renamed"), ("Type", 1), ("Left", 40), ("Top", 40),
+                                        ("Width", 200), ("Height", 200), ("Rotation", 45), ("ChartType", 4)])
+def test_copied_sheet_undo_refuses_manual_shape_change(office, member, value):
+    o = office
+    for name in ("First", "Second"):
+        o.ws.Shapes.items.append(NS(Name=name, Type=3, Left=10, Top=20, Width=100, Height=80, Rotation=0, Chart=NS(ChartType=51)))
+    assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
+    ws = o.wb.Worksheets("Copied")
+    shape = ws.Shapes(2)
+    assert shape is not o.ws.Shapes(2) and ws.Shapes.Count == 2
+    setattr(shape.Chart if member == "ChartType" else shape, member, value)
+    with pytest.raises(ToolError, match="later edits"):
+        revert(o)
+    assert o.wb.Worksheets("Copied") is ws and ws.Shapes.Count == 2 and len(stack(o)) == 1
+
+
+@pytest.mark.parametrize("member,value", [("Name", "Renamed"), ("Range", "B2:D4"), ("TableStyle", "TableStyleMedium2"),
+                                        ("TableStyle", NS(Name="TableStyleMedium2")), ("ShowTotals", True), ("ShowHeaders", False)])
+def test_copied_sheet_undo_refuses_manual_table_change(office, member, value):
+    o = office
+    o.ws.Range("B2:C3").Value = "used"
+    o.ws.ListObjects.items.append(NS(Name="Table1", Range=o.ws.Range("B2:C3"), TableStyle=NS(Name="TableStyleMedium1"), ShowTotals=False, ShowHeaders=True))
+    assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
+    ws = o.wb.Worksheets("Copied")
+    setattr(ws.ListObjects(1), member, ws.Range(value) if member == "Range" else value)
+    with pytest.raises(ToolError, match="later edits"):
+        revert(o)
+    assert o.wb.Worksheets("Copied") is ws and ws.ListObjects.Count == 1 and len(stack(o)) == 1
+
+
+@pytest.mark.parametrize("member,value", [("Type", 2), ("AppliesTo", "B2:D4"), ("Formula1", "=5"), ("Formula2", "=20")])
+def test_copied_sheet_undo_refuses_manual_condition_change(office, member, value):
+    o = office
+    o.ws.Range("B2:C3").Value = "used"
+    o.ws.conditions.items.append(NS(Type=1, AppliesTo=o.ws.Range("B2:C3"), Formula1="=1", Formula2="=10"))
+    assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
+    ws = o.wb.Worksheets("Copied")
+    setattr(ws.conditions(1), member, ws.Range(value) if member == "AppliesTo" else value)
+    with pytest.raises(ToolError, match="later edits"):
+        revert(o)
+    assert o.wb.Worksheets("Copied") is ws and ws.conditions.Count == 1 and len(stack(o)) == 1
+
+
+def test_copied_sheet_fingerprint_is_stable_with_unavailable_condition_formulas(office):
+    import pywintypes
+
+    class Rule:
+        Type = 3  # цветовая шкала не имеет Formula1/Formula2
+
+        def __init__(self, rng):
+            self.AppliesTo = rng
+
+        @property
+        def Formula1(self):
+            raise pywintypes.com_error(-2147352567, "not supported", None, None)
+
+    o = office
+    o.ws.Range("B2:C3").Value = "used"
+    o.ws.Columns(2).ColumnWidth = 25
+    o.ws.Shapes.items.append(NS(Name="Box", Type=1, Left=10, Top=20, Width=100, Height=80, Rotation=0))
+    o.ws.ListObjects.items.append(NS(Name="Table1", Range=o.ws.Range("B2:C3"), TableStyle=NS(Name="TableStyleMedium1"), ShowTotals=False, ShowHeaders=True))
+    o.ws.conditions.items.append(Rule(o.ws.Range("B2:C3")))
+    assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
+    ws = o.wb.Worksheets("Copied")
+    ws.dimension_reads.clear()
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) == stack(o)[-1].fingerprint
+    assert ws.dimension_reads == ["ColumnWidth", "RowHeight"]  # по одному агрегатному чтению, без перебора всего листа
+    revert(o)
+    assert xl.sheet_names(o.wb) == ["Data"]
+
+
 @pytest.mark.parametrize("axis,start,cell", [("rows", 2, "A3"), ("columns", 2, "C1")])
 def test_insert_lines_inverse(office, axis, start, cell):
     o = office

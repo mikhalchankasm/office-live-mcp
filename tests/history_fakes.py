@@ -47,7 +47,7 @@ class Lines:
 
     def __call__(self, i):
         values = self.ws.rows if self.axis == "rows" else self.ws.columns
-        return values.setdefault(i, NS(ColumnWidth=8.43, RowHeight=15, Hidden=False))
+        return values.setdefault(i, NS(ColumnWidth=self.ws.StandardWidth, RowHeight=15, Hidden=False))
 
 
 class RangeFormat:
@@ -266,6 +266,21 @@ class Cells:
     def __call__(self, row, col):
         return self.ws.Range(a1_range(row, col, row, col))
 
+    def _dimension(self, lines, name, default, count):
+        self.ws.dimension_reads.append(name)
+        values = {getattr(line, name) for line in lines.values()}
+        if len(lines) < count:
+            values.add(default)
+        return values.pop() if len(values) == 1 else None
+
+    @property
+    def ColumnWidth(self):
+        return self._dimension(self.ws.columns, "ColumnWidth", self.ws.StandardWidth, MAX_COLS)
+
+    @property
+    def RowHeight(self):
+        return self._dimension(self.ws.rows, "RowHeight", 15, MAX_ROWS)
+
 
 class Sheets(Collection):
     def __init__(self, wb):
@@ -289,6 +304,8 @@ class Sheet:
         self.Visible = -1
         self.Tab = NS(ColorIndex=-4142, Color=0)
         self.data, self.columns, self.rows, self.formats = {}, {}, {}, {}
+        self.StandardWidth = 8.43
+        self.dimension_reads = []
         self.format_reads = []
         self.formula_writes = []
         self.Rows, self.Columns = Lines(self, "rows", MAX_ROWS), Lines(self, "columns", MAX_COLS)
@@ -324,6 +341,8 @@ class Sheet:
         target = before.Parent if before is not None else after.Parent
         sheet = target.Sheets.Add(before, after)
         sheet.data, sheet.columns, sheet.rows, sheet.formats = copy.deepcopy((self.data, self.columns, self.rows, self.formats))
+        sheet.StandardWidth = self.StandardWidth
+        sheet.Shapes, sheet.ListObjects, sheet.conditions = copy.deepcopy((self.Shapes, self.ListObjects, self.conditions), {id(self): sheet})
         name = self.Name
         if any(s.Name == name for s in target.Sheets if s is not sheet):
             name += " (2)"

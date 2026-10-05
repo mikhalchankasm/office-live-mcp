@@ -215,7 +215,10 @@ def _install(ns, setup_args: list[str]) -> int:
             shutil.rmtree(failed, ignore_errors=True)
             print("  FAIL проверка обновления не прошла; восстановлена прежняя копия. Подключение не изменено.")
             return 1
-        print("  FAIL установленная программа не запускается; подключение продолжается, но сервер работать не будет")
+        print("  FAIL установленная программа не запускается. Файлы сохранены; агенты не подключены.")
+        retry = subprocess.list2cmdline([sys.executable, "install", "--target", str(root), *setup_args])
+        print(f"  Устраните ошибку запуска и повторите установку. Повторить: {retry}")
+        return 1
     else:
         marker = json.loads((root / MARKER).read_text(encoding="utf-8"))
         marker["version"] = __version__
@@ -235,20 +238,25 @@ def uninstall_cmd(args: list[str]) -> int:
     p.add_argument("--keep-files", action="store_true", help="только отключить агентов, папку программы оставить")
     p.add_argument("--target", default="", help="папка установки (по умолчанию %%LOCALAPPDATA%%\\Programs\\office-live-mcp)")
     ns = p.parse_args(args)
+    root = Path(ns.target) if ns.target else install_root()
+    root_exists = not ns.keep_files and os.path.lexists(root)  # учитываем и оборванные ссылки/junction
+    if root_exists:
+        if not _owned(root):
+            print(f"Отказ от удаления: нет действительной метки {root / MARKER} или папка установки не является обычной. Ничего не изменено.")
+            return 1
+        if os.path.lexists(root / "app") and not _plain_dir(root / "app"):  # отсутствие app (прерванная установка) не мешает
+            print("Отказ от удаления: app не является обычной папкой. Ничего не изменено.")
+            return 1
     clients = ",".join(k for k in CLIENT_LABELS if k != "vscode")
     rc = setup_cmd(["--remove", "--yes", "--clients", clients])
     if rc != 0:
         print("Удаление остановлено: не удалось отключить перечисленных выше клиентов. Файлы программы сохранены.")
         return rc
-    root = Path(ns.target) if ns.target else install_root()
-    if ns.keep_files or not root.exists():
+    if ns.keep_files:
         return rc
-    if not _owned(root):
-        print(f"Отказ от удаления: отсутствует или повреждена метка {root / MARKER}. Файлы сохранены.")
-        return 1
-    if (root / "app").exists() and not _plain_dir(root / "app"):
-        print("Отказ от удаления: app не является обычной папкой. Файлы сохранены.")
-        return 1
+    if not root_exists:
+        print(f"Файлов не было: папка установки {root} отсутствует.")
+        return rc
     if frozen() and _same(Path(sys.executable).parent, root / "app"):
         # свой exe удалить нельзя, пока он работает: удаляем папку отдельным процессом через пару секунд
         script = _self_delete_script(root.resolve())

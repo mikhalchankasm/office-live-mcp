@@ -429,6 +429,29 @@ def _name_state(wb, name):
         return None
 
 
+def _sheet_state(ws, rng):
+    # Перед удалением созданного/скопированного листа проверяем и правки без изменения числа объектов.
+    cells = ws.Cells
+    dimensions = [cells.ColumnWidth, cells.RowHeight, ws.StandardWidth, _dimensions(rng, explicit=True)]
+    shapes = []
+    collection = ws.Shapes
+    for i in range(1, int(collection.Count) + 1):
+        shape = collection(i)
+        kind = int(shape.Type)
+        shapes.append([shape.Name, kind, shape.Left, shape.Top, shape.Width, shape.Height, shape.Rotation,
+                       shape.Chart.ChartType if kind == 3 else None])  # msoChart
+    tables = []
+    collection = ws.ListObjects
+    for i in range(1, int(collection.Count) + 1):
+        table = collection(i)
+        style = table.TableStyle
+        if style is not None and not isinstance(style, str):
+            style = style.Name
+        tables.append([table.Name, xl.addr_of(table.Range), style, bool(table.ShowTotals), bool(table.ShowHeaders)])
+    # Formula1/Formula2 и другие свойства существуют не у всех видов правил: чтение защищено в _metadata_state.
+    return [dimensions, shapes, tables, _metadata_state(rng, "formats")]
+
+
 def excel_fingerprint(app, wb, entry):
     state = []
     if entry.structural:
@@ -448,8 +471,7 @@ def excel_fingerprint(app, wb, entry):
         rng = ws.UsedRange
         if _size(rng) > config.SETTINGS.undo_max_cells:
             raise ToolError("The affected sheet exceeds the undo fingerprint size limit.")
-        state.append([name, xl.addr_of(rng), _formula_state(rng), _format_state(rng),
-                      int(ws.Shapes.Count), int(ws.ListObjects.Count), int(rng.FormatConditions.Count)])
+        state.append([name, xl.addr_of(rng), _formula_state(rng), _format_state(rng), _sheet_state(ws, rng)])
     for op in entry.ops:
         what = op["op"]
         if what in {"dimensions", "range"}:

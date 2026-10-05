@@ -551,7 +551,18 @@ def _remove_client(client: str) -> tuple[bool, str]:
     if client == "codex":
         path = Path.home() / ".codex" / "config.toml"
         text = path.read_text(encoding="utf-8") if path.exists() else ""
-        if not _has_our_table(text):
+        toml = _toml_module()
+        if toml is None:
+            if SERVER_NAME in text:
+                return False, f"не удалено: нет парсера TOML для проверки; уберите запись {SERVER_NAME} вручную"
+            return True, "записи не было"
+        try:
+            servers = toml.loads(text).get("mcp_servers", {})
+        except toml.TOMLDecodeError as exc:
+            return False, f"не удалено: неверный TOML ({exc}); исправьте {path} вручную"
+        if not isinstance(servers, dict):
+            return False, f"не удалено: mcp_servers не является таблицей; исправьте {path} вручную"
+        if SERVER_NAME not in servers:
             return True, "записи не было"
         new_text = _strip_toml_tables(text)
         problem = _toml_rewrite_problem(text, new_text, None)

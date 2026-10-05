@@ -195,6 +195,69 @@ def test_remove_unsafe_toml_reports_structured_failure(fake_home, monkeypatch):
     assert 'command="old"' in path.read_text()
 
 
+@pytest.mark.parametrize("content", [
+    '[mcp_servers]\noffice-live = { command = "old" }\nother = { command = "keep" }\n',
+    'mcp_servers.office-live.command = "old"\nmcp_servers.other.command = "keep"\n',
+])
+def test_remove_codex_inline_and_dotted_entries_reports_failure_without_changes(fake_home, content):
+    path = fake_home / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(content, encoding="utf-8")
+    before = path.read_bytes()
+    ok, message = cli._remove_client("codex")
+    assert ok is False and message.startswith("не удалено:") and "вручную" in message
+    assert cli.setup_cmd(["--remove", "--yes", "--clients", "codex"]) == 1
+    assert path.read_bytes() == before and not list(path.parent.glob("*.bak-*"))
+
+
+@pytest.mark.parametrize("content", [
+    '[mcp_servers.office-live]\ncommand = "old"\n',
+    '[mcp_servers]\noffice-live = { command = "old" }\n',
+    'mcp_servers.office-live.command = "old"\n',
+    '# office-live was configured by hand\n',
+])
+def test_remove_codex_without_parser_refuses_any_mention(fake_home, monkeypatch, content):
+    path = fake_home / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(content, encoding="utf-8")
+    before = path.read_bytes()
+    monkeypatch.setattr(cli, "_toml_module", lambda: None)
+    ok, message = cli._remove_client("codex")
+    assert ok is False and message.startswith("не удалено:") and "вручную" in message
+    assert path.read_bytes() == before and not list(path.parent.glob("*.bak-*"))
+
+
+@pytest.mark.parametrize("parser", [True, False])
+def test_remove_codex_without_entry_is_successful(fake_home, monkeypatch, parser):
+    path = fake_home / ".codex" / "config.toml"
+    path.parent.mkdir()
+    content = 'mcp_servers.other.command = "keep"\n'
+    path.write_text(content, encoding="utf-8")
+    if not parser:
+        monkeypatch.setattr(cli, "_toml_module", lambda: None)
+    assert cli._remove_client("codex") == (True, "записи не было")
+    assert path.read_text(encoding="utf-8") == content and not list(path.parent.glob("*.bak-*"))
+
+
+def test_remove_codex_parser_distinguishes_text_mention_from_entry(fake_home):
+    path = fake_home / ".codex" / "config.toml"
+    path.parent.mkdir()
+    content = 'developer_instructions = """\n[mcp_servers.office-live]\ncommand = "example"\n"""\n'
+    path.write_text(content, encoding="utf-8")
+    assert cli._remove_client("codex") == (True, "записи не было")
+    assert path.read_text(encoding="utf-8") == content
+
+
+@pytest.mark.parametrize("content", ['mcp_servers.office-live.command = [', 'mcp_servers = 42'])
+def test_remove_codex_invalid_config_reports_structured_failure(fake_home, content):
+    path = fake_home / ".codex" / "config.toml"
+    path.parent.mkdir()
+    path.write_text(content, encoding="utf-8")
+    ok, message = cli._remove_client("codex")
+    assert ok is False and message.startswith("не удалено:") and "вручную" in message
+    assert path.read_text(encoding="utf-8") == content
+
+
 @pytest.mark.parametrize("cli_available", [False, True])
 def test_remove_claude_failure_is_not_reported_as_absent(fake_home, monkeypatch, cli_available):
     (fake_home / ".claude.json").write_text(json.dumps({"mcpServers": {cli.SERVER_NAME: {"command": "old"}}}))

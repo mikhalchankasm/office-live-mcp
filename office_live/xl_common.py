@@ -497,10 +497,12 @@ def set_number_format(app, obj, fmt: str, shortcuts: dict | None = None) -> None
     ole = getattr(obj, "_oleobj_", None)
     if ole is not None and not _local_codes(inv):
         try:
-            ole.Invoke(ole.GetIDsOfNames("NumberFormat"), LCID_EN_US, pythoncom.DISPATCH_PROPERTYPUT, 0, inv)
+            # «Office занят» — повторяем (а по таймауту AppBusyError), а не уходим в локальную запись: в русском Excel
+            # она снова превратила бы 'dd.mm.yyyy' в текст — ровно ту ошибку, которую исправляет эта функция.
+            com._retry(lambda: ole.Invoke(ole.GetIDsOfNames("NumberFormat"), LCID_EN_US, pythoncom.DISPATCH_PROPERTYPUT, 0, inv))
             return
         except pywintypes.com_error:
-            pass  # пробуем локальную запись ниже; её ошибка уйдёт вызывающему
+            pass  # LCID-запись не поддержана объектом: пробуем локальную запись ниже; её ошибка уйдёт вызывающему
     obj.NumberFormat = number_format_for_write(app, inv)
 
 
@@ -509,7 +511,7 @@ def read_number_format(app, obj):
     ole = getattr(obj, "_oleobj_", None)
     if ole is not None:
         try:
-            return ole.Invoke(ole.GetIDsOfNames("NumberFormat"), LCID_EN_US, pythoncom.DISPATCH_PROPERTYGET, 1)
+            return com._retry(lambda: ole.Invoke(ole.GetIDsOfNames("NumberFormat"), LCID_EN_US, pythoncom.DISPATCH_PROPERTYGET, 1))
         except pywintypes.com_error:
             pass
     return number_format_for_read(app, obj.NumberFormat)

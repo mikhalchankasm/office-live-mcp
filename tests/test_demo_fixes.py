@@ -187,3 +187,57 @@ def test_slicer_connect_checks_the_cache_first(monkeypatch):
     with pytest.raises(ToolError, match="different PivotCache"):
         excel_pivot.excel_manage_slicers("Book.xlsx", action="connect", slicer="Тип", connect_pivots=["МассаПоТипам"])
     assert log == []
+
+
+class _Ole:
+    """Ячейка с COM-интерфейсом: Invoke с LCID 1033 сначала отвечает заданными ошибками."""
+
+    def __init__(self, failures):
+        self.failures, self.calls = list(failures), []
+
+    def GetIDsOfNames(self, name):  # noqa: N802
+        return 1
+
+    def Invoke(self, dispid, lcid, flags, result, *args):  # noqa: N802
+        self.calls.append((lcid, args))
+        if self.failures:
+            raise self.failures.pop(0)
+        return "dd.mm.yyyy"
+
+
+def _com_error(hresult):
+    return pywintypes.com_error(hresult - (1 << 32), "x", None, None)
+
+
+def test_number_format_busy_excel_retries_instead_of_local_fallback(monkeypatch):
+    from office_live import config, xl_common
+    from dataclasses import replace
+
+    monkeypatch.setattr(config, "SETTINGS", replace(config.SETTINGS, busy_timeout=2))
+    ole = _Ole([_com_error(0x8001010A)])  # RPC_E_SERVERCALL_RETRYLATER
+    cell = NS(_oleobj_=ole, NumberFormat="old")
+    xl_common.set_number_format(NS(International={2: ",", 3: " ", 4: ";"}), cell, "dd.mm.yyyy")
+    assert [c[0] for c in ole.calls] == [1033, 1033] and cell.NumberFormat == "old"  # локальная запись не понадобилась
+
+
+def test_number_format_busy_timeout_raises_busy_not_wrong_format(monkeypatch):
+    from office_live import config, xl_common
+    from office_live.errors import AppBusyError
+    from dataclasses import replace
+
+    monkeypatch.setattr(config, "SETTINGS", replace(config.SETTINGS, busy_timeout=0))
+    ole = _Ole([_com_error(0x80010001)] * 50)
+    cell = NS(_oleobj_=ole, NumberFormat="old")
+    with pytest.raises(AppBusyError):
+        xl_common.set_number_format(NS(International={2: ",", 3: " ", 4: ";"}), cell, "dd.mm.yyyy")
+    assert cell.NumberFormat == "old"
+
+
+def test_number_format_unsupported_lcid_write_falls_back_to_local(monkeypatch):
+    from office_live import xl_common
+
+    ole = _Ole([_com_error(0x80020003)])  # DISP_E_MEMBERNOTFOUND — не «занято»
+    cell = NS(_oleobj_=ole, NumberFormat="old")
+    monkeypatch.setattr(xl_common, "number_format_for_write", lambda app, fmt, shortcuts=None: "local:" + fmt)
+    xl_common.set_number_format(NS(), cell, "0.00")
+    assert cell.NumberFormat == "local:0.00"

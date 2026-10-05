@@ -765,6 +765,7 @@ def excel_create_chart(
         series_colors: one color per series, e.g. ['#1F4E78', '#C00000']. data_label_number_format: format of the value labels.
     """
     app, wb = pick_workbook(workbook)
+    expanded = None  # диапазон внутри сводной расширяется до всей сводной — сообщаем об этом в ответе
     pivot_hit = None
     for pws in [wb.Worksheets(i) for i in range(1, wb.Worksheets.Count + 1)]:
         pts = pws.PivotTables()
@@ -780,6 +781,7 @@ def excel_create_chart(
         if len(inside) > 1:
             raise ToolError(f"source {addr_of(src)} overlaps several pivot tables ({', '.join(p.Name for p in inside)}); pass one pivot name.")
         if inside:  # диапазон внутри сводной — та же сводная диаграмма по всей сводной
+            expanded = {"requested": addr_of(src), "pivot": inside[0].Name, "note": "Excel builds a pivot chart from the whole pivot table"}
             pivot_hit, src = (ws, inside[0]), inside[0].TableRange1
     r1, c1, r2, c2 = bounds(src)
     key = chart_type.lower().replace("-", "_").replace(" ", "_")
@@ -816,7 +818,10 @@ def excel_create_chart(
     sc = ch.SeriesCollection()
     for k in range(1, int(sc.Count) + 1):
         series.append(sc(k).Name)
-    return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "chart": shape.Name, "type": key, "series": series, "position": {"left": left, "top": top, "width": float(width), "height": float(height)}}
+    out = {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "chart": shape.Name, "type": key, "series": series, "position": {"left": left, "top": top, "width": float(width), "height": float(height)}}
+    if expanded:
+        out["source_expanded_to_pivot"] = expanded
+    return out
 
 
 @office_tool("excel_analysis", "write", title="Manage charts", unstructured=True, read_actions=("list", "export_image"), destructive=True, file_args=("export_path",))

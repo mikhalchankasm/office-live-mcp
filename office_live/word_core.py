@@ -1,5 +1,6 @@
 """Word: документы, структура, чтение, поиск/замена, вставка, форматирование, выделение."""
 
+import contextlib
 import os
 import re
 
@@ -26,6 +27,39 @@ def _doc_pid_free(app) -> int | None:
         return win32process.GetWindowThreadProcessId(int(app.ActiveWindow.Hwnd))[1]
     except Exception:
         return None
+
+
+def _active_window(app):
+    try:
+        return app.ActiveWindow
+    except pywintypes.com_error:  # ни одного открытого документа
+        return None
+
+
+def _open_temporary_copy(app, path, previous):
+    """Только чтение, макросы отключены, без записи в недавние файлы. Скрытое открытие (Open с Visible=False) Word тут же
+    дописывает АКТИВНОМУ документу пользователя разделители сносок и стили колонтитулов (живая проверка: отпечаток
+    меняется, Saved остаётся True). Поэтому открываем видимым при выключенной перерисовке экрана, сразу прячем окно
+    и возвращаем прежнее активное окно. Не удалось спрятать — копию сразу закрываем без сохранения."""
+    updating = app.ScreenUpdating
+    app.ScreenUpdating = False
+    try:
+        with com.macros_disabled(app):
+            # Open: Visible — 12-й, NoEncodingDialog — 15-й; пароли-пустышки исключают диалоги.
+            doc = app.Documents.Open(path, False, True, False, "__office_live_no_password__",
+                                     "__office_live_no_password__", False, "__office_live_no_password__",
+                                     "__office_live_no_password__", 0, None, True, False, None, True)
+        try:
+            doc.Windows(1).Visible = False
+            if previous is not None:
+                previous.Activate()
+        except (pywintypes.com_error, ToolError):
+            with contextlib.suppress(pywintypes.com_error, ToolError):
+                doc.Close(0)
+            raise
+        return doc
+    finally:
+        app.ScreenUpdating = updating
 
 
 def _word_running() -> bool:
@@ -62,7 +96,7 @@ def word_compare_documents(
         compare_formatting, compare_case, compare_whitespace, compare_tables, compare_headers, compare_footnotes, compare_comments, compare_moves: comparison options, all true by default. Textboxes and fields are always compared.
         author: revision author for the result, default Office Live.
 
-    Closed files open temporarily, hidden and read-only, with macros disabled and no recent-file entry, then close without saving even on failure.
+    Closed files open temporarily and read-only, with macros disabled and no recent-file entry; their window is hidden at once (screen updating off) and your active window restored, and they close without saving even on failure.
     Word treats existing source revisions as accepted for comparison; warnings report this. Modal comparison warnings are disabled.
     """
     if granularity not in {"word", "character"}:
@@ -90,6 +124,7 @@ def word_compare_documents(
     if any(com.raw(a) is not com.raw(app) and not com._same_app(com.raw(a), com.raw(app)) for a in opened_apps):
         raise ToolError("Both documents must be in the same Word instance; close and reopen one in the other's instance.")
     temporary, warnings, result_name = [], [], ""
+    previous = _active_window(app)  # окно пользователя: после каждого временного открытия возвращаем его
     try:
         for source in sources:
             if source["doc"] is None:
@@ -97,12 +132,7 @@ def word_compare_documents(
                 if existing is not None:
                     source["doc"] = existing
             if source["doc"] is None:
-                with com.macros_disabled(app):
-                    # Open: Visible — 12-й, NoEncodingDialog — 15-й; пароли-пустышки исключают диалоги.
-                    doc = app.Documents.Open(source["path"], False, True, False, "__office_live_no_password__",
-                                             "__office_live_no_password__", False, "__office_live_no_password__",
-                                             "__office_live_no_password__", 0, None, False, False, None, True)
-                temporary.append(doc)
+                temporary.append(_open_temporary_copy(app, source["path"], previous))
                 _, source["doc"] = pick_document(source["path"])
             if int(source["doc"].Revisions.Count):
                 warnings.append(f"{source['doc'].Name}: existing revisions are treated as accepted for comparison; the source is unchanged.")

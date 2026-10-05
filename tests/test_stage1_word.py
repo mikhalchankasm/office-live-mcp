@@ -28,7 +28,9 @@ def comparison(office):
     o = office
     revised = add_doc(o.word, "Revised.docx")
     revised.Content.Text = "revised"
-    calls, opened = [], []
+    calls, opened, activated = [], [], []
+    o.word.ScreenUpdating = True
+    o.word.ActiveWindow = NS(Activate=lambda: activated.append(o.word.ScreenUpdating))
 
     def compare(*args):
         calls.append(args)
@@ -40,20 +42,22 @@ def comparison(office):
 
     def open_file(*args):
         assert len(args) == 15
-        assert args[1:4] == (False, True, False) and args[11] is False and args[14] is True
+        # Visible=True: скрытое открытие меняет активный документ пользователя; окно прячется сразу после открытия
+        assert args[1:4] == (False, True, False) and args[11] is True and args[14] is True
         assert all(args[i] == "__office_live_no_password__" for i in (4, 5, 7, 8))
-        assert o.word.AutomationSecurity == 3
+        assert o.word.AutomationSecurity == 3 and o.word.ScreenUpdating is False
         from pathlib import Path
 
         path = Path(args[0])
         doc = add_doc(o.word, path.name, path)
         doc.ReadOnly = True
+        doc.Windows = Collection([NS(Visible=True)])
         opened.append(doc)
         return doc
 
     o.word.CompareDocuments = compare
     o.word.Documents.Open = open_file
-    return NS(o=o, revised=revised, calls=calls, opened=opened)
+    return NS(o=o, revised=revised, calls=calls, opened=opened, activated=activated)
 
 
 def compare(c, **kw):
@@ -88,7 +92,34 @@ def test_compare_allowed_file_path_open_or_temporary(comparison, already_open):
     assert result["document"] == "Compared.docx"
     assert len(c.opened) == (0 if already_open else 1)
     assert all(d not in c.o.word.Documents.items for d in c.opened)
-    assert c.o.word.AutomationSecurity == 1
+    assert all(d.Windows(1).Visible is False for d in c.opened)
+    assert c.activated == ([] if already_open else [False])  # окно пользователя вернули до включения перерисовки
+    assert c.o.word.AutomationSecurity == 1 and c.o.word.ScreenUpdating is True
+
+
+def test_compare_temporary_copy_closed_when_its_window_cannot_be_hidden(comparison):
+    c = comparison
+    path = c.o.tmp / "Revised.docx"
+    path.write_text("fake doc")
+    c.o.word.Documents.items.remove(c.revised)
+    original_open = c.o.word.Documents.Open
+
+    class Unhideable:
+        Visible = True
+
+        def __setattr__(self, name, value):
+            raise error()
+
+    def open_file(*args):
+        doc = original_open(*args)
+        doc.Windows = Collection([Unhideable()])
+        return doc
+
+    c.o.word.Documents.Open = open_file
+    with pytest.raises(ToolError):
+        compare(c, revised=str(path))
+    assert c.opened[0] not in c.o.word.Documents.items and not c.calls
+    assert c.o.word.ScreenUpdating is True and c.o.word.AutomationSecurity == 1
 
 
 def test_compare_two_closed_paths_use_one_instance(comparison):

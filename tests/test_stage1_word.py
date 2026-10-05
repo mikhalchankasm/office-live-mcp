@@ -441,3 +441,18 @@ def test_sort_works_without_undo_when_owner_disabled_it(office, monkeypatch):
     tbl = table(o, [["h"], ["b"], ["a"]])
     assert sort(o)["values"] == [["h"], ["a"], ["b"]]
     assert tbl.calls and not undo.STACKS
+
+
+def test_compare_continues_when_previous_window_cannot_be_reactivated(comparison):
+    c = comparison
+    path = c.o.tmp / "Revised.docx"
+    path.write_text("fake doc")
+    c.o.word.Documents.items.remove(c.revised)
+
+    def refuse():
+        raise error()
+
+    c.o.word.ActiveWindow = NS(Activate=refuse)
+    result = compare(c, revised=str(path))
+    assert result["document"] == "Compared.docx" and c.calls
+    assert all(d not in c.o.word.Documents.items for d in c.opened) and c.o.word.ScreenUpdating is True

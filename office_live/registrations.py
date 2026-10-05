@@ -265,7 +265,7 @@ def remove_client(client, scope=None, project="", config="", dry_run=False):
     return all(ok for ok, _ in results), "; ".join(message for _, message in results)
 
 
-def adopt_legacy(root: Path):
+def adopt_legacy(root: Path, problems: list[str] | None = None):
     """Учитываем существующие пользовательские записи старой установки, не переписывая конфиги."""
     command = str(root / "app" / "office-live-mcp.exe")
     for client in cli.CLIENT_LABELS:
@@ -287,4 +287,7 @@ def adopt_legacy(root: Path):
                     write_state(state)
                     print(f"Учтена прежняя регистрация: {path}; настройки не изменены.")
         except (OSError, ValueError) as exc:
-            print(f"Не удалось учесть старую запись в {path}: {exc}. Проверьте и повторите setup --clients {client}.")
+            message = f"Не удалось учесть старую запись в {path}: {exc}. Проверьте и повторите setup --clients {client}."
+            print(message)
+            if problems is not None:
+                problems.append(message)

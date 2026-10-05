@@ -1,4 +1,4 @@
-"""python -m office_live [serve|install|uninstall|setup|doctor|tools|config]"""
+"""python -m office_live [serve|install|postinstall|uninstall|setup|clients|doctor|tools|config]"""
 
 import sys
 

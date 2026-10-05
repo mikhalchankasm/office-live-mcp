@@ -96,3 +96,30 @@ def test_packaged_link_gui_rejects_invalid_links_quickly(packaged):
         assert b"Traceback" not in result.stderr
     result = subprocess.run([str(exe), "tools", "--json"], capture_output=True, timeout=30)
     assert any(t["name"] == "office_link" and t["kind"] == "read" for t in json.loads(result.stdout))
+
+
+def test_packaged_installer_json_contract_without_registry(packaged):
+    root, exe = packaged
+    state = Path(os.environ["LOCALAPPDATA"]) / "office-live-mcp/state.json"
+    codex = Path(os.environ["CODEX_HOME"]) / "config.toml"
+    assert all(Path(os.environ[key]).is_relative_to(root) for key in ("USERPROFILE", "APPDATA", "LOCALAPPDATA", "CODEX_HOME"))
+
+    def run(*args):
+        result = subprocess.run([str(exe), *args, "--json"], env=os.environ.copy(), capture_output=True, timeout=120)
+        assert result.returncode == 0, result.stderr.decode("utf-8", "replace")
+        return json.loads(result.stdout)
+
+    info = run("clients")
+    assert not any(c["registered"] for c in info["clients"]) and not state.exists()
+    added = run("postinstall", "--clients", "codex,zcode", "--access", "readonly", "--no-links")
+    assert added["ok"] and added["smoke_tools"] > 0 and set(added["added"]) == {"codex", "zcode"}
+    assert run("clients")["access"] == "readonly"
+    before = codex.read_bytes()
+    kept = run("postinstall", "--clients", "keep", "--access", "full", "--no-links")
+    assert set(kept["kept"]) == {"codex", "zcode"} and codex.read_bytes() == before
+    changed = run("postinstall", "--clients", "codex", "--no-links")
+    assert changed["removed"] == ["zcode"] and codex.read_bytes() == before
+    assert all(r.get("kind") != "protocol" for r in json.loads(state.read_text(encoding="utf-8"))["registrations"])
+    assert run("uninstall", "--keep-files", "--yes")["ok"]
+    data = json.loads(state.read_text(encoding="utf-8"))
+    assert data["root"] == "" and not data["registrations"] and exe.exists()

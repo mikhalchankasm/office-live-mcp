@@ -25,31 +25,31 @@ MCP-сервер, через который любой ИИ-агент (Claude, 
 
 | Шаг | Что сделать |
 |:---:|---|
-| **1** | Скачайте **`office-live-mcp-<версия>-win64.zip`** со страницы [**Releases**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest) и **распакуйте архив целиком** (правой кнопкой → *Извлечь все…*). |
-| **2** | Дважды щёлкните **`install.cmd`** в распакованной папке. Установщик проверит Windows и Office, скопирует программу в `%LOCALAPPDATA%\Programs\office-live-mcp`, проверит её и спросит, какой доступ дать (**полный** или **только чтение**) и к каким агентам подключить (найденные отмечены). |
+| **1** | Скачайте **`office-live-mcp-<версия>-setup.exe`** со страницы [**Releases**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest). |
+| **2** | Запустите его: **Далее → Далее → Готово**. Мастер проверит Office, установит программу и предложит выбрать агентов и доступ: **полный** или **только чтение**. |
 | **3** | **Перезапустите агента** и попросите: *«покажи, какие книги открыты в Excel»*. |
 
 ## Обновление
 
 | Шаг | Что сделать |
 |:---:|---|
-| **1** | Скачайте и распакуйте **новый** архив со страницы [Releases](https://github.com/mikhalchankasm/office-live-mcp/releases/latest). |
-| **2** | Запустите его **`install.cmd`**. Режим доступа, разрешённые папки и подключённые агенты сохраняются. Если установщик скажет, что программа занята, закройте агентов и запустите его ещё раз. |
+| **1** | Скачайте новый **setup.exe** со страницы [Releases](https://github.com/mikhalchankasm/office-live-mcp/releases/latest). |
+| **2** | Запустите поверх существующей установки. Подключённые агенты сохраняют настройки; выбор доступа применяется только к добавляемым. По запросу мастера закройте агентов, использующих сервер. Снятая отметка отключает учтённые регистрации агента. |
 | **3** | Перезапустите агента. |
 
-**Удаление:** `"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall` — отключает агентов и удаляет
-только файлы самой программы. **Без вопросов:** `install.cmd --yes --clients claude-code,cursor --readonly`.
+**Удаление:** **Параметры → Приложения → Office Live MCP → Удалить**. Состояние, журналы и резервные копии конфигураций остаются.
 
-Установщик запоминает каталог в `%LOCALAPPDATA%\office-live-mcp\state.json`: обновление без `--target`
-использует прежнюю установку и сохраняет подключения. Новые клиенты при обновлении добавляются только по явному `--clients`.
+Программа находится в `%LOCALAPPDATA%\Programs\office-live-mcp\app`. В меню «Пуск → Office Live MCP» есть ярлыки
+**«Подключить к агентам»** и **«Проверка (doctor)»**. VS Code и проектные конфигурации подключаются через консольный ярлык.
+
+**Тихая установка:**
 
 ```bat
-install.cmd --yes --clients none
-"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" setup --yes --clients codex --full
-"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" setup --yes --clients zcode --readonly
+office-live-mcp-<версия>-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLIENTS=codex,zcode /ACCESS=readonly
 ```
 
-Есть `--dry-run` у install/setup/uninstall, `setup --config PATH`, `--scope project --project DIR` и
+Без `/CLIENTS` тихая установка не добавляет агентов, а обновление сохраняет существующие регистрации. `/NOLINKS` пропускает
+регистрацию `officelive://`. Есть `setup --config PATH`, `--scope project --project DIR` и
 `setup --remove --clients zcode`. Учёт всех областей, защита чужих записей, откат и примеры —
 [в руководстве](docs/GUIDE.ru.md#установка-подключения-и-обновление).
 Запись настроек проверяется чтением обратно; загрузка сервера клиентом требует его перезапуска.
@@ -58,6 +58,13 @@ Portable-режим пока в планах; установка для всех
 Exe пока не подписан сертификатом: SmartScreen может предупредить (*Подробнее* → *Выполнить в любом случае*), а Smart App
 Control или корпоративный антивирус — заблокировать запуск. Из исходников: `install.cmd` в клоне репозитория или
 `pip install .` и `python -m office_live setup` — см. [руководство](docs/GUIDE.ru.md).
+
+### Для администраторов: запасной ZIP
+
+В релизе также есть **`office-live-mcp-<версия>-win64.zip`**. Распакуйте архив целиком и запустите `install.cmd`
+(или `install.cmd --yes --clients none --no-links`). Обновление использует запомненную папку; для своей папки есть `--target`.
+Установки 0.4.x из ZIP можно обновить setup.exe без изменения пути `app\office-live-mcp.exe` в конфигах агентов.
+После перехода на setup.exe обновляйте программу новым setup.exe.
 
 ## Что умеет
 
@@ -79,7 +86,7 @@ Control или корпоративный антивирус — заблоки�
 [Подробности и ограничения](docs/GUIDE.ru.md#окна-office-и-чата).
 
 Ссылки `officelive://` выделяют диапазон или место Word в **уже открытом локальном файле**. Установщик регистрирует
-обработчик для текущего пользователя Windows; пропустить: `install --no-links`, отключить: `setup --no-links`, включить:
+обработчик для текущего пользователя Windows; пропустить: setup.exe `/NOLINKS`, отключить: `setup --no-links`, включить:
 `setup --links`. Обработчик не открывает файлы и не правит их содержимое. Ограничение папок для него задаётся отдельно:
 `setup --links --allowed-dirs "D:\Работа"`. [Формат и безопасность ссылок](docs/GUIDE.ru.md#кликабельные-ссылки).
 
@@ -122,7 +129,7 @@ Control или корпоративный антивирус — заблоки�
 python -m venv .venv && .venv\Scripts\pip install -r requirements.txt pytest ruff
 .venv\Scripts\python -m pytest tests -q          :: юнит-тесты, Office не нужен
 set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q   :: настоящие Excel и Word
-.venv\Scripts\python packaging\build.py          :: собрать архив установщика (нужен pyinstaller)
+.venv\Scripts\python packaging\build.py          :: собрать setup.exe + ZIP (нужны pyinstaller и Inno Setup 6.7+)
 ```
 
 Устройство, особенности COM и все настройки — [docs/GUIDE.ru.md](docs/GUIDE.ru.md). Изменения — [CHANGELOG.md](CHANGELOG.md).

@@ -438,7 +438,25 @@ def _parse_selection(text: str, detected: dict[str, bool]) -> list[str]:
     return list(dict.fromkeys(chosen))
 
 
+def _pause() -> None:
+    try:
+        input("\nНажмите Enter, чтобы закрыть окно...")
+    except EOFError:
+        pass
+
+
 def setup_cmd(args, server=None) -> int:
+    p = argparse.ArgumentParser(add_help=False)
+    p.add_argument("--pause", action="store_true", help="в конце ждать Enter")
+    ns, rest = p.parse_known_args(args)
+    try:
+        return _setup_cmd(rest, server)
+    finally:
+        if ns.pause:
+            _pause()
+
+
+def _setup_cmd(args, server=None) -> int:
     p = argparse.ArgumentParser(prog="office-live-mcp setup", description="Подключить сервер к ИИ-агентам на этом компьютере (диалог).")
     p.add_argument("--clients", default=None, help="claude-code,claude-desktop,cursor,codex,zcode,vscode | detected | all | none")
     link_flags = p.add_mutually_exclusive_group()
@@ -457,6 +475,7 @@ def setup_cmd(args, server=None) -> int:
     p.add_argument("--force", action="store_true", help="разрешить замену чужой записи office-live")
     p.add_argument("--dry-run", action="store_true", help="показать план без записи файлов и состояния")
     p.add_argument("--env", action="append", default=[], help="OFFICE_LIVE_NAME=value, можно повторять")
+    p.add_argument("--pause", action="store_true", help="в конце ждать Enter (ярлык меню Пуск)")
     ns = p.parse_args(args)
     if ns.readonly and ns.full:
         print("--readonly и --full противоречат друг другу.", file=sys.stderr)
@@ -605,16 +624,27 @@ def run(cmd: str, args: list[str]) -> int:
 
         return open_link(args)
     if cmd == "doctor":
-        return doctor()
+        p = argparse.ArgumentParser(prog="office-live-mcp doctor")
+        p.add_argument("--pause", action="store_true", help="в конце ждать Enter (ярлык меню Пуск)")
+        ns = p.parse_args(args)
+        try:
+            return doctor()
+        finally:
+            if ns.pause:
+                _pause()
     if cmd == "tools":
         return tools(args)
     if cmd == "config":
         return config_cmd(args)
     if cmd == "setup":
         return setup_cmd(args)
+    if cmd in ("clients", "postinstall"):
+        from .installer import clients_cmd, postinstall_cmd
+
+        return clients_cmd(args) if cmd == "clients" else postinstall_cmd(args)
     if cmd in ("install", "uninstall"):
         from .install import install_cmd, uninstall_cmd
 
         return install_cmd(args) if cmd == "install" else uninstall_cmd(args)
-    print(f"Использование: {_self_cmd()} [serve | install | uninstall | setup | open-link <uri> | doctor | tools [--markdown|--json] | config <client> [--write]]", file=sys.stderr)
+    print(f"Использование: {_self_cmd()} [serve | install | postinstall | uninstall | setup | clients [--json] | open-link <uri> | doctor | tools [--markdown|--json] | config <client> [--write]]", file=sys.stderr)
     return 2

@@ -86,3 +86,14 @@ def remember_install(root: Path) -> None:
         data = read_state()
         data.update(root=str(root.resolve()), version=__version__)
         write_state(data)
+
+
+def forget_install(root: Path) -> None:
+    """Сохраняем ledger/резервные копии, но этот корень больше не предлагаем при установке."""
+    from .registrations import same_path
+
+    with file_lock(state_path()):
+        data = read_state()
+        if data["root"] and same_path(data["root"], root):
+            data.update(root="", version="")
+            write_state(data)

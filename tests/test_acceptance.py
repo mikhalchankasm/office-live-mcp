@@ -60,8 +60,9 @@ def test_owner_acceptance_1_to_10(acceptance, monkeypatch, capsys):
         # Environment isolation does NOT redirect HKCU. Every child install must skip the protocol.
         if args[0] == "install":
             args = (*args, "--no-links")
-        if source_exe and args[0] == "install" and not any(cli._office_installed(p) for p in ("Excel.Application", "Word.Application")):
-            # CI без Office: подменяется только проверка наличия Office, все процессы EXE настоящие.
+        if source_exe and args[0] == "install":
+            # Проверка наличия Office всегда подменяется: даже HKCR на рабочей машине не читаем.
+            # Копирование и MCP-проверки выполняются с настоящим EXE в изолированном профиле.
             with monkeypatch.context() as patch:
                 patch.setattr(install, "frozen", lambda: True)
                 patch.setattr(sys, "executable", str(source_exe))

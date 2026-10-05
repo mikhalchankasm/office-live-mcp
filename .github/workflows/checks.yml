@@ -29,12 +29,12 @@ jobs:
       - name: Lint
         run: python -m ruff check .
       - name: Unit tests
-        run: python -m pytest tests -q
+        run: python -m pytest --ignore=tests/live -q
       - name: Server starts and lists tools
         run: python -m pytest tests/test_stdio.py -q
 
   package:
-    # автономный архив для «пустой» машины: office-live-mcp.exe (Python внутри) + install.cmd
+    # Основной setup.exe и запасной автономный zip; Office не запускается.
     needs: checks
     runs-on: windows-latest
     permissions:
@@ -50,18 +50,33 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt pyinstaller pytest
-      - name: Build and smoke-test the archive
+      - name: Install Inno Setup if missing
+        shell: pwsh
+        run: |
+          $candidates = @($env:ISCC, "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", (Get-Command ISCC.exe -ErrorAction SilentlyContinue).Source)
+          if (-not ($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) })) {
+            choco install innosetup -y --no-progress
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Build and smoke-test setup.exe and zip
         run: python packaging/build.py
       - name: Packaged lifecycle acceptance on an isolated profile (no Office calls)
-        run: python -m pytest tests/test_acceptance.py -q
+        run: python -m pytest tests/test_acceptance.py tests/test_packaged.py -q
+      - name: Silent Inno lifecycle (disposable CI runner only)
+        env:
+          CI: "true"
+          OFFICE_LIVE_SETUP_EXE_TEST: "1"
+        run: python -m pytest tests/test_setup_exe.py -q
       - uses: actions/upload-artifact@v7
         with:
           name: office-live-mcp-win64
-          path: dist/office-live-mcp-*-win64.zip
+          path: |
+            dist/office-live-mcp-*-win64.zip
+            dist/office-live-mcp-*-setup.exe
           if-no-files-found: error
       - name: Attach to the release
         if: startsWith(github.ref, 'refs/tags/v')
         shell: bash  # pwsh не раскрывает * для внешних программ
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${{ github.ref_name }}" dist/office-live-mcp-*-win64.zip --title "${{ github.ref_name }}" --generate-notes
+        run: gh release create "${{ github.ref_name }}" dist/office-live-mcp-*-win64.zip dist/office-live-mcp-*-setup.exe --title "${{ github.ref_name }}" --generate-notes

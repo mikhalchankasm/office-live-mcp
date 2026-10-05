@@ -340,6 +340,7 @@ class Entry:
     used: list = field(default_factory=list)
     structural: bool = False
     reason: str = ""
+    force_reason: str = ""
     fingerprint: str = ""
     before_fingerprint: str = ""
     refresh_previous: bool = True
@@ -429,6 +430,24 @@ def _name_state(wb, name):
         return None
 
 
+def _sheet_content_state(ws):
+    """Счётчики по всему листу: выбранные свойства объектов не покрывают все ручные правки."""
+    cells = ws.Cells
+    state = {"shapes": int(ws.Shapes.Count), "tables (ListObjects)": int(ws.ListObjects.Count),
+             "pivot tables": int(ws.PivotTables().Count), "conditional formatting": int(cells.FormatConditions.Count),
+             "comments/notes": int(ws.Comments.Count)}
+    try:
+        cells.SpecialCells(-4174)  # xlCellTypeAllValidation; наличие, без перебора ячеек всего листа
+        state["data validation"] = True
+    except pywintypes.com_error:
+        state["data validation"] = False  # Excel: no cells found
+    try:
+        state["threaded comments"] = int(ws.CommentsThreaded.Count)
+    except (AttributeError, pywintypes.com_error):
+        state["threaded comments"] = None  # старые версии Excel не поддерживают обсуждения
+    return state
+
+
 def _sheet_state(ws, rng):
     # Перед удалением созданного/скопированного листа проверяем и правки без изменения числа объектов.
     cells = ws.Cells
@@ -449,7 +468,7 @@ def _sheet_state(ws, rng):
             style = style.Name
         tables.append([table.Name, xl.addr_of(table.Range), style, bool(table.ShowTotals), bool(table.ShowHeaders)])
     # Formula1/Formula2 и другие свойства существуют не у всех видов правил: чтение защищено в _metadata_state.
-    return [dimensions, shapes, tables, _metadata_state(rng, "formats")]
+    return [dimensions, shapes, tables, _metadata_state(rng, "formats"), _sheet_content_state(ws)]
 
 
 def excel_fingerprint(app, wb, entry):
@@ -758,6 +777,10 @@ def _finish_excel(wb, entry, result):
                 raise ToolError("Could not identify the created sheet.")
             op["name"] = created[0]
             entry.used.append(created[0])
+            content = [name for name, count in _sheet_content_state(wb.Worksheets(created[0])).items() if count]
+            if content:
+                entry.force_reason = (f"the created sheet '{created[0]}' contains {', '.join(content)} whose manual edits "
+                                      "cannot be detected reliably; pass force=true to delete it anyway.")
         elif what == "sheet_property" and op["action"] == "rename":
             op["current"] = next(n for n in xl.sheet_names(wb, any_type=True) if n == result.get("new_name", "")) if result.get("new_name") else wb.Sheets(op["index"]).Name
         elif what == "shape":
@@ -1033,6 +1056,8 @@ class Recording:
             statuses.append("available" if entry.undoable else "not available: " + entry.reason)
             if entry.warning and isinstance(result, dict):
                 result["undo_warning"] = entry.warning
+            if entry.force_reason and isinstance(result, dict):
+                result["undo_warning"] = " ".join(filter(None, (entry.warning, entry.force_reason)))
         if statuses and isinstance(result, dict):
             result["undo"] = next((s for s in statuses if s != "available"), "available")
 
@@ -1140,7 +1165,8 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
     stack = STACKS.get(key, [])
     if act == "history":
         return {"file": identity(kind, obj), "history": [
-            {"tool": e.tool, "where": e.where, "time": e.stamp, "undoable": _available(app, e), "reason": e.reason}
+            {"tool": e.tool, "where": e.where, "time": e.stamp, "undoable": _available(app, e),
+             "needs_force": bool(e.force_reason), "reason": e.reason or e.force_reason}
             for e in reversed(stack)
         ]}
     undone = []
@@ -1158,6 +1184,8 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
             for pk, pa, po, pe in participants:
                 if not _available(pa, pe):
                     raise ToolError(f"Undo stopped at {pe.tool}: not available: {pe.reason}")
+                if pe.force_reason and not force:
+                    raise ToolError(f"{pe.tool}: {pe.force_reason}")
                 try:
                     current = word_fingerprint(po) if pk[0] == "document" else excel_fingerprint(pa, po, pe)
                 except Exception as exc:  # noqa: BLE001

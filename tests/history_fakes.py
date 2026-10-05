@@ -158,7 +158,12 @@ class Range:
 
     @property
     def FormatConditions(self):
-        return self.Worksheet.conditions
+        rules = []
+        for rule in self.Worksheet.conditions:
+            rng = rule.AppliesTo
+            if self.Row <= rng.r2 and rng.Row <= self.r2 and self.Column <= rng.c2 and rng.Column <= self.c2:
+                rules.append(rule)
+        return Collection(rules)
 
     @property
     def Hyperlinks(self):
@@ -266,6 +271,16 @@ class Cells:
     def __call__(self, row, col):
         return self.ws.Range(a1_range(row, col, row, col))
 
+    @property
+    def FormatConditions(self):
+        return self.ws.conditions
+
+    def SpecialCells(self, cell_type, /):
+        assert cell_type == -4174  # xlCellTypeAllValidation
+        if not self.ws.validations:
+            raise pywintypes.com_error(-2147352567, "No cells found", None, None)
+        return Collection(self.ws.Cells(r, c) for r, c in self.ws.validations)
+
     def _dimension(self, lines, name, default, count):
         self.ws.dimension_reads.append(name)
         values = {getattr(line, name) for line in lines.values()}
@@ -311,6 +326,8 @@ class Sheet:
         self.Rows, self.Columns = Lines(self, "rows", MAX_ROWS), Lines(self, "columns", MAX_COLS)
         self.Cells = Cells(self)
         self.Shapes, self.ListObjects = Collection(), Collection()
+        self.pivots, self.Comments, self.CommentsThreaded = Collection(), Collection(), Collection()
+        self.validations = set()
         self.Names = Names()
         self.conditions = Collection()
         self.view = NS(SplitRow=0, SplitColumn=0, FreezePanes=False, Zoom=100, DisplayGridlines=True, DisplayHeadings=True, ScrollRow=1, ScrollColumn=1)
@@ -329,6 +346,9 @@ class Sheet:
     def Range(self, address):
         return Range(self, address)
 
+    def PivotTables(self, /):
+        return self.pivots
+
     def Activate(self):
         self.Parent.Activate()
         self.Parent.ActiveSheet = self
@@ -343,6 +363,8 @@ class Sheet:
         sheet.data, sheet.columns, sheet.rows, sheet.formats = copy.deepcopy((self.data, self.columns, self.rows, self.formats))
         sheet.StandardWidth = self.StandardWidth
         sheet.Shapes, sheet.ListObjects, sheet.conditions = copy.deepcopy((self.Shapes, self.ListObjects, self.conditions), {id(self): sheet})
+        sheet.pivots, sheet.Comments, sheet.CommentsThreaded, sheet.validations = copy.deepcopy(
+            (self.pivots, self.Comments, self.CommentsThreaded, self.validations), {id(self): sheet})
         name = self.Name
         if any(s.Name == name for s in target.Sheets if s is not sheet):
             name += " (2)"

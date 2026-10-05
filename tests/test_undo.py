@@ -237,7 +237,8 @@ def test_copied_sheet_undo_refuses_manual_shape_change(office, member, value):
     shape = ws.Shapes(2)
     assert shape is not o.ws.Shapes(2) and ws.Shapes.Count == 2
     setattr(shape.Chart if member == "ChartType" else shape, member, value)
-    with pytest.raises(ToolError, match="later edits"):
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) != stack(o)[-1].fingerprint
+    with pytest.raises(ToolError, match="contains shapes.*force=true"):
         revert(o)
     assert o.wb.Worksheets("Copied") is ws and ws.Shapes.Count == 2 and len(stack(o)) == 1
 
@@ -251,7 +252,8 @@ def test_copied_sheet_undo_refuses_manual_table_change(office, member, value):
     assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
     ws = o.wb.Worksheets("Copied")
     setattr(ws.ListObjects(1), member, ws.Range(value) if member == "Range" else value)
-    with pytest.raises(ToolError, match="later edits"):
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) != stack(o)[-1].fingerprint
+    with pytest.raises(ToolError, match="contains tables.*force=true"):
         revert(o)
     assert o.wb.Worksheets("Copied") is ws and ws.ListObjects.Count == 1 and len(stack(o)) == 1
 
@@ -264,7 +266,8 @@ def test_copied_sheet_undo_refuses_manual_condition_change(office, member, value
     assert o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")["undo"] == "available"
     ws = o.wb.Worksheets("Copied")
     setattr(ws.conditions(1), member, ws.Range(value) if member == "AppliesTo" else value)
-    with pytest.raises(ToolError, match="later edits"):
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) != stack(o)[-1].fingerprint
+    with pytest.raises(ToolError, match="contains conditional formatting.*force=true"):
         revert(o)
     assert o.wb.Worksheets("Copied") is ws and ws.conditions.Count == 1 and len(stack(o)) == 1
 
@@ -293,8 +296,212 @@ def test_copied_sheet_fingerprint_is_stable_with_unavailable_condition_formulas(
     ws.dimension_reads.clear()
     assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) == stack(o)[-1].fingerprint
     assert ws.dimension_reads == ["ColumnWidth", "RowHeight"]  # по одному агрегатному чтению, без перебора всего листа
+    with pytest.raises(ToolError, match="cannot be detected reliably"):
+        revert(o)
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"]
+
+
+UNCHECKED_SHEET_CONTENT = ("shapes", "tables (ListObjects)", "pivot tables", "conditional formatting",
+                           "data validation", "comments/notes", "threaded comments")
+
+
+def add_unchecked_sheet_content(ws, kind):
+    from tests.history_fakes import Collection
+
+    if kind == "shapes":
+        ws.Shapes.items.append(NS(Name="Box", Type=17, Left=10, Top=20, Width=100, Height=80, Rotation=0))
+    elif kind == "tables (ListObjects)":
+        ws.ListObjects.items.append(NS(Name="Table1", Range=ws.Range("B2:C3"), TableStyle="TableStyleMedium1", ShowTotals=False, ShowHeaders=True))
+    elif kind == "pivot tables":
+        ws.pivots.items.append(NS(Name="Pivot1"))
+    elif kind == "conditional formatting":
+        ws.conditions.items.append(NS(Type=3, AppliesTo=ws.Range("Z100:Z101"),
+                                      ColorScaleCriteria=Collection([NS(Type=2, Value=0), NS(Type=2, Value=100)])))
+    elif kind == "data validation":
+        ws.validations.add((100, 26))
+    elif kind == "comments/notes":
+        ws.Comments.items.append(NS(Text="note"))
+    elif kind == "threaded comments":
+        ws.CommentsThreaded.items.append(NS(Text="comment"))
+    else:
+        raise AssertionError(kind)
+
+
+@pytest.mark.parametrize("kind", UNCHECKED_SHEET_CONTENT)
+def test_copied_sheet_content_requires_force_even_without_manual_edits(office, kind):
+    o = office
+    add_unchecked_sheet_content(o.ws, kind)
+    result = o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")
+    ws = o.wb.Worksheets("Copied")
+    history = revert(o, action="history")["history"][0]
+    assert history["undoable"] and history["needs_force"]
+    assert kind in history["reason"] and "'Copied'" in history["reason"]
+    assert result["undo_warning"] == history["reason"]
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) == stack(o)[-1].fingerprint
+    with pytest.raises(ToolError, match="excel_manage_sheet: the created sheet 'Copied'.*force=true"):
+        revert(o)
+    assert o.wb.Worksheets("Copied") is ws and len(stack(o)) == 1
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+    assert o.excel.EnableEvents and o.excel.DisplayAlerts
+
+
+def test_copied_sheet_text_box_text_edit_requires_force(office):
+    o = office
+    # Настоящая структура TextFrame.Characters().Text; выбранные свойства фигуры не меняются.
+    class TextFrame:
+        def __init__(self):
+            self.characters = NS(Text="original")
+
+        def Characters(self, /):
+            return self.characters
+
+    add_unchecked_sheet_content(o.ws, "shapes")
+    o.ws.Shapes(1).TextFrame = TextFrame()
+    o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")
+    ws = o.wb.Worksheets("Copied")
+    ws.Shapes(1).TextFrame.Characters().Text = "user edit"
+    assert o.ws.Shapes(1).TextFrame.Characters().Text == "original"
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) == stack(o)[-1].fingerprint
+    with pytest.raises(ToolError, match="contains shapes.*force=true"):
+        revert(o)
+    assert ws.Shapes(1).TextFrame.Characters().Text == "user edit" and len(stack(o)) == 1
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+
+
+def test_copied_sheet_color_scale_threshold_edit_requires_force(office):
+    o = office
+    add_unchecked_sheet_content(o.ws, "conditional formatting")
+    o.ws.conditions(1).AppliesTo = o.ws.Range("A1")
+    o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")
+    ws = o.wb.Worksheets("Copied")
+    ws.conditions(1).ColorScaleCriteria(2).Value = 75
+    assert o.ws.conditions(1).ColorScaleCriteria(2).Value == 100
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) == stack(o)[-1].fingerprint
+    with pytest.raises(ToolError, match="contains conditional formatting.*force=true"):
+        revert(o)
+    assert ws.conditions(1).ColorScaleCriteria(2).Value == 75 and len(stack(o)) == 1
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+
+
+def test_plain_copied_sheet_values_and_formats_undo_without_force(office):
+    o = office
+    o.ws.Range("B2:C3").Value = (("007", 2), (3, "=B2"))
+    o.ws.Range("B2:C3").Font.Bold = True
+    o.ws.Columns(2).ColumnWidth = 25
+    o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")
+    history = revert(o, action="history")["history"][0]
+    assert history["undoable"] and not history["needs_force"] and not history["reason"]
+    revert(o)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+    assert o.ws.Range("B2").Value == "007" and o.ws.Range("B2:C3").Font.Bold
+
+
+@pytest.mark.parametrize("kind", UNCHECKED_SHEET_CONTENT)
+def test_pristine_created_sheet_refuses_objects_added_later(office, kind):
+    o = office
+    o.call("excel_add_worksheet", workbook=o.wb.Name, name="New")
+    ws = o.wb.Worksheets("New")
+    assert not stack(o)[-1].force_reason
+    before = stack(o)[-1].fingerprint
+    add_unchecked_sheet_content(ws, kind)
+    # CF вне UsedRange должна находиться через Cells.FormatConditions, а не UsedRange.FormatConditions.
+    if kind == "conditional formatting":
+        assert ws.UsedRange.FormatConditions.Count == 0 and ws.Cells.FormatConditions.Count == 1
+    assert undo.excel_fingerprint(o.excel, o.wb, stack(o)[-1]) != before
+    with pytest.raises(ToolError, match="later edits.*force=true"):
+        revert(o)
+    assert o.wb.Worksheets("New") is ws and len(stack(o)) == 1
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+
+
+def test_created_sheet_force_reason_lists_all_content(office):
+    o = office
+    for kind in UNCHECKED_SHEET_CONTENT:
+        add_unchecked_sheet_content(o.ws, kind)
+    o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")
+    reason = revert(o, action="history")["history"][0]["reason"]
+    assert all(kind in reason for kind in UNCHECKED_SHEET_CONTENT)
+
+
+@pytest.mark.parametrize("error", [AttributeError, "com_error"])
+def test_created_sheet_without_threaded_comment_support_undoes(office, monkeypatch, error):
+    import pywintypes
+    from tests.history_fakes import Sheet
+
+    def unavailable(self):
+        if error == "com_error":
+            raise pywintypes.com_error(-2147352573, "Member not found", None, None)
+        raise error("CommentsThreaded")
+
+    monkeypatch.setattr(Sheet, "CommentsThreaded", property(unavailable, lambda self, value: None), raising=False)
+    o = office
+    assert o.call("excel_add_worksheet", workbook=o.wb.Name, name="New")["undo"] == "available"
+    assert not stack(o)[-1].force_reason
     revert(o)
     assert xl.sheet_names(o.wb) == ["Data"]
+
+
+@pytest.mark.parametrize("tool", ["excel_add_worksheet", "bridge_word_table_to_excel", "bridge_word_text_to_excel"])
+def test_add_and_bridge_inspect_sheet_after_creation(office, monkeypatch, tool):
+    from office_live import bridge, word_tables
+    from tests.history_fakes import Collection, Sheets
+
+    o = office
+    original_add = Sheets.Add
+
+    def add_with_note(self, before=None, after=None):
+        ws = original_add(self, before, after)
+        add_unchecked_sheet_content(ws, "comments/notes")
+        return ws
+
+    monkeypatch.setattr(Sheets, "Add", add_with_note)
+    if tool == "excel_add_worksheet":
+        result = o.call(tool, workbook=o.wb.Name, name="New")
+    else:
+        o.doc.Paragraphs = Collection([NS(OutlineLevel=1, Range=NS(Text="Heading\r"), Style=NS(NameLocal="Heading 1"))])
+        for module in (bridge, word_tables):
+            monkeypatch.setattr(module, "get_table", lambda *a: None)
+            monkeypatch.setattr(module, "table_grid", lambda *a: {"uniform": True, "values": [["header"], ["value"]]})
+        kwargs = {"table_index": 1, "decimal_separator": "."} if tool == "bridge_word_table_to_excel" else {}
+        result = o.call(tool, workbook=o.wb.Name, document=o.doc.Name, sheet="New", create_sheet=True, **kwargs)
+    assert result["undo"] == "available" and "comments/notes" in result["undo_warning"]
+    with pytest.raises(ToolError, match=f"{tool}: the created sheet 'New'.*force=true"):
+        revert(o)
+    assert o.wb.Worksheets("New").Comments.Count == 1 and len(stack(o)) == 1
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+
+
+def test_copied_sheet_force_guard_stops_multistep_undo_and_survives_refresh(office):
+    o = office
+    add_unchecked_sheet_content(o.ws, "shapes")
+    o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied")
+    write(o, "newer edit")
+    result = revert(o, steps=2)
+    assert [e["tool"] for e in result["undone"]] == ["excel_write_range"]
+    assert "force=true" in result["stopped"] and len(stack(o)) == 1
+    assert revert(o, action="history")["history"][0]["needs_force"]
+    revert(o, force=True)
+    assert xl.sheet_names(o.wb) == ["Data"] and not stack(o)
+
+
+def test_copied_sheet_force_guard_in_destination_workbook(office):
+    o = office
+    dest = o.excel.Workbooks.Add()
+    add_unchecked_sheet_content(o.ws, "conditional formatting")
+    o.call("excel_manage_sheet", workbook=o.wb.Name, sheet="Data", action="copy", new_name="Copied", dest_workbook=dest.Name)
+    assert not stack(o)
+    history = o.call("office_undo", file=dest.Name, action="history")["history"][0]
+    assert history["needs_force"] and "conditional formatting" in history["reason"]
+    with pytest.raises(ToolError, match="contains conditional formatting.*force=true"):
+        o.call("office_undo", file=dest.Name)
+    o.call("office_undo", file=dest.Name, force=True)
+    assert xl.sheet_names(dest) == ["Data"] and o.ws.Cells.FormatConditions.Count == 1
 
 
 @pytest.mark.parametrize("axis,start,cell", [("rows", 2, "A3"), ("columns", 2, "C1")])

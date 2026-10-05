@@ -4,8 +4,9 @@
 """
 
 import argparse
-import json
 import shutil
+import os
+import tempfile
 import subprocess
 import sys
 import zipfile
@@ -18,47 +19,41 @@ from office_live import __version__  # noqa: E402
 
 
 def smoke(exe: Path) -> int:
-    """Собранный exe отдаёт каталог инструментов и отвечает по протоколу MCP. Возвращает число инструментов."""
-    out = subprocess.run([str(exe), "tools", "--json"], capture_output=True, timeout=120, check=True)
-    catalog = json.loads(out.stdout.decode("utf-8"))
-    registered = sum(1 for t in catalog if t["registered"])
-    proc = subprocess.Popen([str(exe)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8")
-    try:
-        def rpc(rid, method, params=None):
-            msg = {"jsonrpc": "2.0", "id": rid, "method": method, **({"params": params} if params is not None else {})}
-            proc.stdin.write(json.dumps(msg) + "\n")
-            proc.stdin.flush()
-            while True:
-                line = proc.stdout.readline()
-                if not line:
-                    raise RuntimeError("the server closed its output: " + proc.stderr.read()[-2000:])
-                reply = json.loads(line)
-                if reply.get("id") == rid:
-                    return reply
+    from office_live.probe import smoke as check
 
-        rpc(1, "initialize", {"protocolVersion": "2024-11-05", "capabilities": {}, "clientInfo": {"name": "build-smoke", "version": "1"}})
-        proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}) + "\n")
-        proc.stdin.flush()
-        listed = rpc(2, "tools/list")["result"]["tools"]
-    finally:
-        proc.stdin.close()
-        proc.wait(30)
-    if len(listed) != registered or registered < 50:
-        raise RuntimeError(f"the packaged server lists {len(listed)} tools, the catalog says {registered}")
-    return len(listed)
+    with tempfile.TemporaryDirectory(prefix="olp-") as temporary:
+        root = Path(temporary)
+        env = {key: str(root / part) for key, part in (("USERPROFILE", "home"), ("HOME", "home"),
+               ("APPDATA", "roaming"), ("LOCALAPPDATA", "local"), ("CODEX_HOME", "codex"))}
+        env.update({key: "" for key in os.environ if key.startswith("OFFICE_LIVE_")})
+        env["PYTHONIOENCODING"] = "cp1251"  # frozen обязан сам настроить UTF-8
+        count = check([str(exe)], {**env, "OFFICE_LIVE_MODE": "full"})
+        readonly = check([str(exe)], {**env, "OFFICE_LIVE_MODE": "readonly"})
+        if not 0 < readonly < count:
+            raise RuntimeError(f"readonly: {readonly}, full: {count}; ожидалось сокращение каталога")
+        return count
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--dist", default=str(ROOT / "dist"), help="where to put the archive")
-    p.add_argument("--work", default=str(ROOT / "build"), help="PyInstaller work folder")
+    p.add_argument("--work", default="", help="короткий каталог сборки (по умолчанию временный olb-*)")
     ns = p.parse_args()
-    dist, work = Path(ns.dist), Path(ns.work)
-    pyi_out = dist / "pyinstaller"
+    with tempfile.TemporaryDirectory(prefix="olb-") as temporary:
+        return build(Path(ns.dist).resolve(), Path(ns.work).resolve() if ns.work else Path(temporary))
+
+
+def build(dist: Path, work: Path) -> int:
+    pyi_out = work / "dist"
+    dist.mkdir(parents=True, exist_ok=True)
+    env = dict(os.environ)
+    for key, part in (("USERPROFILE", "home"), ("HOME", "home"), ("APPDATA", "roaming"),
+                      ("LOCALAPPDATA", "local"), ("CODEX_HOME", "codex"), ("PYINSTALLER_CONFIG_DIR", "pyi-cache")):
+        env[key] = str(work / "profile" / part)
     subprocess.run(
-        [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", str(pyi_out), "--workpath", str(work),
+        [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--distpath", str(pyi_out), "--workpath", str(work / "work"),
          str(ROOT / "packaging" / "office-live-mcp.spec")],
-        check=True,
+        check=True, env=env,
     )
     app = pyi_out / "office-live-mcp"
     count = smoke(app / "office-live-mcp.exe")

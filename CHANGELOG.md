@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Track installation root/version and client registrations in per-user `state.json`; custom-path updates reuse the existing
+  installation, preserve all client settings and never auto-connect newly detected clients.
+- Add project/custom scopes, `CODEX_HOME`, conflict protection (`--force`), config locks, atomic writes and read-back.
+  Preserve additional MCP settings; independent setup calls support different access modes for Codex and ZCode.
+- Add fingerprint-aware disconnect/uninstall across all recorded scopes, file manifests, reparse/boundary checks,
+  preservation of user files, and a background deletion report. Keep the EXE when dependent registrations cannot be removed.
+- Add side-effect-free `--dry-run` to install/setup/uninstall. Check staged and installed copies over MCP; preserve rollback
+  copies until verification succeeds. Installer checks no longer call `doctor` or access running Office.
+- Normalize stderr to UTF-8 in source/frozen entry points. Drain diagnostic bytes independently; strictly validate stdout
+  as UTF-8 JSON-RPC with bounded RPC/EOF waits. Build smoke checks full/readonly modes on temporary profiles.
+- Isolate every unit-test profile variable and add lifecycle acceptance, conflict, concurrent-change, rollback, timeout,
+  Unicode/long-path and dry-run regressions. Build in a short temporary directory; document unsupported portable/all-users modes.
+
 - Add `excel_compare_ranges`: position/key matching across workbooks and instances, values/types, formulas or direct formats,
   duplicate-key/header refusal, bounded differences and explicit unmatched ranges/headers. Available in readonly mode.
 - Add `excel_clean_text`: preview by default without change logging, fixed cleanup order, conservative numeric conversion,

@@ -44,6 +44,111 @@ class SimpleBundle:
         self.app = root / "app"
 
 
+def test_profile_paths_are_isolated_before_installer_runs(tmp_path):
+    assert Path.home().is_relative_to(tmp_path)
+    assert cli._appdata().is_relative_to(tmp_path)
+    assert install.install_root().is_relative_to(tmp_path)
+    for client in ("cursor", "zcode", "claude-desktop"):
+        assert cli._json_target(client)[0].is_relative_to(tmp_path)
+    assert Path(os.environ["CODEX_HOME"]).is_relative_to(tmp_path)
+
+
+def test_update_without_target_reuses_custom_install(bundle):
+    assert install.install_cmd(["--target", str(bundle.root), "--yes", "--clients", "none"]) == 0
+    (bundle.app / install.EXE_NAME).write_text("old", encoding="utf-8")
+    assert install.install_cmd(["--yes"]) == 0
+    assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
+    assert not install.install_root().exists()
+
+
+def test_update_does_not_discover_or_reset_clients(bundle):
+    assert install.install_cmd(["--target", str(bundle.root), "--yes", "--clients", "codex"]) == 0
+    bundle.calls.clear()
+    assert install.install_cmd(["--yes", "--readonly"]) == 0
+    assert not any(c[1] == "setup" for c in bundle.calls)
+    assert install.install_cmd(["--yes", "--clients", "zcode", "--readonly"]) == 0
+    assert bundle.calls[-1][1:] == ["setup", "--yes", "--clients", "zcode", "--readonly"]
+
+
+def test_new_location_requires_explicit_flag(bundle, tmp_path):
+    assert install.install_cmd(["--target", str(bundle.root), "--clients", "none", "--yes"]) == 0
+    other = tmp_path / "other"
+    assert install.install_cmd(["--target", str(other), "--yes"]) == 1
+    assert not other.exists()
+    assert install.install_cmd(["--target", str(other), "--new-location", "--clients", "none", "--yes"]) == 0
+
+
+def test_invalid_staging_keeps_old_copy_before_switch(bundle, monkeypatch):
+    assert install.install_cmd(["--target", str(bundle.root), "--clients", "none", "--yes"]) == 0
+    (bundle.app / install.EXE_NAME).write_text("old")
+    monkeypatch.setattr(install, "_starts", lambda exe: 1)
+    assert install.install_cmd(["--yes"]) == 1
+    assert (bundle.app / install.EXE_NAME).read_text() == "old"
+
+
+def test_post_switch_failure_restores_old_copy_and_state(bundle, monkeypatch):
+    from office_live.state import state_path
+
+    assert install.install_cmd(["--target", str(bundle.root), "--clients", "none", "--yes"]) == 0
+    original = state_path().read_bytes()
+    (bundle.app / install.EXE_NAME).write_text("old")
+    monkeypatch.setattr(install, "_starts", lambda exe: int(exe.parent == bundle.app))
+    assert install.install_cmd(["--yes"]) == 1
+    assert (bundle.app / install.EXE_NAME).read_text() == "old"
+    assert state_path().read_bytes() == original
+
+
+def test_open_executable_is_reported_without_killing_any_process(bundle, capsys):
+    bundle.app.mkdir(parents=True)
+    exe = bundle.app / install.EXE_NAME
+    exe.write_text("old")
+    install._write_marker(bundle.root)
+    with exe.open("rb"):
+        assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 1
+    assert exe.read_text() == "old" and "закройте" in capsys.readouterr().out
+
+
+def test_failed_staging_cleanup_refuses_a_new_junction(bundle, tmp_path, monkeypatch):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("keep")
+    links = []
+
+    def failed(exe):
+        link = exe.parent / "unexpected-link"
+        result = subprocess.run(["cmd", "/d", "/c", "mklink", "/J", str(link), str(outside)], capture_output=True, timeout=10)
+        assert result.returncode == 0
+        links.append(link)
+        return 1
+
+    monkeypatch.setattr(install, "_starts", failed)
+    try:
+        assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 1
+        assert (outside / "keep.txt").read_text() == "keep"
+        assert links[0].exists()
+    finally:
+        for link in links:
+            os.rmdir(link)
+
+
+def test_legacy_custom_update_adopts_only_existing_registration(bundle):
+    from office_live import registrations as reg
+    from office_live.state import read_state
+
+    bundle.app.mkdir(parents=True)
+    (bundle.app / install.EXE_NAME).write_text("old")
+    install._write_marker(bundle.root)
+    spec = reg.target("codex")
+    path = Path(spec["path"])
+    path.parent.mkdir(parents=True)
+    old = {"command": str(bundle.app / install.EXE_NAME), "env": {"OFFICE_LIVE_MODE": "readonly"}, "startup_timeout_sec": 60}
+    path.write_text(reg.render(spec, "", {}, old), encoding="utf-8")
+    before = path.read_bytes()
+    assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
+    assert path.read_bytes() == before
+    assert [r["client"] for r in read_state()["registrations"]] == ["codex"]
+
+
 def test_install_copies_the_program_checks_it_and_connects_agents(bundle):
     rc = install.install_cmd(["--target", str(bundle.root), "--yes", "--clients", "cursor", "--readonly"])
     assert rc == 0
@@ -51,7 +156,7 @@ def test_install_copies_the_program_checks_it_and_connects_agents(bundle):
     assert (bundle.app / "_internal" / "lib.pyd").exists()
     # проверяется и подключается УСТАНОВЛЕННАЯ копия (её путь попадёт в конфиги агентов), параметры уходят в setup
     assert bundle.calls == [
-        [install.EXE_NAME, "doctor"], [install.EXE_NAME, "tools", "--json"], [install.EXE_NAME, "setup", "--yes", "--clients", "cursor", "--readonly"],
+        [install.EXE_NAME, "tools", "--json"], [install.EXE_NAME, "tools", "--json"], [install.EXE_NAME, "setup", "--yes", "--clients", "cursor", "--readonly"],
     ]
 
 
@@ -60,6 +165,7 @@ def test_update_replaces_the_old_copy_completely(bundle):
     (bundle.app / install.EXE_NAME).write_text("exe v1", encoding="utf-8")
     (bundle.app / "_internal" / "stale.pyd").write_text("old", encoding="utf-8")
     install._write_marker(bundle.root)
+    install.write_manifest(bundle.app)
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
     assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
     assert not (bundle.app / "_internal" / "stale.pyd").exists()
@@ -81,7 +187,7 @@ def test_a_copy_in_use_is_left_intact_and_the_user_is_told_to_close_agents(bundl
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 1
     assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v1"
     assert sorted(p.name for p in bundle.root.iterdir()) == ["app", install.MARKER]
-    assert "закройте" in capsys.readouterr().out and bundle.calls == []
+    assert "закройте" in capsys.readouterr().out and bundle.calls == [[install.EXE_NAME, "tools", "--json"]]
 
 
 def test_without_excel_and_word_nothing_is_installed(bundle, monkeypatch, capsys):
@@ -117,18 +223,18 @@ def test_default_location_is_per_user_and_needs_no_admin_rights(monkeypatch, tmp
 
 
 def test_uninstall_disconnects_every_agent_and_deletes_the_folder(tmp_path, monkeypatch):
+    from office_live import registrations as reg
+
     root = tmp_path / "root"
     (root / "app").mkdir(parents=True)
+    (root / "app" / install.EXE_NAME).write_text("fixture")
     install._write_marker(root)
-    seen = []
-    monkeypatch.setattr(install, "setup_cmd", lambda args: seen.append(args) or 0)
+    monkeypatch.setattr(reg, "identity", lambda: (str(root / "app" / install.EXE_NAME), [], str(root)))
     monkeypatch.setattr(install, "frozen", lambda: False)
+    assert cli.setup_cmd(["--clients", "codex,zcode,claude-code", "--yes"]) == 0
     assert install.uninstall_cmd(["--target", str(root)]) == 0
-    assert seen[0][:2] == ["--remove", "--yes"] and "claude-code" in seen[0][3] and "vscode" not in seen[0][3]
+    assert all(reg.read_entry(reg.target(c))[2] is None for c in ("codex", "zcode", "claude-code"))
     assert not root.exists()
-    (root / "app").mkdir(parents=True)
-    install.uninstall_cmd(["--target", str(root), "--keep-files"])
-    assert root.exists()
 
 
 def test_uninstall_without_marker_keeps_every_file(tmp_path, monkeypatch, capsys):
@@ -175,20 +281,23 @@ def test_uninstall_invalid_target_does_not_disconnect_or_change_files(tmp_path, 
 
 
 def test_uninstall_keep_files_disconnects_without_folder_checks(tmp_path, monkeypatch):
-    calls = []
-    monkeypatch.setattr(install, "setup_cmd", lambda args: calls.append(args) or 0)
+    from office_live import registrations as reg
+
+    monkeypatch.setattr(reg, "identity", lambda: (str(tmp_path / "app" / install.EXE_NAME), [], str(tmp_path)))
+    assert cli.setup_cmd(["--clients", "codex", "--yes"]) == 0
     monkeypatch.setattr(install, "_owned", lambda root: pytest.fail("must not check ownership"))
-    monkeypatch.setattr(install, "_plain_dir", lambda path: pytest.fail("must not check folders"))
     assert install.uninstall_cmd(["--target", str(tmp_path), "--keep-files"]) == 0
-    assert len(calls) == 1 and calls[0][:2] == ["--remove", "--yes"]
+    assert reg.read_entry(reg.target("codex"))[2] is None
 
 
 def test_uninstall_missing_root_disconnects_and_reports_no_files(tmp_path, monkeypatch, capsys):
+    from office_live import registrations as reg
+
     root = tmp_path / "missing"
-    calls = []
-    monkeypatch.setattr(install, "setup_cmd", lambda args: calls.append(args) or 0)
+    monkeypatch.setattr(reg, "identity", lambda: (str(root / "app" / install.EXE_NAME), [], str(root)))
+    assert cli.setup_cmd(["--clients", "codex", "--yes"]) == 0
     assert install.uninstall_cmd(["--target", str(root)]) == 0
-    assert len(calls) == 1 and calls[0][:2] == ["--remove", "--yes"]
+    assert reg.read_entry(reg.target("codex"))[2] is None
     assert not root.exists() and "файлов не было" in capsys.readouterr().out.lower()
 
 
@@ -216,14 +325,15 @@ def test_cleanup_requires_exact_name_and_executable(tmp_path, name, exe, removed
 
 
 def test_uninstall_preserves_unrelated_root_files(tmp_path, monkeypatch):
-    install._write_marker(tmp_path)
-    (tmp_path / "app").mkdir()
-    (tmp_path / "notes.txt").write_text("keep")
-    (tmp_path / "app.notes-important").mkdir()
-    monkeypatch.setattr(install, "setup_cmd", lambda args: 0)
+    root = tmp_path / "install"
+    root.mkdir()
+    install._write_marker(root)
+    (root / "app").mkdir()
+    (root / "notes.txt").write_text("keep")
+    (root / "app.notes-important").mkdir()
     monkeypatch.setattr(install, "frozen", lambda: False)
-    assert install.uninstall_cmd(["--target", str(tmp_path)]) == 0
-    assert sorted(p.name for p in tmp_path.iterdir()) == ["app.notes-important", "notes.txt"]
+    assert install.uninstall_cmd(["--target", str(root)]) == 0
+    assert sorted(p.name for p in root.iterdir()) == ["app.notes-important", "notes.txt"]
 
 
 def test_detached_uninstall_uses_bounded_literal_powershell_paths(tmp_path, monkeypatch):
@@ -236,7 +346,7 @@ def test_detached_uninstall_uses_bounded_literal_powershell_paths(tmp_path, monk
     calls = []
     monkeypatch.setattr(install.subprocess, "Popen", lambda cmd, **kw: calls.append(cmd))
     assert install.uninstall_cmd(["--target", str(root)]) == 0
-    script = base64.b64decode(calls[0][-1]).decode("utf-16-le")
+    script = Path(calls[0][-1]).read_text(encoding="utf-8-sig")
     assert calls[0][0] == "powershell" and "user''s files & %TEMP%" in script
     assert "Remove-Item -LiteralPath $installRoot" not in script and "rd /s" not in script
     assert "[IO.Directory]::Delete($installRoot)" in script
@@ -267,8 +377,7 @@ def test_marker_exists_before_copy_and_is_kept_on_interruption(bundle, monkeypat
         raise OSError("copy interrupted")
 
     monkeypatch.setattr(install, "_replace_app", interrupted)
-    with pytest.raises(OSError, match="interrupted"):
-        install.install_cmd(["--target", str(bundle.root), "--yes"])
+    assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 1
     assert install._owned(bundle.root)
 
 
@@ -285,27 +394,29 @@ def test_failed_second_rename_restores_old_app(bundle, monkeypatch):
 
     monkeypatch.setattr(Path, "rename", fail_staging)
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 1
-    assert (bundle.app / install.EXE_NAME).read_text() == "old" and not bundle.calls
+    assert (bundle.app / install.EXE_NAME).read_text() == "old" and bundle.calls == [[install.EXE_NAME, "tools", "--json"]]
 
 
 @pytest.mark.parametrize("failure", ["return", "raise"])
 def test_update_that_does_not_start_rolls_back_before_setup(bundle, monkeypatch, capsys, failure):
+    from office_live import probe
+
     bundle.app.mkdir(parents=True)
     install._write_marker(bundle.root)
     (bundle.app / install.EXE_NAME).write_text("old")
 
-    def run(cmd, **kw):
-        assert cmd[1:] == ["tools", "--json"]
-        assert len(list(bundle.root.glob("app.old-*"))) == 1  # прежняя копия ещё цела
+    def smoke(command, **kwargs):
+        assert (bundle.app / install.EXE_NAME).read_text() == "old"
+        assert not list(bundle.root.glob("app.old-*"))  # проверка до переключения
         if failure == "raise":
             raise OSError("invalid exe")
-        return SimpleNamespace(returncode=1, stdout=b"", stderr=b"boom")
+        raise probe.ProtocolError("invalid stdout")
 
     monkeypatch.setattr(install, "_starts", REAL_STARTS)
-    monkeypatch.setattr(install.subprocess, "run", run)
+    monkeypatch.setattr(probe, "smoke", smoke)
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 1
     assert (bundle.app / install.EXE_NAME).read_text() == "old"
-    assert "восстановлена" in capsys.readouterr().out
+    assert "переключение не выполнялось" in capsys.readouterr().out
     assert not any(c[1:2] == ["setup"] for c in bundle.calls)
 
 
@@ -319,27 +430,27 @@ def test_doctor_failure_alone_does_not_roll_back_an_update(bundle, monkeypatch):
     assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
 
 
-def test_first_install_keeps_copy_but_does_not_connect_when_it_does_not_start(bundle, monkeypatch, capsys):
+def test_first_install_does_not_switch_or_connect_when_staging_does_not_start(bundle, monkeypatch, capsys):
     monkeypatch.setattr(install, "_starts", lambda exe: 1)
     assert install.install_cmd(["--target", str(bundle.root), "--yes", "--clients", "cursor", "--readonly"]) == 1
-    assert bundle.calls == [[install.EXE_NAME, "doctor"]]
-    assert (bundle.app / install.EXE_NAME).read_text(encoding="utf-8") == "exe v2"
-    assert (bundle.app / "_internal" / "lib.pyd").exists()
+    assert bundle.calls == [] and not bundle.app.exists()
     marker = json.loads((bundle.root / install.MARKER).read_text())
-    assert marker["product"] == install.PRODUCT and marker["version"] and marker["created"]
-    output = capsys.readouterr().out
-    assert "Файлы сохранены" in output and "Повторить" in output
-    assert "install --target" in output and "--clients cursor --readonly" in output
+    assert marker["product"] == install.PRODUCT and marker["created"]
+    assert "переключение не выполнялось" in capsys.readouterr().out
 
 
 def test_uninstall_disconnect_failure_keeps_program_and_marker(tmp_path, monkeypatch):
-    install._write_marker(tmp_path)
-    (tmp_path / "app").mkdir()
-    (tmp_path / "app" / install.EXE_NAME).write_text("exe")
-    monkeypatch.setattr(install, "setup_cmd", lambda args: 1)
-    monkeypatch.setattr(install.subprocess, "Popen", lambda *a, **kw: pytest.fail("must not detach"))
-    assert install.uninstall_cmd(["--target", str(tmp_path)]) == 1
-    assert (tmp_path / "app" / install.EXE_NAME).read_text() == "exe" and (tmp_path / install.MARKER).exists()
+    from office_live import registrations as reg
+
+    root = tmp_path / "root"
+    (root / "app").mkdir(parents=True)
+    install._write_marker(root)
+    (root / "app" / install.EXE_NAME).write_text("exe")
+    monkeypatch.setattr(reg, "identity", lambda: (str(root / "app" / install.EXE_NAME), [], str(root)))
+    assert cli.setup_cmd(["--clients", "codex", "--yes"]) == 0
+    monkeypatch.setattr(reg, "remove", lambda *a: (False, "не удалось снять"))
+    assert install.uninstall_cmd(["--target", str(root)]) == 1
+    assert (root / "app" / install.EXE_NAME).read_text() == "exe" and (root / install.MARKER).exists()
 
 
 def test_frozen_server_entry_points_at_the_exe_without_arguments(monkeypatch):
@@ -359,11 +470,12 @@ class Tty:
 
 @pytest.mark.parametrize("tty,expected", [(True, ("install", ["--pause"])), (False, None)])
 def test_double_click_installs_but_an_agent_with_pipes_gets_the_server(monkeypatch, tty, expected):
+    import office_live.app as app
+
     monkeypatch.setattr(sys, "frozen", True, raising=False)
     monkeypatch.setattr(sys, "stdin", Tty(tty))
     ran = []
     monkeypatch.setattr(cli, "run", lambda cmd, args: ran.append((cmd, args)) or 0)
-    import office_live.app as app
 
     monkeypatch.setattr(app, "main", lambda: ran.append("serve"))
     entry.main([])
@@ -382,22 +494,17 @@ def test_uninstall_of_an_owned_folder_without_app_still_cleans_up(tmp_path, monk
     assert not (root / install.MARKER).exists() and (root / "user.txt").read_text() == "keep"
 
 
-def test_a_hanging_doctor_does_not_stop_the_installation(bundle, monkeypatch, capsys):
-    """doctor обращается к запущенному Office; зависший Excel/Word не должен навсегда остановить установку."""
-    import subprocess
-
+def test_install_does_not_call_doctor_or_office_tools(bundle, monkeypatch):
     seen = []
 
-    def call(cmd, timeout=None):
-        seen.append((cmd[1], timeout))
-        if cmd[1] == "doctor":
-            raise subprocess.TimeoutExpired(cmd, timeout)
+    def call(command, **kwargs):
+        seen.append(command[1])
+        assert command[1] != "doctor"
         return 0
 
     monkeypatch.setattr(install.subprocess, "call", call)
     assert install.install_cmd(["--target", str(bundle.root), "--yes"]) == 0
-    assert seen[0] == ("doctor", install.DOCTOR_TIMEOUT) and seen[-1][0] == "setup"  # проверка запуска и подключение состоялись
-    assert "doctor не ответил" in capsys.readouterr().out
+    assert seen == ["setup"]
 
 
 @pytest.mark.parametrize("length,warning", [(199, False), (200, False), (201, True), (220, True)])

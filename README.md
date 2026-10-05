@@ -40,6 +40,21 @@ pivot tables, slicers, charts, the current selection.
 **Uninstall:** `"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall` — disconnects the agents and
 removes only the program's own files. **Unattended install:** `install.cmd --yes --clients claude-code,cursor --readonly`.
 
+The installer remembers the installation directory in `%LOCALAPPDATA%\office-live-mcp\state.json`.
+Updates keep existing registrations and settings; new clients require an explicit `--clients` selection.
+
+```bat
+install.cmd --yes --clients none
+"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" setup --yes --clients codex --full
+"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" setup --yes --clients zcode --readonly
+```
+
+`install`, `setup`, and `uninstall` support `--dry-run`. Use `setup --config PATH` for a custom file,
+`--scope project --project DIR` for a project, or `setup --remove --clients zcode` to disconnect one client.
+Registrations are tracked across scopes; conflicts preserve user changes. Configuration read-back confirms the entry,
+but **restart the client** to load it. Portable mode is planned; all-users installation is unsupported.
+See the [detailed guide and examples](docs/GUIDE.ru.md#установка-подключения-и-обновление).
+
 The executable is not code-signed yet: SmartScreen may warn (*More info* → *Run anyway*), and Smart App Control or a
 corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip install .` and
 `python -m office_live setup` — see the [guide](docs/GUIDE.ru.md).

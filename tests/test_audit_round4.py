@@ -184,7 +184,7 @@ def test_invalid_existing_toml_is_not_made_worse(fake_home, capsys):
     text = 'model = "unterminated\n'
     cfg = codex_cfg(fake_home, text)
     assert cli.run("setup", ["--yes", "--clients", "codex"]) == 1
-    assert cfg.read_text(encoding="utf-8") == text and "not be valid TOML" in capsys.readouterr().err
+    assert cfg.read_text(encoding="utf-8") == text and "Не удалось записать конфигурацию" in capsys.readouterr().err
 
 
 def test_without_a_parser_a_file_that_mentions_the_server_is_refused(fake_home, monkeypatch):

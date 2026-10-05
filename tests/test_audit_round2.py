@@ -494,7 +494,7 @@ def test_codex_reinstall_keeps_restrictions_without_tomllib(fake_home, monkeypat
     monkeypatch.setitem(sys.modules, "tomllib", None)  # import tomllib -> ImportError
     monkeypatch.setitem(sys.modules, "tomli", tomllib)  # tomli — бэкпорт с тем же API
     cfg = codex_cfg(fake_home)
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 0
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 0
     text = cfg.read_text(encoding="utf-8")
     assert 'OFFICE_LIVE_MODE = "readonly"' in text and "OFFICE_LIVE_ALLOWED_DIRS" in text and 'command = "old"' not in text
 
@@ -504,17 +504,17 @@ def test_unreadable_entry_is_not_silently_overwritten(fake_home, monkeypatch, ca
     monkeypatch.setitem(sys.modules, "tomli", None)
     cfg = codex_cfg(fake_home)
     before = cfg.read_text(encoding="utf-8")
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 1  # настройки прочитать нельзя -> отказ, файл не тронут
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 1  # настройки прочитать нельзя -> отказ, файл не тронут
     assert cfg.read_text(encoding="utf-8") == before
-    assert "Cannot read the settings" in capsys.readouterr().err
-    assert cli.run("setup", ["--yes", "--clients", "codex", "--reset"]) == 0  # явное согласие потерять настройки
+    assert "Нет парсера TOML" in capsys.readouterr().err
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--reset"]) == 1  # без парсера нельзя безопасно проверить результат
 
 
 def test_invalid_toml_with_tomllib_is_also_refused(fake_home):
     pytest.importorskip("tomllib")
     cfg = codex_cfg(fake_home, '[mcp_servers.office-live]\ncommand = "old\n')
     before = cfg.read_text(encoding="utf-8")
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 1 and cfg.read_text(encoding="utf-8") == before
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 1 and cfg.read_text(encoding="utf-8") == before
 
 
 def test_generic_client_writes_to_the_path_it_was_given(fake_home, tmp_path):
@@ -526,7 +526,7 @@ def test_generic_client_writes_to_the_path_it_was_given(fake_home, tmp_path):
 
 def test_header_with_quoted_first_component_is_replaced_not_duplicated(fake_home):
     cfg = codex_cfg(fake_home, 'model = "x"\n\n["mcp_servers"."office-live"]\ncommand = "old"\n["mcp_servers"."office-live".env]\nA = "1"\n\n[mcp_servers.other]\ncommand = "keep"\n')
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 0
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 0
     text = cfg.read_text(encoding="utf-8")
     assert 'command = "old"' not in text and "[mcp_servers.other]" in text
     tomllib = pytest.importorskip("tomllib")

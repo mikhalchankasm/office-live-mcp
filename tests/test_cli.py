@@ -96,7 +96,7 @@ def test_codex_env_survives_reinstall_and_headers_are_parsed_robustly(fake_home)
         '[mcp_servers.other]\ncommand = "keep"\n',
         encoding="utf-8",
     )
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 0
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 0
     text = cfg.read_text(encoding="utf-8")
     assert text.count("[mcp_servers.office-live]") == 1 and text.count("[mcp_servers.office-live.env]") == 1  # по одному разу
     assert 'command = "old"' not in text
@@ -132,30 +132,27 @@ def test_json_write_is_atomic_and_keeps_every_backup(fake_home, monkeypatch):
     assert path.read_text(encoding="utf-8") == before and not list(path.parent.glob("*.tmp"))
 
 
-def test_claude_code_restores_previous_entry_when_add_fails(fake_home, monkeypatch):
+def test_claude_code_atomic_failure_preserves_previous_entry(fake_home, monkeypatch):
     claude_json = fake_home / ".claude.json"
-    old = {"type": "stdio", "command": "python", "args": ["server.py"], "env": {"OFFICE_LIVE_MODE": "readonly"}}
+    old = cli._json_server_entry({"OFFICE_LIVE_MODE": "readonly"})
     claude_json.write_text(json.dumps({"mcpServers": {"office-live": old}}), encoding="utf-8")
-    monkeypatch.setattr(cli.shutil, "which", lambda name: "claude.exe")
-    calls = []
+    original = cli._atomic_write
 
-    def fake_call(parts, **kw):
-        calls.append(parts)
-        return 1 if parts[:3] == ["claude", "mcp", "add"] else 0  # обычное добавление «падает»
+    def fail(path, text, **kwargs):
+        if path == claude_json:
+            raise PermissionError("locked config")
+        return original(path, text, **kwargs)
 
-    monkeypatch.setattr(cli.subprocess, "call", fake_call)
-    assert cli.config_cmd(["claude-code", "--write", "--quiet"]) == 1
-    assert calls[0][:3] == ["claude", "mcp", "remove"]
-    add = next(c for c in calls if c[:3] == ["claude", "mcp", "add"])
-    assert "OFFICE_LIVE_MODE=readonly" in add  # прежние ограничения перенесены в новую запись
-    assert calls[-1][:3] == ["claude", "mcp", "add-json"] and json.loads(calls[-1][-1]) == old  # и прежняя запись возвращена
+    monkeypatch.setattr(cli, "_atomic_write", fail)
+    assert cli.config_cmd(["claude-code", "--write", "--full", "--quiet"]) == 1
+    assert json.loads(claude_json.read_text(encoding="utf-8"))["mcpServers"]["office-live"] == old
 
 
 def test_setup_codex_replaces_existing_block(fake_home):
     cfg = fake_home / ".codex" / "config.toml"
     cfg.parent.mkdir(parents=True)
     cfg.write_text('model = "x"\n\n[mcp_servers.office-live]\ncommand = "old"\nargs = ["old.py"]\n[mcp_servers.office-live.env]\nA = "1"\n\n[mcp_servers.other]\ncommand = "keep"\n', encoding="utf-8")
-    assert cli.run("setup", ["--yes", "--clients", "codex", "--readonly"]) == 0
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--readonly", "--force"]) == 0
     text = cfg.read_text(encoding="utf-8")
     assert text.count("[mcp_servers.office-live]") == 1 and 'command = "old"' not in text
     assert 'model = "x"' in text and "[mcp_servers.other]" in text and 'command = "keep"' in text
@@ -173,7 +170,7 @@ def test_setup_remove_undoes_everything(fake_home):
 def test_remove_reports_failures_and_continues_other_clients(fake_home, monkeypatch, capsys):
     seen = []
 
-    def remove(client):
+    def remove(client, **kwargs):
         seen.append(client)
         if client == "cursor":
             raise PermissionError("locked config")
@@ -235,7 +232,8 @@ def test_remove_codex_without_entry_is_successful(fake_home, monkeypatch, parser
     path.write_text(content, encoding="utf-8")
     if not parser:
         monkeypatch.setattr(cli, "_toml_module", lambda: None)
-    assert cli._remove_client("codex") == (True, "записи не было")
+    result = cli._remove_client("codex")
+    assert result == (True, "записи не было") if parser else result[0] is False
     assert path.read_text(encoding="utf-8") == content and not list(path.parent.glob("*.bak-*"))
 
 
@@ -262,7 +260,7 @@ def test_remove_codex_invalid_config_reports_structured_failure(fake_home, conte
 def test_remove_claude_failure_is_not_reported_as_absent(fake_home, monkeypatch, cli_available):
     (fake_home / ".claude.json").write_text(json.dumps({"mcpServers": {cli.SERVER_NAME: {"command": "old"}}}))
     monkeypatch.setattr(cli.shutil, "which", lambda name: "claude" if cli_available else None)
-    monkeypatch.setattr(cli.subprocess, "call", lambda *a, **kw: 1)
+    # Чужая запись сохраняется независимо от наличия CLI Claude.
     assert cli._remove_client("claude-code")[0] is False
     assert cli.setup_cmd(["--remove", "--yes", "--clients", "claude-code"]) == 1
 

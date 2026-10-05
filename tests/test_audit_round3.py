@@ -140,17 +140,17 @@ def test_without_any_toml_parser_an_existing_entry_is_refused_not_emptied(fake_h
     monkeypatch.setitem(sys.modules, "tomllib", None)
     monkeypatch.setitem(sys.modules, "tomli", None)
     cfg = codex_cfg(fake_home, TRIPLE_QUOTED)
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 1
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 1
     assert cfg.read_text(encoding="utf-8") == TRIPLE_QUOTED
     assert "tomli" in capsys.readouterr().err
 
 
-def test_without_any_toml_parser_a_file_without_our_entry_is_still_written(fake_home, monkeypatch):
+def test_without_any_toml_parser_writing_is_refused(fake_home, monkeypatch):
     monkeypatch.setitem(sys.modules, "tomllib", None)
     monkeypatch.setitem(sys.modules, "tomli", None)
     cfg = codex_cfg(fake_home, 'model = "x"\n')
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 0
-    assert "[mcp_servers.office-live]" in cfg.read_text(encoding="utf-8")
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 1
+    assert cfg.read_text(encoding="utf-8") == 'model = "x"\n'
 
 
 def test_tomli_backport_reads_any_valid_toml_and_keeps_the_restrictions(fake_home, monkeypatch):
@@ -158,7 +158,7 @@ def test_tomli_backport_reads_any_valid_toml_and_keeps_the_restrictions(fake_hom
     monkeypatch.setitem(sys.modules, "tomllib", None)
     monkeypatch.setitem(sys.modules, "tomli", tomllib)  # бэкпорт с тем же API
     cfg = codex_cfg(fake_home, TRIPLE_QUOTED)
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 0
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 0
     env = tomllib.loads(cfg.read_text(encoding="utf-8"))["mcp_servers"]["office-live"]["env"]
     assert env == {"OFFICE_LIVE_MODE": "readonly", "OFFICE_LIVE_ALLOWED_DIRS": "D:/Docs"}
 
@@ -168,8 +168,8 @@ def test_entry_that_cannot_be_replaced_line_by_line_is_left_untouched(fake_home,
     pytest.importorskip("tomllib")
     text = '[mcp_servers]\noffice-live = { command = "old", env = { OFFICE_LIVE_MODE = "readonly" } }\n'
     cfg = codex_cfg(fake_home, text)
-    assert cli.run("setup", ["--yes", "--clients", "codex"]) == 1
-    assert cfg.read_text(encoding="utf-8") == text and "Refusing to rewrite" in capsys.readouterr().err
+    assert cli.run("setup", ["--yes", "--clients", "codex", "--force"]) == 1
+    assert cfg.read_text(encoding="utf-8") == text and "Отказ от записи" in capsys.readouterr().err
     assert not list(cfg.parent.glob("*.bak*"))  # и копию не плодим
 
 

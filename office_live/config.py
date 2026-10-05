@@ -26,6 +26,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import ConfigError
+
 GROUPS = (
     "excel_core",
     "excel_format",
@@ -46,10 +48,6 @@ PRESETS = {
 # виды инструментов: read/ui не меняют содержимое; open открывает файл; остальные меняют документы или диск
 READ_KINDS = frozenset({"read", "ui", "open"})
 ALL_KINDS = READ_KINDS | {"write", "destructive", "save"}
-
-
-class ConfigError(ValueError):
-    """Неверная настройка окружения: сервер не должен молча расширять права."""
 
 
 def _journal_dir():

@@ -16,7 +16,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Журнал по умолчанию пишется в %LOCALAPPDATA%\office-live-mcp\journal: юнит-тесты не должны мусорить в профиле пользователя.
 # Задаётся до импорта office_live: настройки читаются при импорте.
 if os.environ.get("OFFICE_LIVE_LIVE_TESTS") != "1":
-    os.environ["LOCALAPPDATA"] = tempfile.mkdtemp(prefix="office-live-localappdata-")
+    for _key in list(os.environ):
+        if _key.startswith("OFFICE_LIVE_") and _key not in {"OFFICE_LIVE_LIVE_TESTS", "OFFICE_LIVE_TEST_EXE"}:
+            os.environ.pop(_key)
+    _profile = tempfile.mkdtemp(prefix="office-live-profile-")
+    for _key, _part in (("USERPROFILE", "home"), ("HOME", "home"), ("APPDATA", "roaming"),
+                        ("LOCALAPPDATA", "local"), ("CODEX_HOME", "home/.codex")):
+        os.environ[_key] = os.path.join(_profile, _part)
+
+
+@pytest.fixture(autouse=True)
+def isolated_profile(tmp_path, monkeypatch, request):
+    if "live" in request.keywords:
+        return
+    for key, part in (("USERPROFILE", "home"), ("HOME", "home"), ("APPDATA", "roaming"),
+                      ("LOCALAPPDATA", "local"), ("CODEX_HOME", "home/.codex")):
+        monkeypatch.setenv(key, str(tmp_path / part))
 
 
 def pytest_configure(config):

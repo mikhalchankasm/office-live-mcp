@@ -40,6 +40,21 @@ MCP-сервер, через который любой ИИ-агент (Claude, 
 **Удаление:** `"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" uninstall` — отключает агентов и удаляет
 только файлы самой программы. **Без вопросов:** `install.cmd --yes --clients claude-code,cursor --readonly`.
 
+Установщик запоминает каталог в `%LOCALAPPDATA%\office-live-mcp\state.json`: обновление без `--target`
+использует прежнюю установку и сохраняет подключения. Новые клиенты при обновлении добавляются только по явному `--clients`.
+
+```bat
+install.cmd --yes --clients none
+"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" setup --yes --clients codex --full
+"%LOCALAPPDATA%\Programs\office-live-mcp\app\office-live-mcp.exe" setup --yes --clients zcode --readonly
+```
+
+Есть `--dry-run` у install/setup/uninstall, `setup --config PATH`, `--scope project --project DIR` и
+`setup --remove --clients zcode`. Учёт всех областей, защита чужих записей, откат и примеры —
+[в руководстве](docs/GUIDE.ru.md#установка-подключения-и-обновление).
+Запись настроек проверяется чтением обратно; загрузка сервера клиентом требует его перезапуска.
+Portable-режим пока в планах; установка для всех пользователей не поддерживается.
+
 Exe пока не подписан сертификатом: SmartScreen может предупредить (*Подробнее* → *Выполнить в любом случае*), а Smart App
 Control или корпоративный антивирус — заблокировать запуск. Из исходников: `install.cmd` в клоне репозитория или
 `pip install .` и `python -m office_live setup` — см. [руководство](docs/GUIDE.ru.md).

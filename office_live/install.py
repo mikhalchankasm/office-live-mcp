@@ -377,7 +377,7 @@ def uninstall_cmd(args: list[str]) -> int:
 
 
 def _uninstall_root(ns) -> Path:
-    own_root = Path(sys.executable).parent.parent if frozen() else None
+    own_root = Path(sys.executable).resolve().parent.parent if frozen() else None  # длинные имена вместо 8.3
     if ns.target:
         return Path(ns.target).absolute()
     if own_root and (_owned(own_root) or (own_root / "unins000.exe").is_file()):
@@ -507,7 +507,7 @@ def _self_delete_script(root: Path, report: Path | None = None) -> str:
     report_literal = str(report).replace("'", "''")
     return rf"""$ErrorActionPreference = 'Stop'
 Start-Sleep -Seconds 2
-$installRoot = '{literal}'
+$installRoot = [IO.Path]::GetFullPath('{literal}').TrimEnd('\')  # .NET раскрывает короткие имена 8.3
 $reportPath = '{report_literal}'
 $removed = @()
 $errors = @()

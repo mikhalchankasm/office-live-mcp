@@ -1005,3 +1005,27 @@ def test_manage_names_formula_is_localized_for_names_add(office):
     o.wb.Names.Add = recording
     o.call("excel_manage_names", workbook=o.wb.Name, action="add", name="Dyn", formula="=SUM(Data!$A$1,Data!$B$1)")
     assert seen == ["=SUM(Data!$A$1;Data!$B$1)"]
+
+
+def test_conditional_format_add_undo_removes_only_the_added_rules(office):
+    # Демо 2026-10-05: отмена сообщала undone, но правила оставались — вставка форматов из снимка их не удаляет.
+    o = office
+    keep = o.ws.Range("B2:C3").FormatConditions.Add(1, 5, "=1")
+    for cells in ("G1:W1", "G2:W10", "B2:H3"):
+        result = o.call("excel_conditional_format", workbook=o.wb.Name, sheet="Data", cells=cells, rule="blanks", fill_color="#FFC7CE")
+        assert result["undo"] == "available"
+    assert o.ws.conditions.Count == 4
+    assert len(revert(o, steps=2)["undone"]) == 2
+    assert [rule.AppliesTo.Address for rule in o.ws.conditions] == ["B2:C3", "G1:W1"]
+    revert(o)
+    assert o.ws.conditions.items == [keep] and not stack(o)
+
+
+def test_conditional_format_undo_refuses_when_rules_cannot_be_matched(office):
+    o = office
+    o.ws.Range("B2:C3").FormatConditions.Add(1, 5, "=1")
+    o.call("excel_conditional_format", workbook=o.wb.Name, sheet="Data", cells="A1:C3", rule="blanks", fill_color="#FFC7CE")
+    o.ws.conditions(1).Formula1 = "=changed by user"  # правило до вызова изменено: какое из правил «лишнее», неизвестно
+    with pytest.raises(ToolError, match="could not be restored exactly"):
+        revert(o, force=True)
+    assert o.ws.conditions.Count == 2 and len(stack(o)) == 1 and not stack(o)[-1].undoable

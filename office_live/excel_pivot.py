@@ -4,6 +4,7 @@
 то же, что пользователь делает мышью: скрывает строки (элементы), фильтрует, ставит срезы, группирует.
 """
 
+import contextlib
 import datetime
 
 import pythoncom
@@ -13,7 +14,7 @@ from . import com
 from .errors import ToolError
 from .registry import office_tool
 from .util import parse_a1, to_grid
-from .xl_common import addr_of, get_range, pick_sheet, pick_workbook, preview
+from .xl_common import addr_of, get_range, pick_sheet, pick_workbook, preview, read_number_format
 
 MISSING = pythoncom.Missing
 
@@ -158,7 +159,7 @@ def excel_pivot_info(workbook: str, pivot: str = "", max_items: int = 100) -> di
     for df in pt.DataFields:
         entry = {"caption": df.Name, "source_field": df.SourceName, "function": int(df.Function)}
         try:
-            entry["number_format"] = df.NumberFormat
+            entry["number_format"] = read_number_format(pt.Application, df)
         except pywintypes.com_error:
             pass
         data.append(entry)
@@ -361,18 +362,12 @@ def _refetch_data_field(pt, source: str, position: int):
     )
 
 
-def pivot_number_format(app, fmt: str) -> str:
-    """Формат поля данных сводной: ярлыки и инвариантные коды -> локальная запись."""
-    from .excel_format import NUMBER_FORMATS
-    from .xl_common import number_format_for_write
-
-    return number_format_for_write(app, fmt, NUMBER_FORMATS)
-
-
 def _set_field_format(pt, df, fmt: str):
-    app = pt.Application
+    from .excel_format import NUMBER_FORMATS
+    from .xl_common import set_number_format
+
     try:
-        df.NumberFormat = pivot_number_format(app, fmt)
+        set_number_format(pt.Application, df, fmt, NUMBER_FORMATS)
     except pywintypes.com_error:
         raise ToolError(f"Excel rejected number_format '{fmt}' for a pivot value. Use a plain code such as '0', '0.00', '#,##0', '#,##0.00', '0.0%', 'dd.mm.yyyy'.") from None
 
@@ -767,6 +762,17 @@ def _target_slicer(sc, sl, key: str):
     raise ToolError(f"Several slicers share the cache of '{key}': {[x.Name for x in all_slicers]}. Pass the name of the one to change.")
 
 
+def _check_shared_cache(cache, owner, pivots):
+    """Срез фильтрует только сводные с ОДНИМ PivotCache; иначе Excel отвечает 1004 уже после создания среза."""
+    other = [pt.Name for pt in pivots if int(pt.CacheIndex) != cache]
+    if other:
+        raise ToolError(
+            f"Cannot connect {other} to a slicer of pivot '{owner}': they use a different PivotCache (pivots built separately get "
+            "their own cache, even from the same source range), and Excel connects one slicer only to pivots that share a cache. "
+            "Nothing was changed. Add a separate slicer for each of them instead."
+        )
+
+
 @office_tool("excel_analysis", "write", title="Slicers and timelines", read_actions=("list",), destructive=True)
 def excel_manage_slicers(
     workbook: str,
@@ -851,25 +857,36 @@ def excel_manage_slicers(
             anchor = dest_ws.Cells(int(area.Row), int(area.Column) + int(area.Columns.Count) + 1)
         left, top = float(anchor.Left), float(anchor.Top)
         extra_pivots = [find_pivot(wb, pname)[1] for pname in connect_pivots or []]  # ошибки имён — до создания среза
+        if extra_pivots and table:
+            raise ToolError("connect_pivots works only with a pivot slicer, not with a table slicer. Nothing was created.")
+        extra_pivots = [pt2 for pt2 in extra_pivots if pt2.Name.lower() != src.Name.lower()]
+        if extra_pivots:
+            _check_shared_cache(int(src.CacheIndex), src.Name, extra_pivots)
         if kind.lower() == "timeline":
             # Add2(Source, SourceField, Name, SlicerCacheType): xlTimeline = 2 (xlSlicer = 1); Name обязателен, иначе тип игнорируется
             sc = wb.SlicerCaches.Add2(src, field, f"Timeline_{field}", 2)
         else:
             sc = wb.SlicerCaches.Add2(src, field)
-        # Slicers.Add(SlicerDestination, Level, Name, Caption, Top, Left, Width, Height); размеры при создании игнорируются —
-        # поэтому позицию и размер задаём ниже через Shape
-        sl = sc.Slicers.Add(dest_ws, MISSING, MISSING, caption or field, top, left, float(width), float(height))
-        shape = sl.Shape
-        shape.Left, shape.Top, shape.Width, shape.Height = left, top, float(width), float(height)
-        if kind.lower() == "timeline" and timeline_level:
-            sl.TimelineViewState.Level = levels[timeline_level.lower()]
-        if kind.lower() != "timeline":
-            if columns is not None and int(columns) != 1:
-                sl.NumberOfColumns = int(columns)
-            if style:
-                sl.Style = style
-        for pt2 in extra_pivots:
-            sc.PivotTables.AddPivotTable(pt2)
+        try:
+            # Slicers.Add(SlicerDestination, Level, Name, Caption, Top, Left, Width, Height); размеры при создании игнорируются —
+            # поэтому позицию и размер задаём ниже через Shape
+            sl = sc.Slicers.Add(dest_ws, MISSING, MISSING, caption or field, top, left, float(width), float(height))
+            shape = sl.Shape
+            shape.Left, shape.Top, shape.Width, shape.Height = left, top, float(width), float(height)
+            if kind.lower() == "timeline" and timeline_level:
+                sl.TimelineViewState.Level = levels[timeline_level.lower()]
+            if kind.lower() != "timeline":
+                if columns is not None and int(columns) != 1:
+                    sl.NumberOfColumns = int(columns)
+                if style:
+                    sl.Style = style
+            for pt2 in extra_pivots:
+                sc.PivotTables.AddPivotTable(pt2)
+        except Exception:
+            # добавление атомарно: при любой ошибке после создания кэша (демо 2026-10-05: 1004 при подключении) убираем его
+            with contextlib.suppress(pywintypes.com_error):
+                sc.Delete()
+            raise
         out = _slicer_info(sc)
         return {"ok": True, "workbook": wb.Name, "slicer": sl.Name, **out}
 
@@ -910,7 +927,13 @@ def excel_manage_slicers(
     if act == "connect":
         if not connect_pivots:
             raise ToolError("'connect_pivots' is required.")
-        for pt2 in [find_pivot(wb, pname)[1] for pname in connect_pivots]:
+        extra_pivots = [find_pivot(wb, pname)[1] for pname in connect_pivots]
+        connected = sc.PivotTables
+        if int(connected.Count):
+            names = {connected(k).Name.lower() for k in range(1, int(connected.Count) + 1)}
+            extra_pivots = [pt2 for pt2 in extra_pivots if pt2.Name.lower() not in names]
+            _check_shared_cache(int(connected(1).CacheIndex), connected(1).Name, extra_pivots)
+        for pt2 in extra_pivots:
             sc.PivotTables.AddPivotTable(pt2)
         return {"ok": True, "workbook": wb.Name, **_slicer_info(sc)}
 

@@ -1,5 +1,6 @@
 """Мосты между приложениями: таблица Word <-> диапазон Excel, диаграммы и картинки из Excel в Word, слияние Excel -> Word."""
 
+import contextlib
 import os
 import re
 import shutil
@@ -195,34 +196,87 @@ def _hidden_lines(ws, r1, c1, r2, c2):
     return rows, cols
 
 
+def _display_look(df, *, row=False):
+    """(заливка, цвет шрифта, жирный, курсив) по DisplayFormat. Для строки — None, если вид неоднороден (COM Null);
+    у ячейки Null бывает только от смешанного шрифта в тексте: такой цвет не переносим, а жирный/курсив считаем выключенными."""
+    interior, font = df.Interior, df.Font
+    look = (interior.ColorIndex, interior.Color, font.Color, font.Bold, font.Italic)
+    if row and any(v is None for v in look):
+        return None
+    index, fill, color, bold, italic = look
+    fill = None if index is None or int(index) == -4142 else int(fill)
+    return fill, -1 if color is None else int(color), bool(bold), bool(italic)
+
+
+def _has_color(look) -> bool:
+    fill, color = look[0], look[1]
+    return color not in (0, 16777215 if fill is None else -1) and color >= 0
+
+
+def _plain(look) -> bool:
+    return look[0] is None and not _has_color(look) and not look[2] and not look[3]
+
+
+def _apply_look(target, look):
+    """target — строка или ячейка таблицы Word (у обеих есть Shading и Range)."""
+    fill, color, bold, italic = look
+    has_color = _has_color(look)
+    if fill is not None and fill != 16777215:
+        target.Shading.BackgroundPatternColor = fill
+    if has_color or bold or italic:
+        rng = target.Range
+        if has_color:
+            rng.Font.Color = color
+        if bold:
+            rng.Font.Bold = True
+        if italic:
+            rng.Font.Italic = True
+
+
 def _copy_cell_looks(app, ws, tbl, r1, c1, keep_r, keep_c, header_row) -> int:
-    """Переносит вид ячеек Excel (как на экране, с условным форматированием) в таблицу Word: заливка, цвет шрифта, жирный, курсив."""
+    """Переносит вид ячеек Excel (как на экране, с условным форматированием) в таблицу Word: заливка, цвет шрифта, жирный, курсив.
+
+    Каждое COM-обращение дорого (44x5 ячеек по одной — ~40 с в демо 2026-10-05): строку с одинаковым видом читаем одним
+    DisplayFormat и оформляем одной строкой Word; по ячейкам — только неоднородные строки.
+    """
     total = len(keep_r) * len(keep_c)
     rows = keep_r if total <= 1500 else keep_r[:1]
+    contiguous = keep_c == list(range(keep_c[0], keep_c[-1] + 1))
     n = 0
     for ii, i in enumerate(rows, start=1):
-        for jj, j in enumerate(keep_c, start=1):
-            df = ws.Cells(r1 + i, c1 + j).DisplayFormat
-            fill = None if int(df.Interior.ColorIndex) == -4142 else int(df.Interior.Color)
-            font = df.Font
-            color = font.Color
-            bold, italic = bool(font.Bold), bool(font.Italic)
-            has_color = color is not None and int(color) not in (0, 16777215 if fill is None else -1) and int(color) >= 0
-            if fill is None and not has_color and not bold and not italic:
+        look = None
+        if contiguous and len(keep_c) > 1:
+            look = _display_look(ws.Range(f"{a1_cell(r1 + i, c1 + keep_c[0])}:{a1_cell(r1 + i, c1 + keep_c[-1])}").DisplayFormat, row=True)
+        if look is not None and _plain(look):
+            continue
+        if look is not None:
+            try:
+                _apply_look(tbl.Rows(ii), look)
+                n += len(keep_c)
                 continue
-            cell = tbl.Cell(ii, jj)
-            if fill is not None and fill != 16777215:
-                cell.Shading.BackgroundPatternColor = fill
-            if has_color or bold or italic:
-                rng = cell.Range
-                if has_color:
-                    rng.Font.Color = int(color)
-                if bold:
-                    rng.Font.Bold = True
-                if italic:
-                    rng.Font.Italic = True
-            n += 1
+            except pywintypes.com_error:
+                pass  # строка Word с объединёнными ячейками: оформляем по ячейкам
+        for jj, j in enumerate(keep_c, start=1):
+            cell_look = look or _display_look(ws.Cells(r1 + i, c1 + j).DisplayFormat)
+            if not _plain(cell_look):
+                _apply_look(tbl.Cell(ii, jj), cell_look)
+                n += 1
     return n
+
+
+@contextlib.contextmanager
+def _frozen_screen(app):
+    """Без перерисовки Word построение и оформление таблицы заметно быстрее; прежнее значение возвращается всегда."""
+    try:
+        updating = app.ScreenUpdating
+        app.ScreenUpdating = False
+    except pywintypes.com_error:
+        yield
+        return
+    try:
+        yield
+    finally:
+        app.ScreenUpdating = updating
 
 
 @office_tool("bridge", "write", title="Excel range -> Word table")
@@ -280,10 +334,11 @@ def bridge_excel_range_to_word_table(
         col_vals = [values[i][j] for i in keep_r[start:] if values[i][j] not in (None, "")]
         if col_vals and all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in col_vals):
             right.append(jj)
-    info = build_table(doc, grid, position, paragraph, style, header_row, header_fill, autofit, None, font_size, None, right, table_index)
-    formatted = 0
-    if keep_formatting:
-        formatted = _copy_cell_looks(app, ws, doc.Tables(info["table"]), r1, c1, keep_r, keep_c, header_row)
+    with _frozen_screen(doc.Application):
+        info = build_table(doc, grid, position, paragraph, style, header_row, header_fill, autofit, None, font_size, None, right, table_index)
+        formatted = 0
+        if keep_formatting:
+            formatted = _copy_cell_looks(app, ws, doc.Tables(info["table"]), r1, c1, keep_r, keep_c, header_row)
     return {**info, "source": f"{wb.Name}!{ws.Name}!{addr_of(rng)}", "rows_copied": len(keep_r), "columns_copied": len(keep_c), "hidden_skipped": {"rows": len(hidden_rows), "columns": len(hidden_cols)}, "cells_with_copied_look": formatted}
 
 

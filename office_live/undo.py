@@ -261,18 +261,8 @@ def _metadata_state(rng, mode="all"):
     """Метаданные, которые переносит Copy/PasteSpecial; читаем только выбранный диапазон."""
     state = []
     if mode in {"all", "formats"}:
-        rules = rng.FormatConditions
-        for i in range(1, int(rules.Count) + 1):
-            rule = rules(i)
-            state.append([int(rule.Type), xl.addr_of(rule.AppliesTo),
-                          _optional_state(rule, ("Priority", "StopIfTrue", "Formula1", "Formula2", "Operator", "Text", "TextOperator", "DateOperator",
-                                                 "Rank", "Percent", "TopBottom", "AboveBelow", "NumStdDev", "DupeUnique"))])
-            for member, props in (("Font", ("Name", "Size", "Bold", "Italic", "Underline", "Strikethrough", "Color")),
-                                  ("Interior", ("Color", "Pattern", "PatternColor"))):
-                try:
-                    state.append(_optional_state(getattr(rule, member), props))
-                except (pywintypes.com_error, AttributeError):
-                    state.append(None)
+        for rule in _rules(rng):
+            state.append([_optional_state(rule, ("Priority",)), *_rule_state(rule)])
     if mode in {"all", "comments", "validation"}:
         for cell_type, member in ((-4144, "Comment"), (-4174, "Validation")):
             if mode != "all" and member.lower() != mode.removesuffix("s"):
@@ -301,6 +291,77 @@ def _metadata_state(rng, mode="all"):
         state.append([[xl.addr_of(links(i).Range), links(i).Address, links(i).SubAddress, links(i).ScreenTip, links(i).TextToDisplay]
                       for i in range(1, int(links.Count) + 1)])
     return state
+
+
+def _rules(rng):
+    rules = rng.FormatConditions
+    return [rules(i) for i in range(1, int(rules.Count) + 1)]
+
+
+def _rule_state(rule):
+    """Признаки правила условного форматирования без приоритета: номера приоритетов Excel перенумеровывает сам."""
+    state = [int(rule.Type), xl.addr_of(rule.AppliesTo),
+             _optional_state(rule, ("StopIfTrue", "Formula1", "Formula2", "Operator", "Text", "TextOperator", "DateOperator",
+                                    "Rank", "Percent", "TopBottom", "AboveBelow", "NumStdDev", "DupeUnique"))]
+    for member, props in (("Font", ("Name", "Size", "Bold", "Italic", "Underline", "Strikethrough", "Color")),
+                          ("Interior", ("Color", "Pattern", "PatternColor"))):
+        try:
+            state.append(_optional_state(getattr(rule, member), props))
+        except (pywintypes.com_error, AttributeError):
+            state.append(None)
+    return state
+
+
+def _inside(rng, box):
+    r1, c1, r2, c2 = box
+    return all(r1 <= a[0] and c1 <= a[1] and a[2] <= r2 and a[3] <= c2 for a in map(xl.bounds, rng.Areas))
+
+
+def _rule_closure(ws, box, *, whole_sheet=False):
+    """Расширяет прямоугольник, пока каждое пересекающее его правило не попадёт в него целиком (whole_sheet — все правила).
+
+    Вставка форматов из снимка, обрезающего правило, разрезает его на части (живая проверка): снимок должен содержать
+    правила целиком, тогда вставка вернёт их без изменений.
+    """
+    rules = [[xl.bounds(area) for area in rule.AppliesTo.Areas] for rule in _rules(ws.Cells)]
+    if whole_sheet:
+        for areas in rules:
+            box = (min(box[0], *(a[0] for a in areas)), min(box[1], *(a[1] for a in areas)),
+                   max(box[2], *(a[2] for a in areas)), max(box[3], *(a[3] for a in areas)))
+    changed = True
+    while changed:
+        changed = False
+        for areas in rules:
+            r1, c1, r2, c2 = box
+            if any(a[0] <= r2 and r1 <= a[2] and a[1] <= c2 and c1 <= a[3] for a in areas) and not all(
+                    r1 <= a[0] and c1 <= a[1] and a[2] <= r2 and a[3] <= c2 for a in areas):
+                box = (min(r1, *(a[0] for a in areas)), min(c1, *(a[1] for a in areas)),
+                       max(r2, *(a[2] for a in areas)), max(c2, *(a[3] for a in areas)))
+                changed = True
+    return xl.sub_range(ws, *box)
+
+
+def _restore_rules(target, before):
+    """Правила диапазона как до вызова: лишние (добавленные агентом) удаляем, итог сверяем.
+
+    Вставка форматов из другой книги не удаляет правила, добавленные поверх пустого снимка (живая проверка), поэтому
+    отмена excel_conditional_format не может полагаться на PasteSpecial. Не удалось вернуть точно — ошибка, а не «отменено».
+    """
+    box = xl.bounds(target)
+    remaining, extra = list(before), []
+    for rule in _rules(target):
+        state = _rule_state(rule)
+        if state in remaining:
+            remaining.remove(state)
+        else:
+            extra.append(rule)
+    if not remaining and all(_inside(rule.AppliesTo, box) for rule in extra):
+        for rule in reversed(extra):
+            rule.Delete()
+    after = [_rule_state(rule) for rule in _rules(target)]
+    if sorted(map(repr, after)) != sorted(map(repr, before)):
+        raise ToolError(f"Conditional formatting in {target.Worksheet.Name}!{xl.addr_of(target)} could not be restored exactly "
+                        f"({len(after)} rule(s) instead of {len(before)}); check them with excel_conditional_format action='list'.")
 
 
 def _property_object(rng, path):
@@ -387,7 +448,7 @@ class Entry:
         self.reason = str(reason)[:300]
 
 
-def _snapshots(app, wb, entry, ranges, *, columns=False, rows=False, restore="all", properties=()):
+def _snapshots(app, wb, entry, ranges, *, columns=False, rows=False, restore="all", properties=(), rules=False):
     ranges = list(ranges)
     if any(journal.owns_sheet(rng.Worksheet) or (rng.Worksheet.Name == journal.LOG_SHEET and journal.sheet_enabled(wb)) for rng in ranges):
         entry.barrier("The service log sheet is not recorded by undo.")
@@ -406,6 +467,8 @@ def _snapshots(app, wb, entry, ranges, *, columns=False, rows=False, restore="al
                 copy_rows = entry.tool == "excel_copy_range" and restore == "all" and int(rng.Columns.Count) == int(rng.Worksheet.Columns.Count)
                 data = {**_area(rng), **_dimensions(rng, columns or copy_columns, rows or copy_rows), "formulas": formulas, "formula_property": prop,
                         "restore": restore, "properties": {p: _property_state(rng, p) for p in properties}}
+                if rules or restore == "rules":
+                    data["rules"] = [_rule_state(rule) for rule in _rules(rng)]
                 saved = backup.Worksheets.Add(None, backup.Sheets(backup.Sheets.Count))
                 entry.backup_sheets.append(saved.Name)
                 data["backup_sheet"] = saved.Name
@@ -523,8 +586,8 @@ def excel_fingerprint(app, wb, entry):
                       _format_state(rng) if modes & {"all", "formats"} else None])
         if entry.tool in {"excel_clean_text", "excel_split_column"}:
             state.append([_property_state(rng, p) for p in ("NumberFormat", "PrefixCharacter")])
-        for mode in modes & {"all", "formats", "comments", "validation"}:
-            state.append(_metadata_state(rng, mode))
+        for mode in modes & {"all", "formats", "comments", "validation", "rules"}:
+            state.append(_metadata_state(rng, "formats" if mode == "rules" else mode))
     for name in entry.used:
         ws = wb.Worksheets(name)
         rng = ws.UsedRange
@@ -568,7 +631,15 @@ def _simple_range(app, wb, entry, args):
         _snapshots(app, wb, entry, [rng], restore="comments")
     elif entry.tool == "excel_data_validation":
         _snapshots(app, wb, entry, [rng], restore="validation")
-    elif entry.tool == "excel_conditional_format" or (entry.tool == "excel_clear_range" and args.get("what", "").lower() == "formats"):
+    elif entry.tool == "excel_conditional_format":
+        if args.get("action", "add").lower() == "add":
+            _snapshots(app, wb, entry, [rng], restore="rules")  # добавление меняет только правила: снимаем лишние
+        else:
+            # clear удаляет и обрезает правила (без cells — на всём листе): снимок охватывает их целиком
+            ws = rng.Worksheet
+            whole = not args.get("cells")
+            _snapshots(app, wb, entry, [_rule_closure(ws, xl.bounds(ws.UsedRange if whole else rng), whole_sheet=whole)], restore="formats", rules=True)
+    elif entry.tool == "excel_clear_range" and args.get("what", "").lower() == "formats":
         _snapshots(app, wb, entry, [rng], restore="formats")
     elif entry.tool == "excel_format_range" and args.get("style") is None:
         mapping = {"bold": "Font.Bold", "italic": "Font.Italic", "underline": "Font.Underline", "strikethrough": "Font.Strikethrough",
@@ -861,6 +932,7 @@ def _finish_excel(wb, entry, result):
             op["current"] = next(n for n in xl.sheet_names(wb, any_type=True) if n == result.get("new_name", "")) if result.get("new_name") else wb.Sheets(op["index"]).Name
         elif what == "shape":
             op["name"] = result.get("shape") or result["chart"]
+            op["sheet"] = result.get("sheet") or op["sheet"]  # сводная диаграмма создаётся на листе сводной, а не на `sheet`
         elif what == "slicer":
             op["name"] = result["cache"]
         elif what == "table":
@@ -889,6 +961,8 @@ def restore_excel(app, wb, entry):
                     target.PasteSpecial(paste, -4142, False, False)
                 finally:
                     app.CutCopyMode = False
+            if "rules" in op:
+                _restore_rules(target, op["rules"])
             _restore_properties(target, op.get("properties", {}))
             _restore_dimensions(target.Worksheet, op)
             if mode in {"all", "contents"}:

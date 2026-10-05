@@ -8,11 +8,12 @@ import contextlib
 import os
 import re
 
+import pythoncom
 import pywintypes
 
 from . import com, config, safety
 from .errors import ToolError
-from .util import delocalize_number_format, localize_number_format, EXCEL_ERRORS, MAX_COLS, MAX_ROWS, a1_cell, a1_range, quote_sheet, split_sheet_ref, to_grid
+from .util import _split_literals, delocalize_number_format, localize_number_format, EXCEL_ERRORS, MAX_COLS, MAX_ROWS, a1_cell, a1_range, quote_sheet, split_sheet_ref, to_grid
 
 WRITE_KINDS = {"write", "destructive", "save"}
 XL_WORKSHEET = -4167
@@ -475,6 +476,43 @@ def number_format_for_read(app, fmt):
         return fmt
     intl = app.International
     return delocalize_number_format(fmt, intl[2], intl[3])
+
+
+LCID_EN_US = 1033
+
+
+def _local_codes(fmt: str) -> bool:
+    """Код уже в локальной записи ('ДД.ММ.ГГГГ', 'Основной'): буквы не из ASCII вне кавычек, [скобок] и экранирования."""
+    return any(ch.isalpha() and not ch.isascii() for text, literal in _split_literals(fmt) if not literal for ch in text)
+
+
+def set_number_format(app, obj, fmt: str, shortcuts: dict | None = None) -> None:
+    """Записать NumberFormat (Range, поле сводной, подписи осей) в инвариантной записи.
+
+    pywin32 вызывает свойства с LCID пользователя, и русский Excel понимает только локальный код: 'dd.mm.yyyy' становится
+    текстом, а 'General', '[Red]', '[h]' отвергаются. Запись с LCID 1033 (так пишет VBA) принимает английские коды целиком
+    (живая проверка). Код, уже записанный по-местному, и объекты без COM-интерфейса (заглушки тестов) идут прежним путём.
+    """
+    inv = (shortcuts or {}).get(fmt.strip().lower(), fmt)
+    ole = getattr(obj, "_oleobj_", None)
+    if ole is not None and not _local_codes(inv):
+        try:
+            ole.Invoke(ole.GetIDsOfNames("NumberFormat"), LCID_EN_US, pythoncom.DISPATCH_PROPERTYPUT, 0, inv)
+            return
+        except pywintypes.com_error:
+            pass  # пробуем локальную запись ниже; её ошибка уйдёт вызывающему
+    obj.NumberFormat = number_format_for_write(app, inv)
+
+
+def read_number_format(app, obj):
+    """NumberFormat в инвариантной записи (None для смешанного формата): обратная пара к set_number_format."""
+    ole = getattr(obj, "_oleobj_", None)
+    if ole is not None:
+        try:
+            return ole.Invoke(ole.GetIDsOfNames("NumberFormat"), LCID_EN_US, pythoncom.DISPATCH_PROPERTYGET, 1)
+        except pywintypes.com_error:
+            pass
+    return number_format_for_read(app, obj.NumberFormat)
 
 
 def delocalize_formulas(app, wb, formulas: list[str]) -> list[str]:

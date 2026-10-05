@@ -545,3 +545,33 @@ def test_install_no_links_skips_registry_entirely_and_dry_run_shows_protocol(bun
     fake_registry.calls.clear()
     assert install.install_cmd(["--target", str(bundle.root), "--clients", "none", "--yes", "--no-links"]) == 0
     assert not fake_registry.calls and not read_state()["registrations"]
+
+
+def test_rename_retries_transient_access_denied(tmp_path, monkeypatch):
+    from office_live import install
+
+    src, dst = tmp_path / "app.new-1", tmp_path / "app"
+    src.mkdir()
+    real, calls = Path.rename, []
+
+    def flaky(self, target):
+        calls.append(target)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        return real(self, target)
+
+    monkeypatch.setattr(Path, "rename", flaky)
+    monkeypatch.setattr(install.time, "sleep", lambda s: None)
+    install._rename(src, dst)
+    assert dst.is_dir() and len(calls) == 3
+
+
+def test_rename_gives_up_after_attempts(tmp_path, monkeypatch):
+    from office_live import install
+
+    src = tmp_path / "app.new-1"
+    src.mkdir()
+    monkeypatch.setattr(Path, "rename", lambda self, target: (_ for _ in ()).throw(PermissionError(5, "denied")))
+    monkeypatch.setattr(install.time, "sleep", lambda s: None)
+    with pytest.raises(PermissionError):
+        install._rename(src, tmp_path / "app", attempts=3)

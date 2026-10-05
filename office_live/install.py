@@ -104,6 +104,21 @@ def _discard_staging(staging: Path) -> None:
     shutil.rmtree(staging)
 
 
+def _rename(src: Path, dst: Path, attempts: int = 20) -> None:
+    """rename с повторами: только что запущенный для проверки exe (или антивирус, сканирующий свежие файлы) ещё
+    несколько сотен миллисекунд держит папку, и Windows отвечает «Отказано в доступе» (замечено в CI)."""
+    delay = 0.05
+    for attempt in range(attempts):
+        try:
+            src.rename(dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.6, 0.5)
+
+
 def _replace_app(source: Path, app: Path) -> tuple[str, Path | None]:
     """Старая копия хранится до проверки MCP; при неудаче переключения возвращаем её на место."""
     staging = app.with_name(f"app.new-{time.time_ns()}")
@@ -125,7 +140,7 @@ def _replace_app(source: Path, app: Path) -> tuple[str, Path | None]:
         try:
             if not _exe_available(app / EXE_NAME):
                 raise PermissionError("EXE занят или нет доступа к файлу")
-            app.rename(old)
+            _rename(app, old, attempts=5)  # exe, занятый агентом, сам не освободится: недолго
         except OSError:
             _discard_staging(staging)
             return (
@@ -133,10 +148,10 @@ def _replace_app(source: Path, app: Path) -> tuple[str, Path | None]:
                 "(Claude, Cursor, Codex…), проверьте права доступа и запустите установку ещё раз", None
             )
     try:
-        staging.rename(app)
+        _rename(staging, app)
     except OSError as exc:
         if old is not None:
-            old.rename(app)
+            _rename(old, app)
         _discard_staging(staging)
         return f"не удалось установить новую копию; прежняя копия сохранена: {exc}", None
     return "", old
@@ -279,11 +294,11 @@ def _install(ns, setup_args: list[str]) -> int:
     if rc != 0:
         if old is not None:
             failed = root / f"app.new-{time.time_ns()}"
-            app.rename(failed)
+            _rename(app, failed)
             try:
-                old.rename(app)
+                _rename(old, app)
             except OSError:
-                failed.rename(app)
+                _rename(failed, app)
                 raise
             remove_files(root, failed)
             print("  FAIL проверка обновления не прошла; восстановлена прежняя копия. Подключение не изменено.")

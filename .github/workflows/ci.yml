@@ -5,6 +5,7 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  workflow_dispatch:  # ручной запуск: Actions -> CI -> Run workflow (или gh workflow run CI)
 
 jobs:
   checks:

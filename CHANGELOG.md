@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- CI can be started by hand (`workflow_dispatch`).
+- Known limitation documented: the PyInstaller build does not start when the full path of its libraries exceeds
+  260 characters (very deep extraction folder, long `--target` or user profile).
+
 ## 0.3.1 — 2026-10-05
 
 - Installer: the informational `doctor` step is limited to 120 s, so a hung Excel/Word no longer stops the

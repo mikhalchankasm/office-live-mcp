@@ -6,7 +6,11 @@ ToolError, поэтому все сообщения для агента обяз
 
 from mcp.server.mcpserver.exceptions import ToolError
 
-__all__ = ["ToolError", "AppBusyError", "PartialChangeError"]
+__all__ = ["ToolError", "AppBusyError", "PartialChangeError", "TargetNotFoundError"]
+
+
+class TargetNotFoundError(ToolError):
+    """Exact open target absent; unlike ambiguity/permission failures, permits a session alias lookup."""
 
 
 class PartialChangeError(ToolError):

@@ -4,7 +4,7 @@ OFFICE_LIVE_MODE            full (по умолчанию) | readonly — в rea
                             вообще не регистрируются, книги/документы открываются только на чтение
 OFFICE_LIVE_TOOLSETS        all (по умолчанию) | core | excel | word | список групп через запятую:
                             excel_core, excel_format, excel_analysis, word_core, word_tables,
-                            word_layout, bridge  (меньше групп = меньше токенов в контексте агента)
+                            word_layout, bridge, window  (меньше групп = меньше токенов в контексте агента)
 OFFICE_LIVE_ALLOWED_DIRS    каталоги через ';' — открывать/сохранять/вставлять файлы только отсюда
 OFFICE_LIVE_ALLOW_EVAL      1 — зарегистрировать office_run_python (произвольный Python с доступом к COM)
 OFFICE_LIVE_AUDIT_LOG       путь к jsonl-журналу всех пишущих вызовов
@@ -36,13 +36,14 @@ GROUPS = (
     "word_tables",
     "word_layout",
     "bridge",
+    "window",
 )
 
 PRESETS = {
     "all": GROUPS,
-    "core": ("excel_core", "word_core", "bridge"),
-    "excel": ("excel_core", "excel_format", "excel_analysis"),
-    "word": ("word_core", "word_tables", "word_layout"),
+    "core": ("excel_core", "word_core", "bridge", "window"),
+    "excel": ("excel_core", "excel_format", "excel_analysis", "window"),
+    "word": ("word_core", "word_tables", "word_layout", "window"),
 }
 
 # виды инструментов: read/ui не меняют содержимое; open открывает файл; остальные меняют документы или диск

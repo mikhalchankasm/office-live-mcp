@@ -224,13 +224,9 @@ def open_link(args):
 
 
 def foreground(hwnd):
-    import ctypes
-    from ctypes import wintypes
+    from .win32 import Win32
+    from .window import focus
 
-    user32 = ctypes.windll.user32
-    user32.IsIconic.argtypes = [wintypes.HWND]
-    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-    if user32.IsIconic(hwnd):
-        user32.ShowWindow(hwnd, 9)  # SW_RESTORE
-    user32.SetForegroundWindow(hwnd)  # Windows can deny focus stealing; Office activation still applies.
+    api = Win32()
+    with api.dpi_context():
+        return focus(api, hwnd & 0xFFFFFFFF)

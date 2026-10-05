@@ -53,6 +53,47 @@ def fake_registry(monkeypatch, request):
     return registry
 
 
+@pytest.fixture(autouse=True)
+def no_native_window_mutations(monkeypatch, request):
+    if "live" in request.keywords:
+        return
+    import ctypes
+
+    from office_live import win32
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unit tests must never call native window APIs; use the fake Win32 layer")
+
+    monkeypatch.setattr(win32, "_load_dll", forbidden)
+    names = ("SetWindowPos", "ShowWindow", "ShowWindowAsync", "SetForegroundWindow", "SetWindowPlacement",
+             "AllowSetForegroundWindow", "AttachThreadInput", "FlashWindowEx", "BringWindowToTop", "SetFocus", "SetActiveWindow")
+    for name in names:
+        monkeypatch.setattr(ctypes.windll.user32, name, forbidden)
+    original = ctypes.WinDLL
+
+    def guarded_dll(name, *args, **kwargs):
+        dll = original(name, *args, **kwargs)
+        if os.path.basename(str(name)).lower() in {"user32", "user32.dll"}:
+            for entry in names:
+                monkeypatch.setattr(dll, entry, forbidden)
+        return dll
+
+    monkeypatch.setattr(ctypes, "WinDLL", guarded_dll)
+
+
+@pytest.fixture(autouse=True)
+def no_real_office(monkeypatch, request):
+    if "live" in request.keywords:
+        return
+    import win32com.client
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Unit tests must use fake Office objects")
+
+    for name in ("Dispatch", "DispatchEx", "GetActiveObject"):
+        monkeypatch.setattr(win32com.client, name, forbidden)
+
+
 def pytest_configure(config):
     config.addinivalue_line("markers", "live: needs real Excel/Word (set OFFICE_LIVE_LIVE_TESTS=1)")
 

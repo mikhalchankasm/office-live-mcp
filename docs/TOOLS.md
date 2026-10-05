@@ -13,7 +13,7 @@
 | `excel_new_workbook` | write | Create a new empty workbook in Excel (starts Excel if needed). The workbook is unsaved until excel_save_as. |
 | `excel_close_workbook` | destructive | Close an open workbook. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true (throws the changes away). Never quits Excel itself. |
 | `excel_save` | save | Save a workbook to its current file (Ctrl+S). A workbook that was never saved needs excel_save_as instead. |
-| `excel_save_as` | save | Save a workbook under a new name/format. Format follows the extension: .xlsx .xlsm .xlsb .xls .csv (UTF-8) .txt .html .ods. Refuses to replace an existing file unless overwrite=true. Afterwards the workbook is known by its NEW file name. |
+| `excel_save_as` | save | Save a workbook under a new name/format. Format follows the extension: .xlsx .xlsm .xlsb .xls .csv (UTF-8) .txt .html .ods. Refuses to replace an existing file unless overwrite=true. Returns links with the NEW file name; old link names resolve only inside this server session, not the separate browser link handler. |
 | `excel_export_pdf` | save | Export a workbook (or one sheet) to a PDF file using its print settings. |
 | `excel_read_range` | read | Read the values of a range. Dates come back as ISO strings, errors as '#DIV/0!' etc. Whole-column/row references and an empty `cells` are clipped to the used range. Large reads are truncated at max_cells and the response tells you the remaining range. |
 | `excel_find` | read | Search cell values or formulas. Returns matching cells with their address and content. |
@@ -70,7 +70,7 @@
 | `word_new_document` | write | Create a new blank document in Word (starts Word if needed). The document is unsaved until word_save_as. |
 | `word_close_document` | destructive | Close an open document. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true. Never quits Word itself. |
 | `word_save` | save | Save a document to its current file (Ctrl+S). A document that was never saved needs word_save_as instead. |
-| `word_save_as` | save | Save a document under a new name/format. Format follows the extension: .docx .doc .docm .rtf .txt .html .odt (use word_export_pdf for PDF). Refuses to replace an existing file unless overwrite=true. Afterwards the document is known by its NEW file name. |
+| `word_save_as` | save | Save a document under a new name/format. Format follows the extension: .docx .doc .docm .rtf .txt .html .odt (use word_export_pdf for PDF). Refuses to replace an existing file unless overwrite=true. Returns links with the NEW file name; old link names resolve only inside this server session, not the separate browser link handler. |
 | `word_export_pdf` | save | Export a document to a PDF file (the open document keeps its name and format). |
 | `word_read_document` | read | Read document content. mode='text' returns plain text in pages of max_chars (continue with `offset` = previous offset + max_chars; the response says when the end is reached). mode='paragraphs' returns numbered paragraphs with their style, heading level and whether they sit in a table - use it to learn paragraph numbers for editing. |
 | `word_find` | read | Find every occurrence of a text and report where it is (paragraph number, position) with surrounding context. |
@@ -160,3 +160,9 @@
 | `office_journal` | write (readonly: read, status) | Read a document's on-disk change journal or enable/disable the optional Excel 'Лог' sheet. Pass exactly one workbook or document name/path. Read and status are available in read-only mode. |
 | `office_link` | read | Build a clickable officelive:// link for a plan or result. Checks an exact, already open local target and existing location without selecting or editing it. Clicking only navigates. A range requires an explicit sheet; Word accepts one paragraph interval, table or bookmark. |
 | `office_undo` | destructive (readonly: history) | Undo recent agent changes to an open workbook/document, or read the session's undo history. Stops at unsupported operations (barriers). Later user edits block undo unless force=true. In Word, force also undoes the user's later edits to reach the state before the agent change, up to 20 native steps per entry; reports native_steps and stops at a barrier if that state cannot be reached. Excel is tried first, then Word. |
+
+### window (1)
+
+| Tool | Kind | What it does |
+|---|---|---|
+| `office_window` | ui | Inspect, focus, arrange or restore already open Office windows. Available in readonly; never edits documents. Arrange only on the user's request/consent. Status is read-only. Chat detection is conservative; an unknown chat is never moved. Restore undoes the last arrange in this server session, not through office_undo. |

@@ -9,7 +9,7 @@ import pythoncom
 import pywintypes
 
 from . import com, config, safety
-from .errors import ToolError
+from .errors import TargetNotFoundError, ToolError
 from .util import clean_word_text
 
 MISSING = pythoncom.Missing
@@ -121,7 +121,7 @@ def pick_document(name: str = "", launch: bool = False, allow_autosave: bool = F
                 outside += 1
     if not pairs:
         note = f" ({outside} open document(s) are outside OFFICE_LIVE_ALLOWED_DIRS)" if outside else ""
-        raise ToolError("Word has no open documents" + note + ". Use word_open_document or word_new_document.")
+        raise TargetNotFoundError("Word has no open documents" + note + ". Use word_open_document or word_new_document.")
     if not name:
         for app in apps:
             d = active_document(app)
@@ -147,7 +147,7 @@ def pick_document(name: str = "", launch: bool = False, allow_autosave: bool = F
             return _guard_document(*subs[0], allow_autosave)
         if subs:
             raise ToolError(f"Document name '{name}' is ambiguous. Open documents: {names}")
-    raise ToolError(f"Document '{name}' not found. Open documents: {names}")
+    raise TargetNotFoundError(f"Document '{name}' not found. Open documents: {names}")
 
 
 # ------------------------------------------------------------------ стили

@@ -1,9 +1,60 @@
 """Resolve link destinations and derive review links from actual tool targets/results."""
 
+import ntpath
+
 from . import links, wd_common as wd, xl_common as xl
-from .errors import ToolError
+from .errors import TargetNotFoundError, ToolError
 from .registry import office_tool
 from .util import split_sheet_ref
+
+RENAMES = {}  # session-only strings/sets; never written to profile or shared with the shell handler
+
+
+def _key(name):
+    return ntpath.normcase(ntpath.normpath(name))
+
+
+def remember_rename(app, old_names, new_name):
+    old_full = _key(old_names[-1])
+    new_full = _key(new_name)
+    # Collapse chains, including A -> B -> A, without keeping dead intermediate names.
+    for (kind, _), destinations in RENAMES.items():
+        if kind == app and old_full in destinations:
+            destinations.remove(old_full)
+            destinations.add(new_full)
+    for name in old_names:
+        if _key(name) != new_full:
+            RENAMES.setdefault((app, _key(name)), set()).add(new_full)
+
+
+def renamed_target(app, name):
+    destinations = RENAMES.get((app, _key(name)), set())
+    return next(iter(destinations)) if len(destinations) == 1 else None
+
+
+def saved_as(app, obj, old_names):
+    remember_rename(app, old_names, identity(app, obj))
+    try:
+        return {"links": [item(app, obj)], "links_truncated": False}
+    except ToolError:
+        # Saving a valid filename unsupported by the strict URI codec still succeeds.
+        return {"links": [], "links_truncated": False}
+
+
+def pick_link_target(app, name):
+    pick = xl.pick_workbook if app == "excel" else wd.pick_document
+    try:
+        return pick(name, exact_only=True)
+    except TargetNotFoundError:
+        renamed = renamed_target(app, name)
+        if renamed:
+            try:
+                return pick(renamed, exact_only=True)
+            except TargetNotFoundError:
+                pass
+        label = "Workbook" if app == "excel" else "Document"
+        detail = "Книга была переименована или закрыта" if app == "excel" else "Документ был переименован или закрыт"
+        raise ToolError(f"{label} was renamed or closed. {detail}. Request a new link using the current exact name.") from None
 
 
 def identity(app, obj):
@@ -32,11 +83,11 @@ def resolve(app, params):
     """Exact matching across existing instances, through the standard folder guards."""
     links.validate(app, params)
     if app == "excel":
-        application, obj = xl.pick_workbook(params["book"], exact_only=True)
+        application, obj = pick_link_target(app, params["book"])
         sheet = xl.pick_sheet(obj, params["sheet"], exact_only=True) if "sheet" in params else None
         rng = sheet.Range(links.a1(params["range"])) if "range" in params else None
     else:
-        application, obj = wd.pick_document(params["doc"], exact_only=True)
+        application, obj = pick_link_target(app, params["doc"])
         sheet, rng = None, word_range(obj, params)
     # A short name must not bypass the prohibition on open UNC/cloud/device targets.
     links.file_target(identity(app, obj))

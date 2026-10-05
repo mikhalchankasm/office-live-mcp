@@ -12,7 +12,7 @@ import pythoncom
 import pywintypes
 
 from . import com, config, safety
-from .errors import ToolError
+from .errors import TargetNotFoundError, ToolError
 from .util import _split_literals, delocalize_number_format, localize_number_format, EXCEL_ERRORS, MAX_COLS, MAX_ROWS, a1_cell, a1_range, quote_sheet, split_sheet_ref, to_grid
 
 WRITE_KINDS = {"write", "destructive", "save"}
@@ -134,7 +134,7 @@ def pick_workbook(name: str = "", launch: bool = False, allow_autosave: bool = F
                 outside += 1
     if not pairs:
         note = f" ({outside} open workbook(s) are outside OFFICE_LIVE_ALLOWED_DIRS)" if outside else ""
-        raise ToolError("Excel has no open workbooks" + note + ". Use excel_open_workbook or excel_new_workbook.")
+        raise TargetNotFoundError("Excel has no open workbooks" + note + ". Use excel_open_workbook or excel_new_workbook.")
     if not name:
         for app in apps:
             wb = app.ActiveWorkbook
@@ -162,7 +162,7 @@ def pick_workbook(name: str = "", launch: bool = False, allow_autosave: bool = F
             return _guard_workbook(*subs[0], allow_autosave)
         if subs:
             raise ToolError(f"Workbook name '{name}' is ambiguous. Open workbooks: {names}")
-    raise ToolError(f"Workbook '{name}' not found. Open workbooks: {names}")
+    raise TargetNotFoundError(f"Workbook '{name}' not found. Open workbooks: {names}")
 
 
 # ------------------------------------------------------------------ листы

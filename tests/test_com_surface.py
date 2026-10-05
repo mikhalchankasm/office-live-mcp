@@ -59,6 +59,8 @@ EXCEL["ListObjects"] += " Add"
 EXCEL["_Worksheet"] += " Hyperlinks"
 EXCEL["Hyperlinks"] += " Add"
 EXCEL["_Application"] += " Goto"
+EXCEL["_Application"] += " Ready Interactive"
+EXCEL["Window"] += " Hwnd"
 WORD = {
     "_Application": "UndoRecord Documents ActiveDocument CompareDocuments AutomationSecurity",
     "_Document": "Name FullName Path Content Paragraphs Tables InlineShapes Sections Comments Footnotes Endnotes Shapes Undo Close Revisions Saved TrackRevisions ProtectionType",
@@ -85,7 +87,7 @@ WORD = {
     "Endnotes": "Count",
     "Shapes": "Count",
 }
-WORD["_Document"] += " Activate Range Bookmarks"
+WORD["_Document"] += " Activate Range Bookmarks ActiveWindow"
 WORD["_Application"] += " ActiveWindow"
 WORD["Range"] += " Select Start End"
 WORD["Paragraphs"] += " Item"
@@ -147,6 +149,7 @@ CALLS = {
     "UndoRecord.StartCustomRecord": ("Name",),
 }
 CALLS.update({"Protection." + member: () for member in EXCEL["Protection"].split()})
+CALLS.update({"_Application.Ready": (), "_Application.Interactive": (), "Window.Hwnd": (), "_Document.ActiveWindow": (), "Windows.Item": ("Index",)})
 SETTERS = {
     "_Application": "DisplayAlerts EnableEvents Calculation CutCopyMode",
     "_Workbook": "Saved Date1904",

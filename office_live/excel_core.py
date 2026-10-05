@@ -266,7 +266,7 @@ def excel_save(workbook: str = "") -> dict:
 
 @office_tool("excel_core", "save", title="Save workbook as")
 def excel_save_as(workbook: str, path: str, overwrite: bool = False) -> dict:
-    """Save a workbook under a new name/format. Format follows the extension: .xlsx .xlsm .xlsb .xls .csv (UTF-8) .txt .html .ods. Refuses to replace an existing file unless overwrite=true. Afterwards the workbook is known by its NEW file name.
+    """Save a workbook under a new name/format. Format follows the extension: .xlsx .xlsm .xlsb .xls .csv (UTF-8) .txt .html .ods. Refuses to replace an existing file unless overwrite=true. Returns links with the NEW file name; old link names resolve only inside this server session, not the separate browser link handler.
 
     Args:
         workbook: exact name of the open workbook (required).
@@ -285,10 +285,15 @@ def excel_save_as(workbook: str, path: str, overwrite: bool = False) -> dict:
     before = app.DisplayAlerts
     app.DisplayAlerts = False
     try:
+        old_names = (str(wb.Name), str(wb.FullName))
         wb.SaveAs(full, fmt)
+        from .navigation import saved_as
+
+        link_result = saved_as("excel", wb, old_names)
     finally:
         _restore_alerts(app, before)
-    return {"ok": True, "workbook": wb.Name, "path": wb.FullName, "overwrite": overwrite, "note": "The workbook is now named after the new file."}
+    return {"ok": True, "workbook": wb.Name, "path": wb.FullName, "overwrite": overwrite,
+            "note": "The workbook is now named after the new file. Old links resolve only within this server session; use the new links in the chat.", **link_result}
 
 
 @office_tool("excel_core", "save", title="Export to PDF")

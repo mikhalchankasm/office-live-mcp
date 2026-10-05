@@ -322,7 +322,7 @@ def word_save(document: str = "") -> dict:
 
 @office_tool("word_core", "save", title="Save document as")
 def word_save_as(document: str, path: str, overwrite: bool = False) -> dict:
-    """Save a document under a new name/format. Format follows the extension: .docx .doc .docm .rtf .txt .html .odt (use word_export_pdf for PDF). Refuses to replace an existing file unless overwrite=true. Afterwards the document is known by its NEW file name.
+    """Save a document under a new name/format. Format follows the extension: .docx .doc .docm .rtf .txt .html .odt (use word_export_pdf for PDF). Refuses to replace an existing file unless overwrite=true. Returns links with the NEW file name; old link names resolve only inside this server session, not the separate browser link handler.
 
     Args:
         document: exact name of the open document (required).
@@ -341,13 +341,18 @@ def word_save_as(document: str, path: str, overwrite: bool = False) -> dict:
     before = app.DisplayAlerts
     app.DisplayAlerts = 0
     try:
+        old_names = (str(doc.Name), str(doc.FullName))
         doc.SaveAs2(full, fmt)
+        from .navigation import saved_as
+
+        link_result = saved_as("word", doc, old_names)
     finally:
         try:
             app.DisplayAlerts = before
         except pywintypes.com_error:
             pass
-    return {"ok": True, "document": doc.Name, "path": doc.FullName, "overwrite": overwrite, "note": "The document is now named after the new file."}
+    return {"ok": True, "document": doc.Name, "path": doc.FullName, "overwrite": overwrite,
+            "note": "The document is now named after the new file. Old links resolve only within this server session; use the new links in the chat.", **link_result}
 
 
 @office_tool("word_core", "save", title="Export to PDF")

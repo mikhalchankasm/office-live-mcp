@@ -29,6 +29,16 @@ Fixes for defects reproduced on real Excel/Word (Russian-locale Office 365) whil
   opened as a temporary copy: a hidden `Documents.Open` makes Word add footnote/endnote separators and header/footer styles
   to the active document without clearing its saved flag. The copy now opens visible with screen updating off, its window
   is hidden at once and the previously active window is restored; a copy whose window cannot be hidden is closed.
+- Add `office_window` (`window`, `ui`, available in readonly and all presets): status, verified foreground activation,
+  Office/chat or Excel/Word layouts, maximize and session-local restore. Use exact open COM targets, physical pixels,
+  temporary thread DPI awareness v2, monitor work areas and DWM frame compensation with actual rectangle read-back.
+- Detect chat conservatively through process ancestry, inherited consoles, unique Windows Terminal candidates or an
+  explicit hint. Exclude Office, shell, hidden, cloaked, owned and tool windows; report ambiguity without moving chat.
+  Report hung/modal/busy windows, focus denial and constrained layouts. Preserve placements for rollback/restore.
+- Remember successful Excel/Word Save As aliases only in the current server session, return links using the new path,
+  and give the separate link handler a clear renamed/closed error without guessing similar filenames.
+- Add fake Win32/DLL tests, native window/COM guards and Office type-library checks. Add opt-in live window tests using
+  only fixture documents with chat disabled and restoration in finally; these tests have not been run. No version bump.
 
 ## 0.4.0
 

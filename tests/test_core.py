@@ -36,8 +36,8 @@ def test_unknown_mode_fails_safe():
 
 
 def test_toolset_presets_and_groups():
-    assert config.load({"OFFICE_LIVE_TOOLSETS": "core"}).groups == frozenset({"excel_core", "word_core", "bridge"})
-    assert config.load({"OFFICE_LIVE_TOOLSETS": "word"}).groups == frozenset({"word_core", "word_tables", "word_layout"})
+    assert config.load({"OFFICE_LIVE_TOOLSETS": "core"}).groups == frozenset({"excel_core", "word_core", "bridge", "window"})
+    assert config.load({"OFFICE_LIVE_TOOLSETS": "word"}).groups == frozenset({"word_core", "word_tables", "word_layout", "window"})
     assert config.load({"OFFICE_LIVE_TOOLSETS": "excel_format, bridge"}).groups == frozenset({"excel_format", "bridge"})
     assert config.load({"OFFICE_LIVE_TOOLSETS": "nonsense, excel_core"}).groups == frozenset({"excel_core"})  # лишнее пропускается
     with pytest.raises(config.ConfigError):  # ни одного известного набора — НЕ «включить всё», а отказ запуска

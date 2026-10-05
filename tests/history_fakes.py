@@ -516,7 +516,7 @@ class Workbook:
         self.Sheets = self.Worksheets = Sheets(self)
         self.ActiveSheet = self.Worksheets.Add()
         self.ActiveSheet.Name = "Data"
-        self.Windows = Collection([NS(Visible=True)])
+        self.Windows = Collection([NS(Visible=True, Hwnd=app.Hwnd)])
 
     def Activate(self):
         self.Application.ActiveWorkbook = self
@@ -537,6 +537,7 @@ class Workbook:
 class Excel:
     def __init__(self):
         self.Hwnd = 42
+        self.Ready = self.Interactive = True
         self.EnableEvents = self.DisplayAlerts = self.ScreenUpdating = True
         self.Calculation = -4105
         self.Workbooks = Books(self)
@@ -624,6 +625,7 @@ class Document:
 
     def __init__(self, app):
         self.Application = app
+        self.ActiveWindow = NS(Hwnd=84)
         self.Name, self.FullName, self.Path = "Draft.docx", "Draft.docx", ""
         self.AutoSaveOn = False
         self.Saved, self.ReadOnly, self.TrackRevisions, self.ProtectionType = True, False, False, -1
@@ -671,7 +673,7 @@ class Word:
 
 @pytest.fixture(name="office")
 def fake_office(monkeypatch, tmp_path):
-    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, registry, templates, undo, wd_common, word_core, word_tables
+    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, registry, templates, undo, wd_common, window, word_core, word_tables
 
     excel, word = Excel(), Word()
     wb = excel.Workbooks.Add()
@@ -680,10 +682,12 @@ def fake_office(monkeypatch, tmp_path):
     monkeypatch.setattr(com, "apps", lambda kind, launch=False: [excel if kind == "excel" else word])
     monkeypatch.setattr(undo, "STACKS", {})
     monkeypatch.setattr(undo, "_active", None)
+    monkeypatch.setattr(navigation, "RENAMES", {})
+    monkeypatch.setattr(window, "_LAST", [])
     saved_catalog = dict(registry.CATALOG)
     registered = {}
     monkeypatch.setattr(registry, "mcp", NS(add_tool=lambda fn, name, **kw: registered.__setitem__(name, fn)))
-    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, word_core, word_tables)
+    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, window, word_core, word_tables)
 
     def call(tool_name, **kwargs):
         fn = next(getattr(m, tool_name) for m in modules if hasattr(m, tool_name))

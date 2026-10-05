@@ -9,7 +9,7 @@
 [![Русский](https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-README-cf222e?style=for-the-badge)](README.ru.md)
 
 > **Status: actively developed.** 0.x releases — the tools and the installer are tested on real Excel and Word, but the
-> project is still being improved (next: an in-chat panel of changes and more Excel/Word tools; Power Query and Power Pivot/DAX later). Feedback and issues
+> project is still being improved (window layouts are covered by fake-only tests, awaiting a live run; Power Query and Power Pivot/DAX later). Feedback and issues
 > are welcome.
 
 An MCP server that lets any AI agent (Claude, Cursor, Codex, ZCode, VS Code…) work in the Excel and Word documents
@@ -61,7 +61,7 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 
 ## What it can do
 
-113 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`) — full list in [docs/TOOLS.md](docs/TOOLS.md).
+114 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — full list in [docs/TOOLS.md](docs/TOOLS.md).
 
 | Group | Highlights |
 |---|---|
@@ -69,6 +69,12 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 | Word | **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
 | Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF, inspect a file without opening it |
 | History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes, **clickable links** to plans and results (`office_link`) |
+| Windows | `office_window`: status, verified focus, Office/chat layouts with monitor/DPI/frame handling, restore the last layout; available in readonly |
+
+Ask *“Arrange the windows: Excel left, chat right”* or *“Restore the previous window layout”*. Layouts run only on
+request/consent; an ambiguous chat is left out. The `window` group is included in all presets; explicit group lists
+can omit it. After Save As, use the returned new links: old-name aliases work only inside the same server session,
+not in the separate browser link handler. [Window details and limitations](docs/GUIDE.ru.md#окна-office-и-чата).
 
 Clickable `officelive://` links select a range or Word location in an **already open local file**. Installation registers
 the handler for your Windows account; skip with `install --no-links`, disable with `setup --no-links`, enable with

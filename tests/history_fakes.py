@@ -41,6 +41,26 @@ class Names(Collection):
         return item
 
 
+class RangeConditions(Collection):
+    """Range.FormatConditions: правила, пересекающие диапазон; Add добавляет правило листа с наименьшим приоритетом."""
+
+    def __init__(self, rng, items):
+        super().__init__(items)
+        self.rng = rng
+
+    def Add(self, kind, operator=None, formula1=None, formula2=None, /):
+        rules = self.rng.Worksheet.conditions.items
+        rule = NS(Type=kind, AppliesTo=self.rng, Formula1=formula1, Formula2=formula2, Operator=operator,
+                  Interior=NS(Color=16777215, Pattern=1, PatternColor=0), Font=NS(Bold=False, Color=0))
+        rule.Delete = lambda: rules.remove(rule)
+        rules.append(rule)
+        return rule
+
+    def Delete(self):
+        for rule in self.items:
+            self.rng.Worksheet.conditions.items.remove(rule)
+
+
 class Lines:
     def __init__(self, ws, axis, count):
         self.ws, self.axis, self.Count = ws, axis, count
@@ -209,7 +229,7 @@ class Range:
             rng = rule.AppliesTo
             if self.Row <= rng.r2 and rng.Row <= self.r2 and self.Column <= rng.c2 and rng.Column <= self.c2:
                 rules.append(rule)
-        return Collection(rules)
+        return RangeConditions(self, rules)
 
     @property
     def Hyperlinks(self):

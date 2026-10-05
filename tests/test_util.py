@@ -183,6 +183,70 @@ def test_number_format_localization_details():
     assert util.localize_number_format("#,##0.00", ".", ",") == "#,##0.00"  # англ. настройки — без изменений
 
 
+class _Ole:
+    """COM-интерфейс, который понимает только английские коды с LCID 1033 (как русский Excel, проверено вживую)."""
+
+    def __init__(self, owner, reject=False):
+        self.owner, self.reject, self.calls = owner, reject, []
+
+    def GetIDsOfNames(self, name):
+        assert name == "NumberFormat"
+        return 193
+
+    def Invoke(self, dispid, lcid, flags, result, *args):
+        import pythoncom
+        import pywintypes
+
+        self.calls.append((dispid, lcid, flags, *args))
+        if self.reject:
+            raise pywintypes.com_error(-2146827284, "Exception occurred.", None, None)
+        if flags == pythoncom.DISPATCH_PROPERTYPUT:
+            self.owner.english = args[0]
+            return None
+        return self.owner.english
+
+
+class _Target:
+    def __init__(self, reject=False):
+        self.english, self.NumberFormat = "General", "Основной"
+        self._oleobj_ = _Ole(self, reject)
+
+
+_RU = type("App", (), {"International": (None, None, ",", " ", ";")})()
+
+
+@pytest.mark.parametrize("fmt,expected", [("dd.mm.yyyy", "dd.mm.yyyy"), ("date", "dd.mm.yyyy"), ("general", "General"),
+                                          ("[Red]#,##0.00", "[Red]#,##0.00"), ("[h]:mm", "[h]:mm")])
+def test_number_format_is_written_in_english_with_lcid_1033(fmt, expected):
+    # Демо 2026-10-05: русский Excel записывал 'dd.mm.yyyy' как текст (ячейка показывала 'dd.mm.yyyy' или ####).
+    import pythoncom
+
+    from office_live.excel_format import NUMBER_FORMATS
+    from office_live.xl_common import read_number_format, set_number_format
+
+    target = _Target()
+    set_number_format(_RU, target, fmt, NUMBER_FORMATS)
+    assert target._oleobj_.calls == [(193, 1033, pythoncom.DISPATCH_PROPERTYPUT, expected)]
+    assert target.NumberFormat == "Основной"  # локальный путь не использовался
+    assert read_number_format(_RU, target) == expected
+
+
+def test_local_number_formats_and_fakes_keep_the_local_path():
+    from office_live.xl_common import set_number_format
+
+    target = _Target()
+    set_number_format(_RU, target, "ДД.ММ.ГГГГ")  # уже по-местному: английский разбор сделал бы буквы текстом
+    assert target.NumberFormat == "ДД.ММ.ГГГГ" and target._oleobj_.calls == []
+    set_number_format(_RU, target, '0.0 "кг"')  # кириллица в кавычках — литерал, код английский
+    assert target.english == '0.0 "кг"'
+    rejected = _Target(reject=True)
+    set_number_format(_RU, rejected, "0.00")  # отказ LCID 1033 -> прежняя локальная запись
+    assert rejected.NumberFormat == "0,00"
+    fake = type("Fake", (), {"NumberFormat": "General"})()
+    set_number_format(_RU, fake, "#,##0.00")
+    assert fake.NumberFormat == "# ##0,00"
+
+
 def test_cm_to_points():
     assert util.cm_to_points(2.54) == pytest.approx(72.0)
 

@@ -28,7 +28,7 @@ from .util import a1_cell, col_letter, color_to_hex, to_grid
 from .wd_common import pick_document
 from .word_core import word_open_document
 from .xl_common import (
-    addr_of, bounds, get_range, number_format_for_read, pick_sheet, pick_workbook, preview, sheet_is_empty, sub_range, suspend_events,
+    addr_of, bounds, get_range, read_number_format, pick_sheet, pick_workbook, preview, sheet_is_empty, sub_range, suspend_events,
 )
 
 MISSING = pythoncom.Missing
@@ -359,7 +359,7 @@ def excel_describe_layout(
         entry = {
             "column": col_letter(absc), "header": " / ".join(labels)[:140] or None,
             "width": float(cell0.ColumnWidth), "hidden": bool(cell0.EntireColumn.Hidden),
-            "number_format": number_format_for_read(app, cell0.NumberFormat), "non_empty": len(present),
+            "number_format": read_number_format(app, cell0), "non_empty": len(present),
             "types": {k: v for k, v in kinds.items() if k != "empty"},
         }
         if present:

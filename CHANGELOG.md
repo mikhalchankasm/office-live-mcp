@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+Fixes for defects reproduced on real Excel/Word (Russian-locale Office 365) while filming the demo on 2026-10-05.
+
+- `office_undo` really undoes `excel_conditional_format`: an added rule is deleted instead of relying on a cross-workbook
+  PasteSpecial that leaves it in place; `clear` snapshots every affected rule whole, so a partly cleared rule comes back
+  unsplit. Rules are checked after the restore, and undo fails with an explicit error instead of reporting `undone`
+  when they cannot be matched.
+- Number formats are written in English notation with LCID 1033 (as VBA does) by `excel_format_range`, `excel_clean_text`
+  (`date_number_format`, `General` for converted numbers), `excel_split_column` and pivot value fields. In Russian Excel
+  `dd.mm.yyyy`, `DD.MM.YYYY`, `dd.mm`, the `date`/`time`/`general` shortcuts, `[Red]` and `[h]:mm` used to be written as
+  literal text or rejected. Formats already in local notation (`ДД.ММ.ГГГГ`) keep working. `excel_get_format`, template
+  profiles and `excel_pivot_info` report formats in the same English notation. Chart formats keep the local-separator
+  path (Excel stores them verbatim; checked live).
+- `excel_create_chart` with a pivot source (its name, or a range inside it) binds to that pivot even when the active cell
+  is in another pivot: the source's top-left cell is selected while the chart is added, then the user's view is restored.
+  A chart that fails or binds to the wrong pivot is deleted. Undo removes a pivot chart from the pivot's sheet.
+- `excel_manage_slicers` `add`/`connect` check before any change that all pivots share one PivotCache and explain the
+  limitation; a failure after the slicer cache was created deletes it, so `add` is atomic.
+- `word_select` without `target` follows the arguments (`find_text` → find, `table_index` → table, otherwise paragraphs)
+  and refuses arguments the chosen target would ignore. Previously `find_text` alone silently selected paragraph 1.
+- `bridge_excel_range_to_word_table` with `keep_formatting` reads and applies uniformly formatted rows in one call each and
+  builds the table with Word screen updating off. The cell-look step of a 44x5 banded range takes ~4.6 s instead of
+  ~17.5 s; mixed rows and hidden columns still go cell by cell.
+- Unit regressions with COM fakes and live scenarios (`tests/live/test_live_demo_fixes.py`, `test_live_undo.py`).
+
 ## 0.4.0
 
 - Add clickable `officelive://` locations and read-only `office_link` (113 tools). Return bounded links for Excel writes,

@@ -901,18 +901,19 @@ def word_get_selection(document: str = "") -> dict:
 
 
 @office_tool("word_core", "ui", title="Select / go to")
-def word_select(document: str, target: str = "paragraphs", start_paragraph: int = 0, end_paragraph: int = 0, find_text: str = "", table_index: int = 0) -> dict:
+def word_select(document: str, target: str = "", start_paragraph: int = 0, end_paragraph: int = 0, find_text: str = "", table_index: int = 0) -> dict:
     """Move the user's cursor/selection and scroll there, to point at a result.
 
     Args:
         document: exact document name.
         target: 'paragraphs' (start..end), 'find' (first occurrence of find_text), 'table' (table_index), 'start' or 'end' of the document.
+            '' (default) follows the arguments: find_text -> 'find', table_index -> 'table', otherwise 'paragraphs'.
         start_paragraph, end_paragraph: for target='paragraphs'.
         find_text: for target='find'.
         table_index: for target='table'.
     """
+    t = _select_target(target, start_paragraph, end_paragraph, find_text, table_index)
     app, doc = pick_document(document)
-    t = target.lower()
     if t == "paragraphs":
         rng = paragraphs_range(doc, int(start_paragraph) or 1, int(end_paragraph) or int(start_paragraph) or 1)
     elif t == "find":
@@ -932,6 +933,28 @@ def word_select(document: str, target: str = "paragraphs", start_paragraph: int 
     else:
         raise ToolError("target must be 'paragraphs', 'find', 'table', 'start' or 'end'.")
     return select_resolved_range(app, doc, rng)
+
+
+def _select_target(target, start_paragraph, end_paragraph, find_text, table_index) -> str:
+    """Цель word_select. Раньше find_text без target='find' молча выделял абзац 1 (демо 2026-10-05):
+    пустая цель выводится из аргументов, а аргументы, которые выбранная цель проигнорировала бы, — ошибка."""
+    given = {"find": "find_text", "table": "table_index", "paragraphs": "start_paragraph/end_paragraph"}
+    passed = {"find": bool(find_text), "table": bool(table_index), "paragraphs": bool(start_paragraph or end_paragraph)}
+    t = (target or "").strip().lower()
+    if t and t not in {"paragraphs", "find", "table", "start", "end"}:
+        raise ToolError("target must be 'paragraphs', 'find', 'table', 'start' or 'end'.")
+    if not t:
+        inferred = [k for k, v in passed.items() if v]
+        if len(inferred) > 1:
+            raise ToolError(f"Pass only one of {', '.join(given[k] for k in inferred)}, or set target.")
+        return inferred[0] if inferred else "paragraphs"
+    if t == "find" and not find_text:
+        raise ToolError("target='find' needs find_text.")
+    ignored = [given[k] for k, v in passed.items() if v and k != t]
+    if ignored:
+        raise ToolError(f"target='{t}' does not use {', '.join(ignored)}. Use target='find' for find_text, 'table' for table_index, "
+                        "'paragraphs' for start_paragraph/end_paragraph (or leave target empty).")
+    return t
 
 
 def select_resolved_range(app, doc, rng):

@@ -19,8 +19,8 @@ from .registry import office_tool
 from .safety import IMAGE_EXTS, check_path
 from .util import a1_cell, cm_to_points, color_to_hex, parse_a1, parse_color, quote_sheet
 from .xl_common import (
-    addr_of, bounds, count_nonempty, delocalize_formulas, get_range, localize_formula, number_format_for_read,
-    number_format_for_write, pick_sheet, pick_workbook, suspend_events,
+    addr_of, bounds, count_nonempty, delocalize_formulas, get_range, localize_formula, read_number_format,
+    set_number_format, pick_sheet, pick_workbook, suspend_events,
 )
 
 # ------------------------------------------------------------------ словари значений
@@ -263,7 +263,7 @@ def excel_format_range(
         applied.append(f"style={style}")
     if number_format is not None:
         try:
-            rng.NumberFormat = number_format_for_write(app, number_format, NUMBER_FORMATS)
+            set_number_format(app, rng, number_format, NUMBER_FORMATS)
         except pywintypes.com_error:
             raise ToolError(
                 f"Excel rejected number_format '{number_format}'. Use codes like '0', '0.00', '#,##0.00', '0.0%', 'dd.mm.yyyy', '@' or a shortcut ({sorted(NUMBER_FORMATS)})."
@@ -379,7 +379,7 @@ def excel_get_format(workbook: str = "", sheet: str = "", cells: str = "A1") -> 
         "underline": val(font.Underline, lambda u: int(u) != -4142),
         "strikethrough": val(font.Strikethrough, bool),
         "font_color": val(font.Color, color_to_hex), "fill_color": fill,
-        "number_format": val(rng.NumberFormat, lambda f: number_format_for_read(app, f)),
+        "number_format": val(read_number_format(app, rng)),
         "horizontal_alignment": val(rng.HorizontalAlignment, lambda a: H_NAMES.get(int(a), int(a))),
         "vertical_alignment": val(rng.VerticalAlignment, lambda a: V_NAMES.get(int(a), int(a))),
         "wrap_text": val(rng.WrapText, bool),

@@ -45,3 +45,38 @@ def test_live_word_insert_text_undo(srv, doc):
     assert result["undo"] == "available"
     srv.call("office_undo", file=doc)
     assert srv.call("word_read_document", document=doc) == before
+
+
+def test_live_conditional_format_undo_removes_rules(srv, wb):
+    # Демо 2026-10-05: office_undo сообщал undone, а правила оставались (PasteSpecial форматов не удаляет новые правила).
+    srv.call("excel_conditional_format", workbook=wb, sheet="Data", cells="A1:C3", rule="cell_value", operator="less", value1=5, fill_color="#FFC7CE")
+
+    def rules():
+        return [(r["applies_to"], r["rule"]) for r in srv.call("excel_conditional_format", workbook=wb, sheet="Data", action="list")["rules"]]
+
+    before = rules()
+    for cells in ("G1:W1", "G2:W10"):
+        result = srv.call("excel_conditional_format", workbook=wb, sheet="Data", cells=cells, rule="formula", formula="=G$1>0", fill_color="#DDEBF7")
+        assert result["undo"] == "available"
+    assert len(rules()) == len(before) + 2
+    srv.call("office_undo", file=wb)
+    assert len(rules()) == len(before) + 1
+    srv.call("office_undo", file=wb)
+    assert rules() == before
+
+
+@pytest.mark.parametrize("cells", ["C3:D4", ""])
+def test_live_conditional_format_clear_undo_restores_whole_rules(srv, wb, cells):
+    # Снимок только очищенных ячеек вернул бы обрезанное правило частями: отмена обязана восстановить правила как были.
+    srv.call("excel_conditional_format", workbook=wb, sheet="Data", cells="A1:F8", rule="formula", formula="=A1>0", fill_color="#DDEBF7")
+    srv.call("excel_conditional_format", workbook=wb, sheet="Data", cells="M20:N21", rule="blanks", fill_color="#FFC7CE")
+
+    def rules():
+        return sorted((r["applies_to"], r["rule"], r.get("formula")) for r in
+                      srv.call("excel_conditional_format", workbook=wb, sheet="Data", action="list")["rules"])
+
+    before = rules()
+    result = srv.call("excel_conditional_format", workbook=wb, sheet="Data", action="clear", cells=cells)
+    assert result["undo"] == "available" and rules() != before
+    srv.call("office_undo", file=wb)
+    assert rules() == before

@@ -17,7 +17,7 @@ from .util import (
 from .xl_common import (
     addr_of, all_workbooks, localize_formula, workbook_allowed, suspend_events, bounded_range, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
     pick_sheet, pick_workbook, preview, read_grid, ref_label, sheet_is_empty, sheet_names, sub_range,
-    validate_sheet_name, number_format_for_write,
+    validate_sheet_name, set_number_format,
 )
 
 Cell = str | int | float | bool | None
@@ -584,7 +584,7 @@ def excel_clean_text(
         raise ToolError("date_format/date_number_format require text_to_date.")
     app, wb = pick_workbook(workbook)
     date1904 = bool(wb.Date1904) if dates else False
-    date_style = number_format_for_write(app, date_number_format or date_format.lower()) if dates else None
+    date_style = (date_number_format or date_format.lower()) if dates else None
     if not preview and wb.ReadOnly:
         raise ToolError("Workbook is read-only; no cells were changed.")
     ws, rng = bounded_range(app, wb, sheet, cells, 100000)
@@ -673,7 +673,7 @@ def excel_clean_text(
         for group in groups:
             for change in group:
                 if dates or (not isinstance(change["value"], str) and change["format"] == "@"):
-                    change["cell"].NumberFormat = date_style if dates else "General"
+                    set_number_format(app, change["cell"], date_style if dates else "General")
                     result["format_changed"].append(change["address"])
             target = sub_range(ws, group[0]["r"], group[0]["c"], group[-1]["r"], group[-1]["c"])
             target.Value2 = tuple((change["input"],) for change in group)
@@ -831,7 +831,7 @@ def excel_split_column(
             group = changes[j * len(parts):(j + 1) * len(parts)]
             for change in group:
                 if not isinstance(change["value"], str) and change["format"] == "@":
-                    change["cell"].NumberFormat = "General"
+                    set_number_format(app, change["cell"], "General")
                     result["format_changed"].append(change["address"])
             sub_range(ws, dr, dc + j, end, dc + j).Value2 = tuple((change["input"],) for change in group)
             for change in group:

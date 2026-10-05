@@ -1,5 +1,6 @@
 """Excel: умные таблицы, сводные таблицы, диаграммы, профилирование данных, поиск проблем."""
 
+import contextlib
 import json
 import datetime
 import math
@@ -665,6 +666,7 @@ def _style_chart(ch, kind_key: str, title, x_title, y_title, legend, data_labels
     if kind_key not in NO_AXES and (y_format or y_min is not None or y_max is not None):
         ax = ch.Axes(2)
         if y_format:
+            # формат диаграммы хранится как есть, без учёта LCID: буквы дат английские, а разделители местные (живая проверка)
             ax.TickLabels.NumberFormat = number_format_for_write(app, y_format, NUMBER_FORMATS)
         if y_min is not None:
             ax.MinimumScale = float(y_min)
@@ -692,6 +694,34 @@ def _style_chart(ch, kind_key: str, title, x_title, y_title, legend, data_labels
                 s_k.Format.Line.ForeColor.RGB = bgr
             except pywintypes.com_error:
                 pass
+
+
+def _chart_pivot(ch):
+    try:
+        layout = ch.PivotLayout
+        return None if layout is None else layout.PivotTable.Name
+    except pywintypes.com_error:
+        return None  # обычная диаграмма: у неё нет PivotLayout
+
+
+@contextlib.contextmanager
+def _chart_selection(app, wb, ws, src):
+    """AddChart2 привязывает новую диаграмму к данным вокруг АКТИВНОЙ ячейки, в том числе к другой сводной таблице;
+    SetSourceData затем падает с 0x80004005 (демо 2026-10-05). На время создания выделяем левую верхнюю ячейку источника."""
+    from .excel_format import _remember_view, _restore_view
+
+    pts = ws.PivotTables()
+    if not int(pts.Count):
+        yield  # без сводных на листе автопривязка безвредна: SetSourceData задаёт данные явно
+        return
+    prev = _remember_view(app)
+    try:
+        wb.Activate()
+        ws.Activate()
+        src.Cells(1, 1).Select()
+        yield
+    finally:
+        _restore_view(app, prev)
 
 
 @office_tool("excel_analysis", "write", title="Create chart")
@@ -745,26 +775,43 @@ def excel_create_chart(
         ws, src = pivot_hit[0], pivot_hit[1].TableRange1
     else:
         ws, src = get_range(wb, sheet, source, empty_means_used=False)
+        pts = ws.PivotTables()
+        inside = [pts(j) for j in range(1, int(pts.Count) + 1) if app.Intersect(src, pts(j).TableRange2) is not None]
+        if len(inside) > 1:
+            raise ToolError(f"source {addr_of(src)} overlaps several pivot tables ({', '.join(p.Name for p in inside)}); pass one pivot name.")
+        if inside:  # диапазон внутри сводной — та же сводная диаграмма по всей сводной
+            pivot_hit, src = (ws, inside[0]), inside[0].TableRange1
     r1, c1, r2, c2 = bounds(src)
     key = chart_type.lower().replace("-", "_").replace(" ", "_")
     code = _chart_type_code(key)
     anchor = ws.Range(anchor_cell) if anchor_cell else ws.Range(a1_cell(r1, min(c2 + 2, 16384)))
     left, top = float(anchor.Left), float(anchor.Top)
+    target = pivot_hit[1].Name if pivot_hit else None
+    shape = None
     try:
-        shape = ws.Shapes.AddChart2(-1, code, left, top, float(width), float(height))  # AddChart2(Style, Type, Left, Top, W, H)
-        ch = shape.Chart
-    except (pywintypes.com_error, AttributeError):
-        co = ws.ChartObjects().Add(left, top, float(width), float(height))
-        shape = co
-        ch = co.Chart
-        ch.ChartType = code
-    if series_in_rows is None:
-        ch.SetSourceData(src)
-    else:
-        ch.SetSourceData(src, 1 if series_in_rows else 2)  # PlotBy: xlRows=1, xlColumns=2
-    if name:
-        shape.Name = name
-    _style_chart(ch, key, title, x_axis_title, y_axis_title, legend, data_labels, value_axis_number_format or None, value_axis_min, value_axis_max, series_colors, data_label_number_format or None)
+        with _chart_selection(app, wb, ws, src):
+            try:
+                shape = ws.Shapes.AddChart2(-1, code, left, top, float(width), float(height))  # AddChart2(Style, Type, Left, Top, W, H)
+                ch = shape.Chart
+            except (pywintypes.com_error, AttributeError):
+                shape = ws.ChartObjects().Add(left, top, float(width), float(height))
+                ch = shape.Chart
+                ch.ChartType = code
+        if series_in_rows is None:
+            ch.SetSourceData(src)
+        else:
+            ch.SetSourceData(src, 1 if series_in_rows else 2)  # PlotBy: xlRows=1, xlColumns=2
+        bound = _chart_pivot(ch)
+        if bound != target:
+            raise ToolError(f"Excel bound the new chart to pivot '{bound}' instead of " + (f"pivot '{target}'." if target else f"range {addr_of(src)}."))
+        if name:
+            shape.Name = name
+        _style_chart(ch, key, title, x_axis_title, y_axis_title, legend, data_labels, value_axis_number_format or None, value_axis_min, value_axis_max, series_colors, data_label_number_format or None)
+    except Exception:
+        if shape is not None:  # недоделанная диаграмма не остаётся на листе
+            with contextlib.suppress(pywintypes.com_error):
+                shape.Delete()
+        raise
     series = []
     sc = ch.SeriesCollection()
     for k in range(1, int(sc.Count) + 1):

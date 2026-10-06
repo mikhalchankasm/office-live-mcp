@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mikhalchankasm/office-live-mcp/releases/latest"><img alt="Скачать установщик Windows" src="https://img.shields.io/badge/%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C_%D0%B4%D0%BB%D1%8F_Windows-setup.exe-217346?style=for-the-badge&logo=windows11&logoColor=white"></a>
+  <a href="https://github.com/mikhalchankasm/office-live-mcp/releases/latest"><img alt="Скачать установщик Windows" src="https://img.shields.io/badge/%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C_%D0%B4%D0%BB%D1%8F_Windows-setup.exe-217346?style=for-the-badge"></a>
   &nbsp;
   <a href="docs/DETAILS.ru.md"><img alt="Документация" src="https://img.shields.io/badge/%D0%94%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D0%B0%D1%86%D0%B8%D1%8F-%E2%86%92-2b579a?style=for-the-badge"></a>
 </p>

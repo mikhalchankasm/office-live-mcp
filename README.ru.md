@@ -1,63 +1,99 @@
-# Office Live MCP
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-ru-dark.svg">
+    <img alt="Office Live MCP — ваш ИИ-агент в уже открытых файлах Excel и Word" src="docs/assets/banner-ru-light.svg" width="100%">
+  </picture>
+</p>
 
-[![CI](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/checks.yml/badge.svg)](https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/checks.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Platform](https://img.shields.io/badge/platform-Windows-lightgrey)
+<p align="center">
+  <a href="https://github.com/mikhalchankasm/office-live-mcp/releases/latest"><img alt="Последний релиз" src="https://img.shields.io/github/v/release/mikhalchankasm/office-live-mcp?label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7&color=217346"></a>
+  <a href="https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/checks.yml"><img alt="CI" src="https://github.com/mikhalchankasm/office-live-mcp/actions/workflows/checks.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Лицензия MIT" src="https://img.shields.io/badge/license-MIT-2b579a"></a>
+  <img alt="Windows 10/11" src="https://img.shields.io/badge/Windows-10%20%7C%2011-555">
+</p>
 
-[![English](https://img.shields.io/badge/English-README-0969da?style=for-the-badge)](README.md)
-[![Русский](https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-README-cf222e?style=for-the-badge)](README.ru.md)
+<p align="center">
+  <a href="https://github.com/mikhalchankasm/office-live-mcp/releases/latest"><img alt="Скачать установщик Windows" src="https://img.shields.io/badge/%D0%A1%D0%BA%D0%B0%D1%87%D0%B0%D1%82%D1%8C_%D0%B4%D0%BB%D1%8F_Windows-setup.exe-217346?style=for-the-badge&logo=windows11&logoColor=white"></a>
+  &nbsp;
+  <a href="docs/DETAILS.ru.md"><img alt="Документация" src="https://img.shields.io/badge/%D0%94%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D0%B0%D1%86%D0%B8%D1%8F-%E2%86%92-2b579a?style=for-the-badge"></a>
+</p>
 
-## Ваш ИИ-агент. Ваши открытые Excel и Word. Меньше ручной работы.
+<p align="center"><a href="README.md">English</a> · <b>Русский</b></p>
 
-Превращайте строки реестра в документы Word/PDF, сравнивайте таблицы и согласовывайте правки Word — через привычного агента.
+<h3 align="center">Ваш ИИ-агент. Ваши открытые Excel и Word. Меньше ручной работы.</h3>
 
-> [!TIP]
-> **Привычный агент. Модель на ваш выбор. Результат сразу виден в Office.**
-> Office Live MCP подключает совместимый MCP-клиент прямо к вашим запущенным настольным Excel и Word.
-
-## Что вы получаете
-
-| **🤖 СВОЙ АГЕНТ И МОДЕЛЬ** | **📄 EXCEL → WORD → PDF** | **🛡️ ДОСТУП ПОД ВАШИМ КОНТРОЛЕМ** |
-|:---|:---|:---|
-| Сохраняйте свои инструкции и рабочий процесс. Выбирайте любую модель, которую поддерживает ваш MCP-клиент. | Создавайте документ на каждую строку реестра по своему шаблону. Проверяйте имена файлов и конфликты до создания документов. | Задавайте режим чтения, разрешённые папки и доступные инструменты. Ограничения проверяет сервер. |
-| **👀 ПРАВКИ СРАЗУ ВИДНЫ В OFFICE** | **↩️ ПРОСМОТР И ОТМЕНА ПРАВОК** | **🔓 БЕСПЛАТНЫЙ СЕРВЕР · КОД MIT** |
-| Работайте в уже открытых документах, включая несохранённые правки. Результаты сразу появляются на экране. | Просматривайте точечные правки Word и вносите их через исправления. Журнал и отмена поддерживаемых действий с проверкой конфликтов. | Подписка на сервер не нужна. Код можно проверять, менять и дополнять. Один установщик, без Python и прав администратора. |
-
-**Поддерживаемые клиенты:** Claude Code · Claude Desktop · Cursor · Codex CLI · ZCode · VS Code и другие совместимые MCP-клиенты.
-
-[**Скачать установщик Windows →**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest) · [Установка](#установка)
+<p align="center">
+Превращайте строки реестра в документы Word/PDF, сравнивайте таблицы и согласовывайте правки Word —<br>
+через привычного агента, в уже открытых файлах.
+</p>
 
 https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
-<sub>30 секунд: настоящие вызовы инструментов в настоящих Excel и Word. Данные вымышленные.</sub>
+<p align="center"><sub>30 секунд: настоящие вызовы инструментов в настоящих Excel и Word. Данные вымышленные.</sub></p>
+
+## Почему Office Live MCP
+
+<table>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>🤖&nbsp; Свой агент и модель</h4>
+      Сохраняйте свои инструкции и привычный порядок работы. Любая модель, которую поддерживает ваш MCP-клиент.
+    </td>
+    <td width="33%" valign="top">
+      <h4>📄&nbsp; Excel → Word → PDF</h4>
+      Документ на каждую строку реестра по вашему шаблону — с предпросмотром имён файлов и конфликтов.
+    </td>
+    <td width="33%" valign="top">
+      <h4>🛡️&nbsp; Доступ под контролем</h4>
+      Режим только чтения, разрешённые папки и набор инструментов — их проверяет сервер, а не подсказка модели.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>👀&nbsp; Правки сразу видны</h4>
+      Работа в уже открытых документах, включая несохранённые правки. Результат сразу на экране.
+    </td>
+    <td width="33%" valign="top">
+      <h4>↩️&nbsp; Просмотр и отмена</h4>
+      Правки Word — с предпросмотром и через исправления. Журнал и отмена с проверкой конфликтов.
+    </td>
+    <td width="33%" valign="top">
+      <h4>🔓&nbsp; Бесплатно и открыто</h4>
+      Без подписки на сервер, код под MIT. Один установщик — без Python и прав администратора.
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <b>Работает с</b>&nbsp; Claude Code · Claude Desktop · Cursor · Codex CLI · ZCode · VS Code<br>
+  <sub>и другими MCP-клиентами</sub>
+</p>
 
 ## Попробуйте на конкретной задаче
 
 | Попросите агента | Получите |
 |---|---|
-| «Создай документы Word и PDF по этому реестру и моему шаблону. Сначала покажи план». | [Документ на каждую строку с предпросмотром до генерации](docs/examples/register-to-acts.md). Текстовые коды вроде `007` остаются текстом. |
-| «Сравни эти два реестра по коду и покажи, что изменилось». | [Список расхождений с сопоставлением по ключу](docs/examples/compare-registers.md). |
-| «Прочитай замечания в Word и предложи правки. Внеси после моего согласования». | [Точечные правки, записанные через исправления](docs/examples/comments-to-tracked-edits.md). |
+| *«Создай документы Word и PDF по этому реестру и моему шаблону. Сначала покажи план».* | [Документ на каждую строку с предпросмотром до генерации](docs/examples/register-to-acts.md). Коды вроде `007` остаются текстом. |
+| *«Сравни эти два реестра по коду и покажи, что изменилось».* | [Расхождения с сопоставлением по ключу](docs/examples/compare-registers.md). |
+| *«Прочитай замечания в Word и предложи правки. Внеси после моего согласования».* | [Точечные правки, записанные через исправления](docs/examples/comments-to-tracked-edits.md). |
 
-**123 инструмента** для Excel, Word и работы с документами: формулы, очистка данных, сводные, диаграммы, шаблоны, ветки примечаний и другое.
+**123 инструмента** для Excel, Word и работы с документами — формулы, очистка данных, подбор параметра, сводные,
+диаграммы, шаблоны, ветки примечаний и другое. [Весь каталог →](docs/TOOLS.md)
 
 ## Установка
 
-**Что нужно:** Windows 10/11 (64-бит) и настольные Excel и/или Word.
+> **Что нужно:** Windows 10/11 (64-бит) и настольные Excel и/или Word.
 
-1. Скачайте **установщик Windows (файл с окончанием `-setup.exe`)** со страницы [**последнего релиза**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest).
-2. Запустите: **Далее → Далее → Готово** — при первой установке найденные агенты уже отмечены. Оставьте отметки, чтобы подключить всех найденных, и выберите доступ: **полный** или **только чтение**.
-3. **Перезапустите агента** и попросите: *«покажи, какие книги открыты в Excel»* или *«покажи открытые документы Word»*.
+1. **Скачайте** установщик (`…-setup.exe`) со страницы [последнего релиза](https://github.com/mikhalchankasm/office-live-mcp/releases/latest).
+2. **Запустите:** Далее → Далее → Готово. При первой установке найденные агенты уже отмечены; выберите доступ: **полный** или **только чтение**.
+3. **Перезапустите агента** и попросите: *«покажи, какие книги открыты в Excel»*.
 
-**Обновление:** запустите новый setup.exe поверх установленного и перезапустите агента.
-**Удаление:** **Параметры → Приложения → Office Live MCP → Удалить**.
-
-**Данные и стоимость:** сервер работает локально, без надстройки Office. Прочитанные агентом данные получает поставщик его модели;
-агент и модель оплачиваются по условиям их поставщика.
+<sub>**Обновление:** новый setup.exe поверх старого. **Удаление:** Параметры → Приложения → Office Live MCP.
+**Данные и стоимость:** сервер работает локально, без надстройки Office; прочитанное агентом получает поставщик его модели,
+агент и модель оплачиваются по условиям их поставщика.</sub>
 
 ## Подробнее
 
-[![Подробная документация](https://img.shields.io/badge/%D0%9F%D0%BE%D0%B4%D1%80%D0%BE%D0%B1%D0%BD%D0%B0%D1%8F_%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D0%B0%D1%86%D0%B8%D1%8F-%E2%86%92-cf222e?style=for-the-badge)](docs/DETAILS.ru.md)
-
-[Каталог инструментов](docs/TOOLS.md) · [Руководство](docs/GUIDE.ru.md) · [Изменения](CHANGELOG.md) · [Лицензия MIT](LICENSE) ·
-[Сравнение с Claude, ChatGPT и другими MCP-серверами](docs/DETAILS.ru.md#сравнение-с-аналогами)
+[Подробная документация](docs/DETAILS.ru.md) · [Каталог инструментов](docs/TOOLS.md) · [Руководство](docs/GUIDE.ru.md) ·
+[Изменения](CHANGELOG.md) · [Сравнение с Claude, ChatGPT и другими MCP-серверами](docs/DETAILS.ru.md#сравнение-с-аналогами) ·
+[Лицензия MIT](LICENSE)

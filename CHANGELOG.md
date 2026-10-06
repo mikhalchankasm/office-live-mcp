@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.4 — 2026-10-06
 
 New Excel and Word tools, a safe tracked-changes edit for Word, richer comment reading, a preview for mail merge, and a
 README rewritten around verifiable facts.
@@ -26,6 +26,11 @@ README rewritten around verifiable facts.
 - **Fixed after live probes on Excel/Word 16 (Russian UI):** sparkline series colour path, `PlotBy` only for square data,
   unreadable `DateRange`; `TrackRevisions` unreadable under forms protection; protection undo ignoring style definitions
   Word adds by itself; `ConvertToTable` row count.
+- **Fixed after the full live run:** `word_compare_documents` with a closed revised file failed with "object disconnected"
+  (a check read the temporary copy it had already closed); protection undo no longer reports a conflict because of
+  service styles Word adds by itself.
+- **Live tests:** a watchdog stops the run within about a minute when a test Excel/Word window hangs and names the
+  process to end, instead of half an hour of timeouts.
 - **Docs:** README positioning (any MCP agent, MIT, server-side limits, bridges, journal/undo, COM without an add-in);
   comparison rebuilt from public documentation checked on 2026-10-06, without star ratings and with "not confirmed" where
   the documentation is silent. Office versions other than Microsoft 365 are no longer claimed. Four reproducible examples

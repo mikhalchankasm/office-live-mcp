@@ -53,7 +53,7 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
 [![Подробная документация](https://img.shields.io/badge/%D0%9F%D0%BE%D0%B4%D1%80%D0%BE%D0%B1%D0%BD%D0%B0%D1%8F_%D0%B4%D0%BE%D0%BA%D1%83%D0%BC%D0%B5%D0%BD%D1%82%D0%B0%D1%86%D0%B8%D1%8F-%E2%86%92-cf222e?style=for-the-badge)](docs/DETAILS.ru.md)
 
-Тихая установка и параметры setup, запасной ZIP, все возможности, окна и кликабельные ссылки, безопасность, сравнение
+Тихая установка и параметры setup, запасной ZIP, все возможности, безопасность, сравнение
 с ИИ-надстройками Office и другими MCP-серверами, разработка — [docs/DETAILS.ru.md](docs/DETAILS.ru.md).
-Все 123 инструмента: [docs/TOOLS.md](docs/TOOLS.md) · Руководство: [docs/GUIDE.ru.md](docs/GUIDE.ru.md) ·
+Каталог инструментов: [docs/TOOLS.md](docs/TOOLS.md) · Руководство: [docs/GUIDE.ru.md](docs/GUIDE.ru.md) ·
 Изменения: [CHANGELOG.md](CHANGELOG.md) · Лицензия: [MIT](LICENSE)

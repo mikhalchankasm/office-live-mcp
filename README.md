@@ -53,6 +53,6 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
 [![Full documentation](https://img.shields.io/badge/Full_documentation-%E2%86%92-0969da?style=for-the-badge)](docs/DETAILS.md)
 
-Silent install and setup options, the fallback ZIP, every feature, windows and clickable links, safety details,
+Silent install and setup options, the fallback ZIP, every feature, safety details,
 comparison with Office AI add-ins and other MCP servers, development — [docs/DETAILS.md](docs/DETAILS.md).
-All 123 tools: [docs/TOOLS.md](docs/TOOLS.md) · Changes: [CHANGELOG.md](CHANGELOG.md) · License: [MIT](LICENSE)
+Tool catalog: [docs/TOOLS.md](docs/TOOLS.md) · Changes: [CHANGELOG.md](CHANGELOG.md) · License: [MIT](LICENSE)

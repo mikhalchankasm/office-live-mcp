@@ -5,7 +5,6 @@
 - [Status](#status)
 - [Install, update, uninstall](#install-update-uninstall)
 - [What it can do](#what-it-can-do)
-- [Windows and clickable links](#windows-and-clickable-links)
 - [Safety](#safety)
 - [How it compares](#how-it-compares)
 - [Development](#development)
@@ -13,8 +12,7 @@
 ## Status
 
 **Actively developed.** 0.x releases — the tools and the installer are tested on real Excel and Word, but the project is
-still being improved: the Excel + Word side-by-side layout is confirmed on real windows; chat layouts and restore are
-still covered only by fake tests; Power Query and Power Pivot/DAX later. Feedback and issues are welcome.
+still being improved. Power Query and Power Pivot/DAX are planned for later releases. Feedback and issues are welcome.
 
 ## Install, update, uninstall
 
@@ -45,8 +43,8 @@ The program lives in `%LOCALAPPDATA%\Programs\office-live-mcp\app`. Start menu s
 office-live-mcp-<version>-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLIENTS=codex,zcode /ACCESS=readonly
 ```
 
-Without `/CLIENTS`, silent installation adds no agents and an update keeps existing registrations. `/NOLINKS` skips
-`officelive://` registration. Use `setup --config PATH` for a custom file,
+Without `/CLIENTS`, silent installation adds no agents and an update keeps existing registrations.
+Use `setup --config PATH` for a custom file,
 `--scope project --project DIR` for a project, or `setup --remove --clients zcode` to disconnect one client.
 Registrations are tracked across scopes; conflicts preserve user changes. Configuration read-back confirms the entry,
 but **restart the client** to load it. Portable mode is planned; all-users installation is unsupported.
@@ -59,38 +57,24 @@ corporate antivirus may block it. From source: `install.cmd` in a clone, or `pip
 ### For administrators: fallback ZIP
 
 The release also includes **`office-live-mcp-<version>-win64.zip`**. Extract the entire archive and run `install.cmd`
-(or `install.cmd --yes --clients none --no-links`). Updates use the remembered directory; `--target` selects a custom root.
+(or `install.cmd --yes --clients none`). Updates use the remembered directory; `--target` selects a custom root.
 Existing 0.4.x ZIP installations can be upgraded with setup.exe without changing the `app\office-live-mcp.exe` path.
 For installations managed by setup.exe, prefer setup.exe for future updates.
 
 ## What it can do
 
-123 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — full list in [TOOLS.md](TOOLS.md).
+123 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — catalog in [TOOLS.md](TOOLS.md).
 
 | Group | Highlights |
 |---|---|
 | Excel | read/write ranges, **compare ranges by position or key**, **clean text, parse explicit dates and split columns with preview/undo**, **trace formula inputs/consumers with completeness reporting**, **sheet/workbook protection, goal seek, subtotals and sparklines**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
 | Word | **fragment preview/apply as tracked changes and threaded comment metadata**, **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, **insert saved documents, restrict editing and convert tables ↔ text**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
 | Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF with a read-only plan, inspect a file without opening it |
-| History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes, **clickable links** to plans and results (`office_link`) |
-| Windows | `office_window`: status, verified focus, Office/chat layouts with monitor/DPI/frame handling, restore the last layout; available in readonly |
+| History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes |
 
 ### Reproducible examples
 
 [Register → Word/PDF](examples/register-to-acts.md) · [Comments → tracked edits](examples/comments-to-tracked-edits.md) · [Compare registers](examples/compare-registers.md) · [Range → report table](examples/range-to-report-table.md)
-
-## Windows and clickable links
-
-Ask *“Arrange the windows: Excel left, chat right”* or *“Restore the previous window layout”*. Layouts run only on
-request/consent; an ambiguous chat is left out. The `window` group is included in all presets; explicit group lists
-can omit it. After Save As, use the returned new links: old-name aliases work only inside the same server session,
-not in the separate browser link handler. [Window details and limitations](GUIDE.ru.md#окна-office-и-чата).
-
-Clickable `officelive://` links select a range or Word location in an **already open local file**. Installation registers
-the handler for your Windows account; skip with setup.exe `/NOLINKS`, disable with `setup --no-links`, enable with
-`setup --links`. The handler never opens files or edits their contents. For restricted folders use
-`setup --links --allowed-dirs "D:\Work"`; the browser handler has its own saved policy, separate from client settings.
-See [link formats and safety](GUIDE.ru.md#кликабельные-ссылки).
 
 ## Safety
 

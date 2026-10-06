@@ -16,6 +16,7 @@ from .registry import office_tool
 from .safety import WORD_EXTS, check_path
 from .util import a1_cell, clean_word_text, smart_number, to_com_grid, to_grid
 from .wd_common import all_documents, pick_document
+from .win32 import Win32
 from .word_core import _word_running, fill_placeholders
 from .word_layout import insert_picture
 from .word_tables import build_table, get_table, table_grid
@@ -454,6 +455,33 @@ def _unique_stem(stem: str, idx: int, used: set, renamed: list) -> str:
     return stem
 
 
+def _quit_private_word(wapp) -> None:
+    """Закрывает фоновый Word слияния вместе со всеми его документами — и после сбоя тоже."""
+    with contextlib.suppress(pywintypes.com_error, ToolError, AttributeError):
+        wapp.NormalTemplate.Saved = True  # Normal.dotm обычно занят Word пользователя: выход без вопроса о сохранении
+    with contextlib.suppress(pywintypes.com_error, ToolError):
+        wapp.Quit(0)
+
+
+@contextlib.contextmanager
+def _foreground_kept():
+    """Окно переднего плана (обычно Excel пользователя) возвращается, если за время слияния его забрал Word. По
+    возможности: Windows может отказать, а результат слияния от этого не зависит. Сам переключился — не мешаем."""
+    try:
+        api = Win32()
+        foreground = api.foreground()
+    except (ToolError, OSError, AttributeError):
+        api, foreground = None, 0
+    try:
+        yield
+    finally:
+        if api is not None and foreground:
+            with contextlib.suppress(ToolError, OSError):
+                now = api.foreground()
+                if now and now != foreground and api.processes().get(api.info(now)["pid"], {}).get("name", "").lower() == "winword.exe":
+                    api.request_foreground(foreground, api.info(foreground)["pid"])
+
+
 @office_tool("bridge", "save", title="Excel rows -> Word documents (mail merge)")
 def bridge_excel_to_word_documents(
     workbook: str,
@@ -479,6 +507,8 @@ def bridge_excel_to_word_documents(
         sheet: sheet of the data ('' = active).
         left_delimiter, right_delimiter: placeholder brackets.
         max_documents: safety limit. overwrite: replace existing files. export_pdf: also write a PDF next to each document.
+
+    Documents are generated in a separate hidden Word that quits afterwards (also after a failure): no windows appear, and your Word, its documents and the active window are not touched.
     """
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells)
@@ -525,32 +555,35 @@ def bridge_excel_to_word_documents(
             raise ToolError(f"These files are open in Word and cannot be overwritten: {busy[:5]}. Close them first. Nothing was created.")
     os.makedirs(out_dir, exist_ok=True)
 
-    wapp = com.primary_app("word", launch=True)
     created, pdfs, leftovers = [], [], set()
-    for idx, values, docx, pdf in plan:
+    with _foreground_kept():
+        # Отдельный невидимый Word, а не Word пользователя: документы без окон в его Word ведут себя ненадёжно — после
+        # того как пользователь закрыл видимый документ, Close каждого второго скрытого документа молча не срабатывает
+        # (живая проверка), файлы остаются открытыми. А видимые документы мелькали поверх Excel и забирали фокус (демо).
+        wapp = com.private_app("word")
         try:
-            with com.macros_disabled(wapp):
-                d = wapp.Documents.Add(tpl_path)
-            try:
-                res = fill_placeholders(d, values, left_delimiter, right_delimiter, "all")
-                leftovers.update(res["unfilled_placeholders"])
-                before = wapp.DisplayAlerts
-                wapp.DisplayAlerts = 0
+            wapp.DisplayAlerts = 0
+            for idx, values, docx, pdf in plan:
                 try:
-                    d.SaveAs2(docx, 16)
-                finally:
-                    wapp.DisplayAlerts = before
-                created.append(os.path.basename(docx))
-                if pdf:
-                    d.ExportAsFixedFormat(pdf, 17, False, 0, 0, 0, 0, 0)
-                    pdfs.append(os.path.basename(pdf))
-            finally:
-                d.Close(0)
-        except Exception as exc:  # noqa: BLE001 — говорим точно, что успело появиться на диске
-            raise ToolError(
-                f"Stopped at data row {idx} ({os.path.basename(docx)}): {com.translate(exc)}. "
-                f"Created before the failure: {len(created)} document(s) {created[:20]}" + (f" and {len(pdfs)} PDF(s)" if pdf else "") + "."
-            ) from None
+                    with com.macros_disabled(wapp):
+                        d = wapp.Documents.Add(tpl_path, False, 0, False)  # Add(Template, NewTemplate, DocumentType, Visible)
+                    try:
+                        res = fill_placeholders(d, values, left_delimiter, right_delimiter, "all")
+                        leftovers.update(res["unfilled_placeholders"])
+                        d.SaveAs2(docx, 16)
+                        created.append(os.path.basename(docx))
+                        if pdf:
+                            d.ExportAsFixedFormat(pdf, 17, False, 0, 0, 0, 0, 0)
+                            pdfs.append(os.path.basename(pdf))
+                    finally:
+                        d.Close(0)
+                except Exception as exc:  # noqa: BLE001 — говорим точно, что успело появиться на диске
+                    raise ToolError(
+                        f"Stopped at data row {idx} ({os.path.basename(docx)}): {com.translate(exc)}. "
+                        f"Created before the failure: {len(created)} document(s) {created[:20]}" + (f" and {len(pdfs)} PDF(s)" if pdf else "") + "."
+                    ) from None
+        finally:
+            _quit_private_word(wapp)
     out = {
         "ok": True, "output_dir": out_dir, "documents_created": len(created), "files": created[:50],
         "unfilled_placeholders": sorted(leftovers),

@@ -1,4 +1,4 @@
-"""Дефекты, найденные на живых Excel/Word при съёмке демо 2026-10-05. Только с OFFICE_LIVE_LIVE_TESTS=1.
+"""Дефекты, найденные на живых Excel/Word при съёмке демо 2026-10-05 и 2026-10-06. Только с OFFICE_LIVE_LIVE_TESTS=1.
 
 Отмена условного форматирования — в test_live_undo.py.
 """
@@ -7,7 +7,7 @@ import pytest
 
 from tests.live.conftest import read
 from tests.live.mcpclient import ToolFailed
-from tests.live.test_live_stage1 import in_excel, in_word, stage_book, stage_doc  # noqa: F401 — фикстуры
+from tests.live.test_live_stage1 import in_excel, in_word, stage_book, stage_doc, word_state  # noqa: F401 — фикстуры
 
 pytestmark = pytest.mark.live
 
@@ -123,3 +123,86 @@ def test_live_bridge_copies_looks_by_rows(srv, stage_book, stage_doc, hide_colum
     assert got["header_bold"] == -1 and got["even"] == 0xF7EBDD and got["odd"] == -16777216, got  # BGR #DDEBF7; авто
     assert got["b5"] == 0x0000C0 and got["a5"] != 0x0000C0, got
     assert elapsed < 30, elapsed
+
+
+def test_live_mail_merge_shows_no_windows_and_keeps_the_user_document(srv, stage_book, stage_doc, tmp):  # noqa: F811
+    # Демо 2026-10-06: на каждый документ слияния Word показывал окно поверх Excel — сначала шаблон с {{метками}}, потом письмо.
+    import os
+    import subprocess
+    import threading
+
+    import win32gui
+    import win32process
+
+    def process_name(hwnd):
+        pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+        out = subprocess.run(["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"], capture_output=True, text=True, errors="replace").stdout
+        return out.split('","')[0].strip('"').lower() if out.startswith('"') else ""
+
+    tpl = srv.call("word_new_document", text="Dear {{Name}}, region {{Region}}.")["document"]
+    srv.call("word_headers_footers", document=tpl, action="set", kind="header", text="To {{Name}}")
+    tpl_path = os.path.join(tmp, "letter_tpl.docx")
+    srv.call("word_save_as", document=tpl, path=tpl_path)
+    srv.call("word_close_document", document="letter_tpl.docx", discard=True)
+    rows = [["Name", "Region"], ["Ivanov", "North"], ["Petrov", "South"], ["Sidorov", "East"]]
+    srv.call("excel_write_range", workbook=stage_book, sheet="Data", cells="A1", values=rows)
+    in_word(stage_doc, lambda d: d.Activate())
+    before = word_state(stage_doc)
+
+    def word_windows():
+        found = set()
+        win32gui.EnumWindows(lambda h, _: found.add(h) if win32gui.IsWindowVisible(h) and win32gui.GetClassName(h) == "OpusApp" else None, None)
+        return found
+
+    existing, foreground = word_windows(), win32gui.GetForegroundWindow()
+    shown, focus, seen, done = set(), set(), set(), threading.Event()
+
+    def watch():
+        while not done.is_set():
+            shown.update(word_windows() - existing)
+            now = win32gui.GetForegroundWindow()
+            if now and now != foreground and now not in seen:
+                seen.add(now)
+                focus.add((win32gui.GetClassName(now), process_name(now), win32gui.GetWindowText(now)))
+            done.wait(0.005)
+
+    watcher = threading.Thread(target=watch)
+    watcher.start()
+    try:
+        out = os.path.join(tmp, "letters")
+        r = srv.call("bridge_excel_to_word_documents", workbook=stage_book, sheet="Data", cells="A1:B4", template=tpl_path,
+                     output_dir=out, filename_column="Name", export_pdf=True)
+    finally:
+        done.set()
+        watcher.join()
+    assert r["files"] == ["Ivanov.docx", "Petrov.docx", "Sidorov.docx"] and len(r["pdf_files"]) == 3 and r["unfilled_placeholders"] == []
+    assert not shown, [win32gui.GetWindowText(h) for h in shown if win32gui.IsWindow(h)]
+    # Word не выходил на передний план; прочие смены фокуса — рабочий стол пользователя (уведомления, его клики), не слияние
+    assert not [f for f in focus if f[0] == "OpusApp" or f[1] == "winword.exe"], focus
+    if not focus:
+        assert win32gui.GetForegroundWindow() == foreground
+    assert word_state(stage_doc) == before  # слияние шло в отдельном Word: документ пользователя не тронут
+    assert in_word(stage_doc, lambda d: d.Application.ActiveDocument.FullName) == stage_doc
+    names = {d["name"] for d in srv.call("word_list_documents")["documents"]}
+    assert not names & {"Ivanov.docx", "Petrov.docx", "Sidorov.docx", "letter_tpl.docx"}
+
+
+def test_live_mail_merge_from_a_template_open_in_the_users_word(srv, wb, tmp):
+    import os
+
+    tpl = srv.call("word_new_document", text="Dear {{Name}}.")["document"]
+    tpl_path = os.path.join(tmp, "open_tpl.docx")
+    srv.call("word_save_as", document=tpl, path=tpl_path)
+    try:
+        srv.call("excel_write_range", workbook=wb, sheet="Data", cells="A1", values=[["Name"], ["Ivanov"], ["Petrov"]])
+        before = word_state(tpl_path)
+        r = srv.call("bridge_excel_to_word_documents", workbook=wb, sheet="Data", cells="A1:A2", template="open_tpl.docx",
+                     output_dir=os.path.join(tmp, "out"), filename_column="Name")
+        assert r["files"] == ["Ivanov.docx"] and r["unfilled_placeholders"] == []
+        assert sorted(os.listdir(os.path.join(tmp, "out"))) == ["Ivanov.docx"]  # без ~$-файлов: документ закрыт
+        assert word_state(tpl_path) == before  # открытый шаблон пользователя не тронут
+        srv.call("word_open_document", path=os.path.join(tmp, "out", "Ivanov.docx"))
+        assert "Dear Ivanov." in srv.call("word_read_document", document="Ivanov.docx")["text"]
+        srv.call("word_close_document", document="Ivanov.docx", discard=True)
+    finally:
+        srv.call("word_close_document", document="open_tpl.docx", discard=True)

@@ -19,6 +19,11 @@ working next to the agent.
 It attaches to running Excel/Word through COM, so it sees exactly what you see: unsaved edits, recalculated formulas,
 pivot tables, slicers, charts, the current selection.
 
+https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
+
+<sub>30-second tour: a Word table moved into Excel, an unsaved edit the agent sees, clean-up, a pivot with a chart, a Word
+report from a template and mail merge — real tool calls on real Excel and Word. All data is fictional.</sub>
+
 ## Install
 
 **Requirements:** Windows 10/11 (64-bit) and desktop Excel and/or Word. No Python, git, winget or admin rights.

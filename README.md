@@ -9,8 +9,8 @@
 [![Русский](https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-README-cf222e?style=for-the-badge)](README.ru.md)
 
 > **Status: actively developed.** 0.x releases — the tools and the installer are tested on real Excel and Word, but the
-> project is still being improved (window layouts are covered by fake-only tests, awaiting a live run; Power Query and Power Pivot/DAX later). Feedback and issues
-> are welcome.
+> project is still being improved (the Excel + Word side-by-side layout is confirmed on real windows; chat layouts and
+> restore are still covered only by fake tests; Power Query and Power Pivot/DAX later). Feedback and issues are welcome.
 
 An MCP server that lets any AI agent (Claude, Cursor, Codex, ZCode, VS Code…) work in the Excel and Word documents
 **you already have open** — the way Office's built-in assistants do. Changes appear on screen immediately, and you keep

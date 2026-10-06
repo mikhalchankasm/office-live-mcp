@@ -45,6 +45,10 @@ include = ["office_live*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-p no:cacheprovider"
+markers = [
+    "live: needs real Excel/Word (OFFICE_LIVE_LIVE_TESTS=1)",
+    "smoke: quick live subset, ~3 min (pytest tests/live -m smoke)",
+]
 
 [tool.ruff]
 line-length = 180

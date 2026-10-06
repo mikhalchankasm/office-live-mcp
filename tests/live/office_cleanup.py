@@ -141,6 +141,28 @@ def _is_undo_book(book) -> bool:
         return False
 
 
+def _wait_for_exit(pid: int, seconds: float = 15) -> None:
+    """После Quit Excel сначала прячет окно и лишь через несколько секунд завершается. Если следующий тест успеет к нему
+    обратиться, сервер снова возьмёт ссылку на умирающий экземпляр — и тот останется жить скрытым («призрак»: тесты
+    окон и снимков диапазона видят скрытое окно). Ждём завершения; не дождались — возвращаем окно на экран."""
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if pid not in excel_pids():
+            return
+        time.sleep(0.25)
+    try:
+        app = win32com.client.GetActiveObject("Excel.Application")
+        if _pid_of(app) == pid and not bool(app.Visible):
+            app.Visible = True
+    except pythoncom.com_error:
+        pass
+    finally:
+        app = None  # noqa: F841
+        gc.collect()
+
+
 def quit_excel_if_idle(pids_before: set[int], gdi_over: int = 0, mem_over_mb: int = 0) -> str:
     """Закрывает Excel, ТОЛЬКО если его процесс появился во время прогона и в нём нет книг, кроме служебной книги отмены.
 
@@ -150,6 +172,7 @@ def quit_excel_if_idle(pids_before: set[int], gdi_over: int = 0, mem_over_mb: in
     new = excel_pids() - pids_before
     if not new:
         return "no excel started by the tests"
+    quitting = 0
     pythoncom.CoInitialize()
     try:
         try:
@@ -167,9 +190,12 @@ def quit_excel_if_idle(pids_before: set[int], gdi_over: int = 0, mem_over_mb: in
         for book in books:  # снимки отмены закрытых тестовых книг больше не нужны; без этого Quit спросил бы о сохранении
             book.Close(False)
         app.Quit()
+        quitting = pid
         return "excel quit (started by the tests and idle)"
     finally:
         # все ссылки на Excel отпускаем ДО CoUninitialize: иначе после Quit он прячется, но процесс живёт (~400 МБ)
         app = books = book = None  # noqa: F841
         gc.collect()
+        if quitting:
+            _wait_for_exit(quitting)
         pythoncom.CoUninitialize()

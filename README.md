@@ -42,8 +42,8 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
 **Requirements:** Windows 10/11 (64-bit) and desktop Excel and/or Word.
 
-1. Download **`office-live-mcp-<version>-setup.exe`** from [**Releases**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest).
-2. Run it: **Next → Next → Finish** — pick your agents and **full** or **read-only** access.
+1. Download the **Windows installer (the file ending in `-setup.exe`)** from the [**latest release**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest).
+2. Run it: **Next → Next → Finish** — on a fresh installation, detected agents are already selected. Keep them selected to connect all detected agents, and choose **full** or **read-only** access.
 3. **Restart your agent** and ask: *"show me which workbooks are open in Excel"*.
 
 **Update:** run the new setup.exe over the existing installation, then restart the agent.

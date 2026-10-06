@@ -20,8 +20,8 @@ still being improved. Power Query and Power Pivot/DAX are planned for later rele
 
 | Step | What to do |
 |:---:|---|
-| **1** | Download **`office-live-mcp-<version>-setup.exe`** from [**Releases**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest). |
-| **2** | Run it: **Next → Next → Finish**. The wizard checks for Office, installs the program and lets you choose agents and **full** or **read-only** access. |
+| **1** | Download the **Windows installer (the file ending in `-setup.exe`)** from the [**latest release**](https://github.com/mikhalchankasm/office-live-mcp/releases/latest). |
+| **2** | Run it: **Next → Next → Finish**. The wizard checks for Office and installs the program. On a fresh installation, detected agents are already selected; keep them selected to connect all detected agents. Choose **full** or **read-only** access. |
 | **3** | **Restart your agent** and ask: *"show me which workbooks are open in Excel"*. |
 
 ### Update
@@ -39,9 +39,9 @@ The program lives in `%LOCALAPPDATA%\Programs\office-live-mcp\app`. Start menu s
 
 ### Silent installation
 
-```bat
-office-live-mcp-<version>-setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLIENTS=codex,zcode /ACCESS=readonly
-```
+For automated deployment, pass `/CLIENTS=detected` to the downloaded installer to connect all detected supported agents.
+Choose `/ACCESS=full` for editing or `/ACCESS=readonly` for read-only access; this choice applies to newly connected agents.
+See the [administrator parameter reference](GUIDE.ru.md#тихая-установка-для-администраторов) for silent installation options.
 
 Without `/CLIENTS`, silent installation adds no agents and an update keeps existing registrations.
 Use `setup --config PATH` for a custom file,

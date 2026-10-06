@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.4.3 — 2026-10-06
+
+Mail merge no longer flashes Word windows over your work; shorter README with a demo teaser.
 
 - `bridge_excel_to_word_documents` no longer flashes Word windows over the user's work. In the demo (5 rows,
   `export_pdf=True`) every generated document opened in a visible Word window on top of Excel, first as the template with
@@ -17,6 +19,7 @@
 - Unit regressions with COM fakes (`tests/test_demo_fixes.py`), plus live scenarios in `tests/live/test_live_demo_fixes.py`:
   no Word window appears during the merge, the foreground and the user's active document are unchanged, and a template
   that is open in the user's Word works.
+- Docs: the README is now a short landing page with a 30-second demo teaser; the full documentation moved to `docs/DETAILS.md` / `docs/DETAILS.ru.md`; the window-layout status notes that the Excel + Word side-by-side layout is confirmed on real windows.
 
 ## 0.4.2 — 2026-10-06
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "office-live-mcp"
-version = "0.4.2"
+version = "0.4.3"
 description = "MCP server that lets any AI agent drive OPEN Microsoft Excel and Word documents (live COM automation)"
 readme = "README.md"
 requires-python = ">=3.10"

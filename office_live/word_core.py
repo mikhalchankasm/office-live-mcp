@@ -6,14 +6,28 @@ import re
 
 import pywintypes
 
-from . import com, config
-from .errors import ToolError
+from . import com, config, safety, undo
+from . import wd_common as wd
+from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .safety import WORD_EXTS, check_path
 from .util import clean_word_text, cm_to_points, color_to_hex, parse_color, to_word_text, truncate
 from .wd_common import (
-    ALIGNMENTS, HIGHLIGHTS, active_document, all_documents, document_allowed, check_paragraph, ensure_free_anchor, escape_find, find_all,
-    para_count, paragraph_index_at, paragraphs_range, pick_document, resolve_style, story_ranges,
+    ALIGNMENTS,
+    HIGHLIGHTS,
+    active_document,
+    all_documents,
+    check_paragraph,
+    document_allowed,
+    ensure_free_anchor,
+    escape_find,
+    find_all,
+    para_count,
+    paragraph_index_at,
+    paragraphs_range,
+    pick_document,
+    resolve_style,
+    story_ranges,
 )
 
 _SAVE_FORMATS = {"docx": 16, "doc": 0, "docm": 13, "rtf": 6, "txt": 7, "html": 8, "htm": 8, "odt": 23, "xml": 19, "dotx": 14, "dotm": 15}
@@ -1003,3 +1017,62 @@ def select_resolved_range(app, doc, rng):
     except pywintypes.com_error as exc:
         raise ToolError("Could not move the selection (the document window may be hidden): " + com.com_error_text(exc)) from None
     return {"ok": True, "document": doc.Name, "selected": [int(rng.Start), int(rng.End)]}
+
+
+@office_tool("word_core", "write", title="Insert document", file_args=("file_path",))
+def word_insert_document(document: str, file_path: str, position: str = "end", paragraph: int = 0,
+                         bookmark: str = "", source_bookmark: str = "") -> dict:
+    """Insert a saved document into a Range without changing Selection. Uses one Word UndoRecord.
+
+    Args:
+        document: exact target document.
+        file_path: existing docx/doc/dotx/rtf/txt/odt within allowed folders; macro-enabled formats refused.
+        position: end/start/after_paragraph/after_bookmark.
+        paragraph, bookmark: insertion anchor for the corresponding position.
+        source_bookmark: optional named range in the source file.
+
+    Unsaved edits in an open source are not inserted: the saved disk version is used and a warning is returned.
+    """
+    if position not in {"end", "start", "after_paragraph", "after_bookmark"}:
+        raise ToolError("Invalid insertion position.")
+    path = safety.check_path(file_path, "read")
+    if os.path.splitext(path)[1].lower() not in {".docx", ".doc", ".dotx", ".rtf", ".txt", ".odt"}:
+        raise ToolError("Unsupported source extension (macro-enabled files are refused).")
+    if not os.path.isfile(path):
+        raise ToolError("Source file was not found.")
+    app, doc = wd.pick_document(document)
+    if wd.document_path(doc) and safety._real(path) == safety._real(wd.document_path(doc)):
+        raise ToolError("Cannot insert the target document into itself.")
+    warnings = []
+    for _, source in wd.all_documents():
+        if wd.document_path(source) and safety._real(wd.document_path(source)) == safety._real(path) and not bool(source.Saved):
+            warnings.append("Вставлена сохранённая на диске версия; исходный документ содержит несохранённые изменения.")
+    if position == "start":
+        anchor = int(doc.Content.Start)
+    elif position == "end":
+        anchor = max(int(doc.Content.Start), int(doc.Content.End) - 1)
+    elif position == "after_paragraph":
+        if type(paragraph) is not int or not 1 <= paragraph <= int(doc.Paragraphs.Count):
+            raise ToolError("paragraph is outside the document.")
+        anchor = min(int(doc.Paragraphs(paragraph).Range.End), int(doc.Content.End) - 1)
+    else:
+        if not bookmark or not doc.Bookmarks.Exists(bookmark):
+            raise ToolError("bookmark was not found.")
+        anchor = min(int(doc.Bookmarks.Item(bookmark).Range.End), int(doc.Content.End) - 1)
+    if wd._in_table(doc, anchor):
+        raise ToolError("Insertion anchor is inside a table; choose a free paragraph.")
+    rng = doc.Range(anchor, anchor)
+    before_end, before_paragraphs = int(doc.Content.End), int(doc.Paragraphs.Count)
+    undo.require_undo("document", app, doc)
+    try:
+        with com.macros_disabled(app):  # legacy .doc can contain macros too
+            rng.InsertFile(path, source_bookmark, False, False, False)
+        inserted = int(doc.Content.End) - before_end
+        return {"document": doc.Name, "start": anchor, "end": anchor + inserted, "characters_inserted": inserted,
+                "paragraphs_before": before_paragraphs, "paragraphs_after": int(doc.Paragraphs.Count), "warnings": warnings}
+    except pywintypes.com_error as exc:
+        try:
+            applied = int(doc.Content.End) - before_end
+        except pywintypes.com_error:
+            applied = "unknown"
+        raise PartialChangeError(f"InsertFile interrupted: applied={applied} characters. {com.translate(exc)}") from None

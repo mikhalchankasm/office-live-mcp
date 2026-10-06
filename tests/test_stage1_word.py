@@ -410,10 +410,10 @@ def test_sort_busy_after_write_keeps_native_record_with_force_guard(office, monk
             raise AppBusyError("Office busy")
         return original_cell(self, *args)
 
-    def stamp(doc):
+    def stamp(doc, styles=True):
         if busy:
             raise AppBusyError("Office busy")
-        return fingerprint(doc)
+        return fingerprint(doc, styles=styles)
 
     monkeypatch.setattr(Table, "Sort", fail)
     monkeypatch.setattr(Table, "Cell", read_cell)

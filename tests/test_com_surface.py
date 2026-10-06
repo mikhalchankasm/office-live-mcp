@@ -60,6 +60,14 @@ EXCEL["_Worksheet"] += " Hyperlinks"
 EXCEL["Hyperlinks"] += " Add"
 EXCEL["_Application"] += " Goto"
 EXCEL["_Application"] += " Ready Interactive"
+EXCEL["_Application"] += " MaxIterations MaxChange"
+EXCEL["_Worksheet"] += " AutoFilterMode AutoFilter"
+EXCEL["Range"] += " GoalSeek Subtotal RemoveSubtotal Sort OutlineLevel SparklineGroups"
+EXCEL.update({"AutoFilter": "Range Filters", "Filters": "Count Item", "Filter": "On",
+              "SparklineGroups": "Count Item Add", "SparklineGroup": "Location SourceData Type Delete SeriesColor Points Axes DateRange DisplayBlanksAs DisplayHidden LineWeight PlotBy",
+              "SparkPoints": "Highpoint Lowpoint Firstpoint Lastpoint Negative Markers", "SparkColor": "Visible Color",
+              "FormatColor": "Color ThemeColor TintAndShade", "SparkAxes": "Horizontal Vertical",
+              "SparkHorizontalAxis": "Axis RightToLeftPlotOrder", "SparkVerticalAxis": "MinScaleType MaxScaleType CustomMinScaleValue CustomMaxScaleValue"})
 EXCEL["Window"] += " Hwnd"
 WORD = {
     "_Application": "UndoRecord Documents ActiveDocument CompareDocuments AutomationSecurity",
@@ -95,6 +103,20 @@ WORD["Paragraph"] = "Range"
 WORD["Window"] = "Hwnd ScrollIntoView"
 WORD["Bookmarks"] = "Exists Item"
 WORD["Bookmark"] = "Range"
+WORD["_Document"] += " Protect Unprotect Styles"
+WORD["Range"] += " InsertFile ConvertToTable Tables Information Paragraphs Editors"
+WORD["Table"] += " ConvertToText Style"
+WORD["Rows"] += " Item HeadingFormat"
+WORD.update({"Row": "HeadingFormat", "Styles": "Item", "Style": "Type NameLocal", "Editors": "Count Item", "Editor": "ID Name Range"})
+# Fragment edits and threaded comments; checked against registered type libraries without instantiating Office.
+WORD["_Document"] += " Fields Hyperlinks ContentControls"
+WORD["Range"] += " StoryType Font HighlightColorIndex Style ListFormat Fields Footnotes Endnotes Hyperlinks ContentControls InlineShapes Revisions"
+WORD["Comment"] += " Scope Author Initial Date Done Replies Ancestor"
+WORD["Comments"] += " Add"
+WORD["Bookmarks"] += " Count"
+WORD.update({"Fields": "Count Item", "Field": "Code Result", "Hyperlinks": "Count Item", "Hyperlink": "Range",
+             "ContentControls": "Count Item", "ContentControl": "Range", "_Font": "Name Size Bold Italic Underline Color Duplicate",
+             "ListFormat": "ListString"})
 CALLS = {
     "Hyperlinks.Add": ("Anchor", "Address", "SubAddress", "ScreenTip", "TextToDisplay"),
     "_Application.Goto": ("Reference", "Scroll"),
@@ -150,6 +172,19 @@ CALLS = {
 }
 CALLS.update({"Protection." + member: () for member in EXCEL["Protection"].split()})
 CALLS.update({"_Application.Ready": (), "_Application.Interactive": (), "Window.Hwnd": (), "_Document.ActiveWindow": (), "Windows.Item": ("Index",)})
+CALLS.update({
+    "Range.GoalSeek": ("Goal", "ChangingCell"), "Range.Precedents": (),
+    "Range.Subtotal": ("GroupBy", "Function", "TotalList", "Replace", "PageBreaks", "SummaryBelowData"), "Range.RemoveSubtotal": (),
+    "Range.Sort": ("Key1", "Order1", "Key2", "Type", "Order2", "Key3", "Order3", "Header", "OrderCustom", "MatchCase", "Orientation",
+                   "SortMethod", "DataOption1", "DataOption2", "DataOption3", "SubField1"),
+    "SparklineGroups.Add": ("Type", "SourceData"), "SparklineGroups.Item": ("Index",), "SparklineGroup.Delete": (),
+    "Range.InsertFile": ("FileName", "Range", "ConfirmConversions", "Link", "Attachment"),
+    "_Document.Protect": ("Type", "NoReset", "Password", "UseIRM", "EnforceStyleLock"), "_Document.Unprotect": ("Password",),
+    "Table.ConvertToText": ("Separator", "NestedTables"), "Range.ConvertToTable": ("Separator", "NumRows", "NumColumns"),
+    "Comments.Add": ("Range", "Text"), "Comments.Item": ("Index",),
+    "Fields.Item": ("Index",), "ContentControls.Item": ("Index",),
+    "Range.Information": ("Type",), "Rows.Item": ("Index",), "Styles.Item": ("Index",), "Editors.Item": ("Index",),
+})
 SETTERS = {
     "_Application": "DisplayAlerts EnableEvents Calculation CutCopyMode",
     "_Workbook": "Saved Date1904",
@@ -162,6 +197,11 @@ SETTERS = {
     "Tab": "Color ColorIndex",
 }
 WORD_SETTERS = {"_Application": "AutomationSecurity"}
+SETTERS["_Application"] += " MaxIterations MaxChange"
+SETTERS.update({"SparklineGroup": "DateRange DisplayBlanksAs DisplayHidden LineWeight PlotBy", "SparkColor": "Visible",
+                "FormatColor": "Color ThemeColor TintAndShade", "SparkHorizontalAxis": "RightToLeftPlotOrder",
+                "SparkVerticalAxis": "MinScaleType MaxScaleType CustomMinScaleValue CustomMaxScaleValue"})
+WORD_SETTERS.update({"_Document": "TrackRevisions", "Row": "HeadingFormat", "Table": "Style", "Range": "Text Font HighlightColorIndex", "Comment": "Done"})
 EXCEL_READONLY = {"Range": "DirectPrecedents DirectDependents", "Protection": EXCEL["Protection"],
                   "_Workbook": "ProtectStructure ProtectWindows", "Name": "RefersToRange"}
 
@@ -199,6 +239,8 @@ def verify(guid, major, minor, wanted):
     for key, parameters in CALLS.items():
         if wanted is WORD and key == "Range.End":
             parameters = ()  # Word property, unlike Excel's Range.End(Direction)
+        if wanted is WORD and key == "Range.Sort":
+            continue  # Word's different Sort signature is not used by this implementation.
         interface, member = key.split(".")
         if interface not in wanted or member not in wanted[interface].split():
             continue
@@ -243,6 +285,30 @@ def test_word_comparison_and_sort_enum_values():
         ti = lib.GetTypeInfo(index)
         if ti.GetDocumentation(-1)[0] not in {"WdCompareDestination", "WdGranularity", "WdSortFieldType", "WdSortOrder"}:
             continue
+        for j in range(ti.GetTypeAttr().cVars):
+            desc = ti.GetVarDesc(j)
+            name = ti.GetNames(desc.memid)[0]
+            if name in expected:
+                found[name] = desc.value
+    assert found == expected
+
+
+@pytest.mark.parametrize("library,expected", [
+    (EXCEL_LIB, {"xlSummaryAbove": 0, "xlSummaryBelow": 1, "xlRows": 1, "xlColumns": 2,
+                 "xlSparkLine": 1, "xlSparkColumn": 2, "xlSparkColumnStacked100": 3,
+                 "xlAverage": -4106, "xlCount": -4112, "xlCountNums": -4113, "xlMax": -4136, "xlMin": -4139,
+                 "xlProduct": -4149, "xlStDev": -4155, "xlStDevP": -4156, "xlSum": -4157, "xlVar": -4164, "xlVarP": -4165}),
+    (WORD_LIB, {"wdNoProtection": -1, "wdAllowOnlyRevisions": 0, "wdAllowOnlyComments": 1, "wdAllowOnlyFormFields": 2,
+                "wdAllowOnlyReading": 3, "wdSeparateByParagraphs": 0, "wdSeparateByTabs": 1, "wdSeparateByCommas": 2, "wdStyleTypeTable": 3}),
+])
+def test_operation_enum_values(library, expected):
+    try:
+        lib = pythoncom.LoadRegTypeLib(*library, 0)
+    except pythoncom.com_error:
+        pytest.skip("the Office type library is not registered on this machine")
+    found = {}
+    for i in range(lib.GetTypeInfoCount()):
+        ti = lib.GetTypeInfo(i)
         for j in range(ti.GetTypeAttr().cVars):
             desc = ti.GetVarDesc(j)
             name = ti.GetNames(desc.memid)[0]

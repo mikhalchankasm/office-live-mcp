@@ -25,6 +25,9 @@ class Collection:
                 return item
         raise KeyError(key)
 
+    def Item(self, key, /):
+        return self(key)
+
     def __iter__(self):
         return iter(self.items)
 
@@ -673,7 +676,7 @@ class Word:
 
 @pytest.fixture(name="office")
 def fake_office(monkeypatch, tmp_path):
-    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, registry, templates, undo, wd_common, window, word_core, word_tables
+    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, registry, templates, undo, wd_common, window, word_core, word_tables, word_layout, word_edits
 
     excel, word = Excel(), Word()
     wb = excel.Workbooks.Add()
@@ -687,7 +690,7 @@ def fake_office(monkeypatch, tmp_path):
     saved_catalog = dict(registry.CATALOG)
     registered = {}
     monkeypatch.setattr(registry, "mcp", NS(add_tool=lambda fn, name, **kw: registered.__setitem__(name, fn)))
-    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, window, word_core, word_tables)
+    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, window, word_core, word_tables, word_layout, word_edits)
 
     def call(tool_name, **kwargs):
         fn = next(getattr(m, tool_name) for m in modules if hasattr(m, tool_name))

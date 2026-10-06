@@ -1,8 +1,8 @@
 """Excel: умные таблицы, сводные таблицы, диаграммы, профилирование данных, поиск проблем."""
 
 import contextlib
-import json
 import datetime
+import json
 import math
 import os
 import re
@@ -15,15 +15,27 @@ import pythoncom
 import pywintypes
 from mcp.server.mcpserver import Image
 
-from . import com, config
-from .errors import ToolError
+from . import com, config, undo
+from . import xl_common as xl
+from .errors import PartialChangeError, ToolError
+from .excel_format import NUMBER_FORMATS
 from .registry import office_tool
 from .safety import check_path
 from .util import EXCEL_ERRORS, a1_cell, a1_range, col_letter, col_number, norm_value, parse_color, smart_number, split_sheet_ref, to_grid
-from .excel_format import NUMBER_FORMATS
 from .xl_common import (
-    number_format_for_write, addr_of, bounded_range, bounds, clip_to_used, get_range, pick_sheet, pick_workbook, preview, sheet_is_empty, sheet_names,
-    sub_range, validate_sheet_name,
+    addr_of,
+    bounded_range,
+    bounds,
+    clip_to_used,
+    get_range,
+    number_format_for_write,
+    pick_sheet,
+    pick_workbook,
+    preview,
+    sheet_is_empty,
+    sheet_names,
+    sub_range,
+    validate_sheet_name,
 )
 
 MISSING = pythoncom.Missing
@@ -1169,3 +1181,93 @@ def excel_find_issues(workbook: str = "", sheet: str = "", cells: str = "", max_
         "summary": f"{sum(e['count'] for e in ordered)} findings of {len(ordered)} types" if ordered else "No issues found.",
         "issues": ordered,
     }
+
+
+def _finite(value, name):
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ToolError(f"{name} must be a finite number.")
+
+
+@office_tool("excel_analysis", "write", title="Goal seek")
+def excel_goal_seek(workbook: str, sheet: str, set_cell: str, target_value: float, changing_cell: str,
+                    max_iterations: int | None = None, max_change: float | None = None,
+                    keep_if_not_converged: bool = False) -> dict:
+    """Find a numeric constant making a formula reach target_value. Snapshots only changing_cell for office_undo.
+
+    Args:
+        workbook, sheet: exact workbook and sheet.
+        set_cell: one formula cell; parsed same-sheet dependency, no active sheet required.
+        Incomplete parsing (dynamic references or node limit) allows GoalSeek with dependency_verified=false.
+        target_value: finite numeric goal.
+        changing_cell: one numeric or empty constant on the same sheet.
+        max_iterations, max_change: optional positive limits, restored in finally.
+        keep_if_not_converged: false restores and verifies the original value with no undo entry; true keeps the attempt.
+    """
+    _finite(target_value, "target_value")
+    if max_iterations is not None and (type(max_iterations) is not int or not 1 <= max_iterations <= 2147483647):
+        raise ToolError("max_iterations must be a positive integer.")
+    if max_change is not None:
+        _finite(max_change, "max_change")
+        if max_change <= 0:
+            raise ToolError("max_change must be positive.")
+    app, wb = xl.pick_workbook(workbook)
+    ws, target = xl.get_range(wb, sheet, set_cell, empty_means_used=False)
+    other_ws, changing = xl.get_range(wb, ws.Name, changing_cell, empty_means_used=False)
+    for rng in (target, changing):
+        xl.validate_rectangle(rng, ws, wb)
+        if int(rng.Count) != 1 or rng.MergeCells is not False or bool(rng.HasSpill):
+            raise ToolError("Select one unmerged, non-spill cell.")
+        xl.reject_pivots(app, ws, rng)
+    if other_ws.Name != ws.Name:
+        raise ToolError("changing_cell must be on the same sheet.")
+    if not bool(target.HasFormula):
+        raise ToolError("set_cell must contain a formula.")
+    original = changing.Value2
+    if bool(changing.HasFormula) or (original is not None and (isinstance(original, bool) or not isinstance(original, (int, float)))):
+        raise ToolError("changing_cell must be a numeric or empty constant, not a formula/text/error.")
+    if original is not None:
+        _finite(original, "changing_cell")
+        if original in EXCEL_ERRORS:
+            raise ToolError("changing_cell contains an Excel error.")
+    if bool(ws.ProtectContents) and bool(changing.Locked):
+        raise ToolError("changing_cell is locked on a protected sheet.")
+    from .formula_trace import same_sheet_dependency
+
+    depends, complete, dependency_reasons = same_sheet_dependency(app, wb, target, changing)
+    if complete and not depends:
+        raise ToolError("Формула не зависит от изменяемой ячейки (полный разбор ссылок).")
+    iterations, change = app.MaxIterations, app.MaxChange
+    manual = int(app.Calculation) == -4135
+    undo.require_undo("workbook", app, wb, plan={"_goal_sheet": ws.Name, "_goal_cell": xl.addr_of(changing)})
+    try:
+        try:
+            if max_iterations is not None:
+                app.MaxIterations = max_iterations
+            if max_change is not None:
+                app.MaxChange = max_change
+            converged = bool(target.GoalSeek(target_value, changing))
+            new, achieved = changing.Value2, target.Value2
+            kept = converged or keep_if_not_converged
+            if not kept:
+                changing.Value2 = original
+                if changing.Value2 != original:
+                    raise ToolError("Original value could not be verified after rollback.")
+                undo.cancel_prepared("workbook", app, wb)
+            return {"workbook": wb.Name, "sheet": ws.Name, "converged": converged, "original_value": original,
+                    "new_value": new if kept else original, "attempted_value": new, "achieved_value": EXCEL_ERRORS.get(achieved, achieved),
+                    "difference": achieved - target_value if isinstance(achieved, (int, float)) and achieved not in EXCEL_ERRORS else None,
+                    "kept": bool(kept), "manual_calculation": manual,
+                    "dependency_verified": complete and depends, "dependency_reasons": dependency_reasons,
+                    "parameters": {"max_iterations": max_iterations if max_iterations is not None else iterations,
+                                   "max_change": max_change if max_change is not None else change}}
+        finally:
+            try:
+                app.MaxIterations = iterations
+            finally:
+                app.MaxChange = change
+    except (pywintypes.com_error, ToolError) as exc:
+        try:
+            applied = int(changing.Value2 != original)
+        except (pywintypes.com_error, ToolError):
+            applied = "unknown"
+        raise PartialChangeError(f"GoalSeek interrupted: applied={applied} cell. {com.translate(exc)}") from None

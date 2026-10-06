@@ -52,6 +52,53 @@ def excel_pids() -> set[int]:
     return {int(line.split('","')[1]) for line in out.splitlines() if line.startswith('"EXCEL.EXE"')}
 
 
+def hung_office_windows() -> list[tuple[str, int, str]]:
+    """Видимые окна Excel/Word, которые Windows считает зависшими (IsHungAppWindow: не отвечают ~5 с). Только чтение."""
+    from ctypes import wintypes
+
+    names = {}
+    for image in ("EXCEL.EXE", "WINWORD.EXE"):
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"], capture_output=True, text=True, errors="replace").stdout
+        names.update({int(line.split('","')[1]): image for line in out.splitlines() if line.startswith(f'"{image}"')})
+    user32, hung = ctypes.windll.user32, []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in names and user32.IsWindowVisible(hwnd) and user32.IsHungAppWindow(hwnd):
+            title = ctypes.create_unicode_buffer(200)
+            user32.GetWindowTextW(hwnd, title, 200)
+            hung.append((names[pid.value], pid.value, title.value))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return hung
+
+
+def hidden_idle_excel_pids() -> set[int]:
+    """Скрытый Excel без единой книги — остаток прошлого прогона (Excel пользователя видим): его можно считать тестовым.
+
+    Иначе он попадал в «Excel пользователя», не перезапускался и между прогонами раздувался до 1 ГБ и зависания."""
+    pythoncom.CoInitialize()
+    app = None
+    try:
+        try:
+            app = win32com.client.GetActiveObject("Excel.Application")
+        except pythoncom.com_error:
+            return set()
+        if bool(app.Visible) or int(app.Workbooks.Count):
+            return set()
+        # Остаток прошлого прогона (Quit, пока сервер тестов держал ссылки): окно спрятано, процесс жив, и тесты
+        # окон получают «скрытое окно». Книг нет — делаем видимым, дальше он закрывается как тестовый.
+        app.Visible = True
+        return {_pid_of(app)}
+    finally:
+        app = None  # noqa: F841 — ссылки отпускаем до CoUninitialize, иначе процесс не завершится после Quit
+        gc.collect()
+        pythoncom.CoUninitialize()
+
+
 def _pid_of(app) -> int:
     pid = ctypes.c_ulong()
     ctypes.windll.user32.GetWindowThreadProcessId(int(app.Hwnd), ctypes.byref(pid))

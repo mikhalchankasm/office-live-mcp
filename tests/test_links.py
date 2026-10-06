@@ -16,7 +16,7 @@ from tests.history_fakes import Collection, Excel, fake_office  # noqa: F401
     ("word", {"doc": "Document1", "paragraph": "2"}),
     ("word", {"doc": "Document1", "paragraphs": "1-1000000"}),
     ("word", {"doc": "Document1", "table": "1"}), ("word", {"doc": "Document1", "bookmark": "Отчёт_1"}),
-    ("word", {"doc": "Document1"}),
+    ("word", {"doc": "Document1"}), ("word", {"doc": "Document1", "span": "0-20"}),
 ])
 def test_uri_roundtrip(app, params):
     uri = links.build(app, **params)
@@ -139,6 +139,7 @@ def word_location(office):
         return NS(Start=start, End=end, Select=lambda: selected.append((start, end)))
 
     doc.Range = make_range
+    doc.Content.Start, doc.Content.End = 0, 12
     doc.Activate = lambda: setattr(app, "ActiveDocument", doc)
     doc.Paragraphs = Collection([NS(Range=make_range(0, 4)), NS(Range=make_range(4, 8)), NS(Range=make_range(8, 12))])
     doc.Tables = Collection([NS(Range=make_range(4, 12))])
@@ -149,7 +150,7 @@ def word_location(office):
 
 
 @pytest.mark.parametrize("place,expected", [({"paragraph": "2"}, (4, 8)), ({"paragraphs": "2-3"}, (4, 12)),
-                                           ({"table": "1"}, (4, 12)), ({"bookmark": "mark"}, (4, 8))])
+                                           ({"table": "1"}, (4, 12)), ({"bookmark": "mark"}, (4, 8)), ({"span": "5-7"}, (5, 7))])
 def test_word_links_select_and_scroll(office, navigate, word_location, place, expected):
     selected, scrolled = word_location
     run, raised = navigate
@@ -160,7 +161,7 @@ def test_word_links_select_and_scroll(office, navigate, word_location, place, ex
     assert not office.word.starts and not undo.STACKS
 
 
-@pytest.mark.parametrize("place", [{"paragraph": "4"}, {"table": "2"}, {"bookmark": "missing"}])
+@pytest.mark.parametrize("place", [{"paragraph": "4"}, {"table": "2"}, {"bookmark": "missing"}, {"span": "0-13"}])
 def test_word_missing_location_does_not_activate(office, navigate, word_location, place):
     assert navigate[0](links.build("word", doc=office.doc.Name, **place)) == 1
     assert word_location == ([], []) and not navigate[1]

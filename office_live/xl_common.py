@@ -522,3 +522,16 @@ def delocalize_formulas(app, wb, formulas: list[str]) -> list[str]:
     if not formulas or _is_english_locale(app):
         return list(formulas)
     return _translate_formulas(app, formulas, False, strict=False)
+
+
+def validate_rectangle(rng, ws, wb):
+    if int(rng.Areas.Count) != 1:
+        raise ToolError("Select one rectangular range.")
+    if rng.Worksheet.Name != ws.Name or rng.Worksheet.Parent.FullName != wb.FullName:
+        raise ToolError("Range must belong to the selected workbook and sheet.")
+
+
+def reject_pivots(app, ws, rng):
+    for pivot in ws.PivotTables():
+        if app.Intersect(rng, pivot.TableRange2) is not None:
+            raise ToolError(f"Range intersects pivot table {pivot.Name}.")

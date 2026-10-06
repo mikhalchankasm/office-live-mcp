@@ -4,6 +4,7 @@
 пунктов — в tests/live/test_live_demo_fixes.py.
 """
 
+import os
 from types import SimpleNamespace as NS
 
 import pytest
@@ -308,7 +309,7 @@ def merge(monkeypatch, tmp_path):
 
     monkeypatch.setattr(com, "apps", user_apps)
     monkeypatch.setattr(bridge, "pick_workbook", lambda name: ("excel", "book"))
-    monkeypatch.setattr(bridge, "get_range", lambda wb, sheet, cells: ("sheet", NS(Rows=NS(Count=len(rows)))))
+    monkeypatch.setattr(bridge, "get_range", lambda wb, sheet, cells: ("sheet", NS(Row=1, Column=1, Rows=NS(Count=len(rows)))))
     monkeypatch.setattr(bridge, "read_grid", lambda rng, what: rows)
 
     def fill(doc, values, left, right, scope):
@@ -338,8 +339,10 @@ def test_merge_runs_in_a_private_hidden_word_and_quits_it(merge):
 
 def test_merge_failure_closes_the_document_quits_word_and_restores_the_foreground(merge):
     merge.word.fail_save_at, merge.word.steal_focus = 2, True
-    with pytest.raises(ToolError, match=r"Stopped at data row 2 \(Petrov.docx\).*Created before the failure: 1 document"):
-        merge.run()
+    # Partial failure is a structured result with the exact created files (stage 4), not an exception.
+    result = merge.run()
+    assert result["ok"] is False and result["stopped_at_row"] == 2
+    assert [os.path.basename(p) for p in result["created_files"]] == ["Ivanov.docx"]
     assert [d.closed for d in merge.word.added] == [True, True] and merge.word.quits == [0]
     assert merge.desktop.foreground_hwnd == 42 and ("focus", 42, 42) in merge.desktop.calls  # Excel снова впереди
     assert sorted(p.name for p in merge.out.iterdir()) == ["Ivanov.docx"]

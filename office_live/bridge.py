@@ -5,6 +5,8 @@ import os
 import re
 import shutil
 import tempfile
+import zipfile
+from xml.etree import ElementTree as ET
 
 import pywintypes
 
@@ -482,6 +484,138 @@ def _foreground_kept():
                     api.request_foreground(foreground, api.info(foreground)["pid"])
 
 
+def _template_placeholders(path, left, right, reason=None):
+    """Analyze saved OOXML only; never open or create an Office document."""
+    if reason:
+        return set(), False, reason
+    if not path or os.path.splitext(path)[1].lower() not in {".docx", ".dotx"}:
+        return set(), False, "Only saved .docx/.dotx ZIP templates can be analyzed without Word."
+    pattern = re.compile(re.escape(left) + r"\s*([^{}]{1,60}?)\s*" + re.escape(right))
+    tags = {"p": "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p",
+            "t": "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"}
+    placeholders = set()
+    try:
+        with zipfile.ZipFile(path) as package:
+            for part in package.namelist():
+                if part != "word/document.xml" and not re.fullmatch(r"word/(?:header|footer)[^/]*\.xml", part):
+                    continue
+                root = ET.fromstring(package.read(part))
+                for paragraph in root.iter(tags["p"]):
+                    text = "".join(node.text or "" for node in paragraph.iter(tags["t"]))
+                    placeholders.update(m.group(1) for m in pattern.finditer(text))
+        return placeholders, True, None
+    except (OSError, zipfile.BadZipFile, ET.ParseError, RuntimeError):
+        return set(), False, "Template ZIP/XML is unreadable; placeholders could not be analyzed."
+
+
+def _build_document_plan(
+    workbook: str,
+    cells: str,
+    template: str,
+    output_dir: str,
+    filename_column: str = "",
+    sheet: str = "",
+    left_delimiter: str = "{{",
+    right_delimiter: str = "}}",
+    max_documents: int = 100,
+    overwrite: bool = False,
+    export_pdf: bool = False,
+) -> dict:
+    if type(max_documents) is not int or max_documents < 1:
+        raise ToolError("max_documents must be a positive integer.")
+    if not left_delimiter or not right_delimiter:
+        raise ToolError("Placeholder delimiters must be nonempty.")
+    app, wb = pick_workbook(workbook)
+    ws, rng = get_range(wb, sheet, cells)
+    n_rows = int(rng.Rows.Count)
+    if n_rows < 2:
+        raise ToolError("The data block has no rows below the header.")
+    if n_rows - 1 > int(max_documents):  # до чтения данных
+        raise ToolError(f"{n_rows - 1} rows exceed max_documents={max_documents}. Raise the limit or narrow the range.")
+    text = read_grid(rng, "text")
+    headers = [str(h).strip() for h in text[0]]
+    body = text[1:]
+    if filename_column and filename_column not in headers:
+        raise ToolError(f"filename_column '{filename_column}' is not a header. Headers: {headers}")
+    out_dir = check_path(output_dir, "write")
+    template_reason = None
+    if os.path.isfile(template):
+        tpl_path = check_path(template, "read")
+    else:
+        _, tdoc = pick_document(template)
+        tpl_path = check_path(tdoc.FullName, "read") if tdoc.Path else None
+        if not tpl_path or not bool(tdoc.Saved):
+            template_reason = "Open template has unsaved changes; disk placeholders do not represent it."
+
+    # --- предварительная проверка ВСЕХ результатов: имена, коллизии, перезапись, открытые файлы — до создания первого документа
+    plan, used, renamed, blank_rows = [], set(), [], []
+    for idx, row in enumerate(body, start=1):
+        if not any(str(c).strip() for c in row):
+            blank_rows.append(int(rng.Row) + idx)
+            continue
+        values = {h: row[j] for j, h in enumerate(headers) if h}
+        stem = _safe_filename(values.get(filename_column, ""), f"document_{idx:03d}") if filename_column else f"document_{idx:03d}"
+        stem = _unique_stem(stem, idx, used, renamed)
+        docx = check_path(os.path.join(out_dir, stem + ".docx"), "write", WORD_EXTS)
+        pdf = check_path(os.path.splitext(docx)[0] + ".pdf", "write", {"pdf"}) if export_pdf else None
+        plan.append((idx, values, docx, pdf))
+    existing = [p for _, _, d, pdf in plan for p in (d, pdf) if p and os.path.exists(p)]
+    open_now = {os.path.normcase(os.path.abspath(d.FullName)) for _, d in all_documents() if d.Path} if existing and _word_running() else set()
+    existing_info = [{"path": p, "open_in_word": os.path.normcase(os.path.abspath(p)) in open_now} for p in existing]
+    problems = []
+    if not plan:
+        problems.append("Every row below the header is empty; nothing to generate.")
+    if existing and not overwrite:
+        problems.append(f"{len(existing)} output file(s) already exist. Pass overwrite=true or choose another output_dir.")
+    if any(p["open_in_word"] for p in existing_info):
+        problems.append("Some output files are open in Word and cannot be overwritten; close them first.")
+    if tpl_path is None:
+        problems.append("The template document has never been saved; save it with word_save_as first.")
+    placeholders, analyzed, analysis_reason = _template_placeholders(tpl_path, left_delimiter, right_delimiter, template_reason)
+    public = {"ready": not problems, "problems": problems, "preview_is_permission": False,
+              "output_dir": out_dir, "template_path": tpl_path, "placeholders_analyzed": analyzed,
+              "placeholders_analysis_reason": analysis_reason,
+              "matched": sorted(set(headers) & placeholders) if analyzed else [],
+              "unused_columns": [h for h in headers if h and h not in placeholders] if analyzed else [],
+              "unfilled_placeholders": sorted(placeholders - set(headers)) if analyzed else [],
+              "files": [{"row": int(rng.Row) + i, "data_row": i, "filename": os.path.basename(d), "docx": d, "pdf": pdf} for i, _, d, pdf in plan],
+              "renamed": renamed, "blank_rows": blank_rows, "existing_files": existing_info,
+              "total_documents": len(plan),
+              "sample": [{"row": int(rng.Row) + i, "values": {h: str(v)[:100] for h, v in values.items()}} for i, values, _, _ in plan[:3]]}
+    return public, plan, tpl_path
+
+
+@office_tool("bridge", "read", title="Preview Excel rows -> Word documents")
+def bridge_excel_to_word_preview(
+    workbook: str,
+    cells: str,
+    template: str,
+    output_dir: str,
+    filename_column: str = "",
+    sheet: str = "",
+    left_delimiter: str = "{{",
+    right_delimiter: str = "}}",
+    max_documents: int = 100,
+    overwrite: bool = False,
+    export_pdf: bool = False,
+) -> dict:
+    """Preview Excel rows -> Word/PDF generation. Available in readonly; creates no files/directories and opens no Word documents.
+
+    Args:
+        workbook, cells, template, output_dir, filename_column, sheet: same targets as bridge_excel_to_word_documents.
+        left_delimiter, right_delimiter: default {{ and }}; headers match case sensitively.
+        max_documents: positive safety limit, default 100.
+        overwrite: include existing files in readiness checks; open Word files always block generation.
+        export_pdf: include planned PDF paths.
+
+    Reads displayed cell text (preserves leading zeros). Saved docx/dotx placeholders are parsed from ZIP body/headers/footers,
+    joining runs. Unsaved or legacy templates report placeholders_analyzed=false. A preview never authorizes execution;
+    generation rebuilds the plan from current data. Existing Word instances are queried only without launch.
+    """
+    return _build_document_plan(workbook, cells, template, output_dir, filename_column, sheet, left_delimiter,
+                                right_delimiter, max_documents, overwrite, export_pdf)[0]
+
+
 @office_tool("bridge", "save", title="Excel rows -> Word documents (mail merge)")
 def bridge_excel_to_word_documents(
     workbook: str,
@@ -510,49 +644,12 @@ def bridge_excel_to_word_documents(
 
     Documents are generated in a separate hidden Word that quits afterwards (also after a failure): no windows appear, and your Word, its documents and the active window are not touched.
     """
-    app, wb = pick_workbook(workbook)
-    ws, rng = get_range(wb, sheet, cells)
-    n_rows = int(rng.Rows.Count)
-    if n_rows < 2:
-        raise ToolError("The data block has no rows below the header.")
-    if n_rows - 1 > int(max_documents):  # до чтения данных
-        raise ToolError(f"{n_rows - 1} rows exceed max_documents={max_documents}. Raise the limit or narrow the range.")
-    text = read_grid(rng, "text")
-    headers = [str(h).strip() for h in text[0]]
-    body = text[1:]
-    if filename_column and filename_column not in headers:
-        raise ToolError(f"filename_column '{filename_column}' is not a header. Headers: {headers}")
-    out_dir = check_path(output_dir, "write")
-    if os.path.isfile(template):
-        tpl_path = check_path(template, "read")
-    else:
-        _, tdoc = pick_document(template)
-        if not tdoc.Path:
-            raise ToolError("The template document has never been saved; save it with word_save_as first.")
-        tpl_path = tdoc.FullName
-
-    # --- предварительная проверка ВСЕХ результатов: имена, коллизии, перезапись, открытые файлы — до создания первого документа
-    plan, used, renamed, blank_rows = [], set(), [], 0
-    for idx, row in enumerate(body, start=1):
-        if not any(str(c).strip() for c in row):
-            blank_rows += 1
-            continue
-        values = {h: row[j] for j, h in enumerate(headers) if h}
-        stem = _safe_filename(values.get(filename_column, ""), f"document_{idx:03d}") if filename_column else f"document_{idx:03d}"
-        stem = _unique_stem(stem, idx, used, renamed)
-        docx = check_path(os.path.join(out_dir, stem + ".docx"), "write", WORD_EXTS)
-        pdf = check_path(os.path.splitext(docx)[0] + ".pdf", "write", {"pdf"}) if export_pdf else None
-        plan.append((idx, values, docx, pdf))
-    if not plan:
-        raise ToolError("Every row below the header is empty; nothing to generate.")
-    existing = [p for _, _, d, pdf in plan for p in (d, pdf) if p and os.path.exists(p)]
-    if existing and not overwrite:
-        raise ToolError(f"{len(existing)} output file(s) already exist (e.g. {existing[:3]}). Pass overwrite=true or choose another output_dir. Nothing was created.")
-    if existing:
-        open_now = {os.path.normcase(os.path.abspath(d.FullName)) for _, d in all_documents() if d.Path} if _word_running() else set()
-        busy = [p for p in existing if os.path.normcase(os.path.abspath(p)) in open_now]
-        if busy:
-            raise ToolError(f"These files are open in Word and cannot be overwritten: {busy[:5]}. Close them first. Nothing was created.")
+    info, plan, tpl_path = _build_document_plan(workbook, cells, template, output_dir, filename_column, sheet,
+                                                left_delimiter, right_delimiter, max_documents, overwrite, export_pdf)
+    if not info["ready"]:
+        raise ToolError(" ".join(info["problems"]) + " Nothing was created.")
+    out_dir = info["output_dir"]
+    renamed, blank_rows = info["renamed"], info["blank_rows"]
     os.makedirs(out_dir, exist_ok=True)
 
     created, pdfs, leftovers = [], [], set()
@@ -563,7 +660,8 @@ def bridge_excel_to_word_documents(
         wapp = com.private_app("word")
         try:
             wapp.DisplayAlerts = 0
-            for idx, values, docx, pdf in plan:
+            for sheet_location, (idx, values, docx, pdf) in zip(info["files"], plan, strict=True):
+                existed_docx, existed_pdf = os.path.exists(docx), bool(pdf and os.path.exists(pdf))
                 try:
                     with com.macros_disabled(wapp):
                         d = wapp.Documents.Add(tpl_path, False, 0, False)  # Add(Template, NewTemplate, DocumentType, Visible)
@@ -571,27 +669,31 @@ def bridge_excel_to_word_documents(
                         res = fill_placeholders(d, values, left_delimiter, right_delimiter, "all")
                         leftovers.update(res["unfilled_placeholders"])
                         d.SaveAs2(docx, 16)
-                        created.append(os.path.basename(docx))
+                        created.append(docx)
                         if pdf:
                             d.ExportAsFixedFormat(pdf, 17, False, 0, 0, 0, 0, 0)
-                            pdfs.append(os.path.basename(pdf))
+                            pdfs.append(pdf)
                     finally:
                         d.Close(0)
                 except Exception as exc:  # noqa: BLE001 — говорим точно, что успело появиться на диске
-                    raise ToolError(
-                        f"Stopped at data row {idx} ({os.path.basename(docx)}): {com.translate(exc)}. "
-                        f"Created before the failure: {len(created)} document(s) {created[:20]}" + (f" and {len(pdfs)} PDF(s)" if pdf else "") + "."
-                    ) from None
+                    # Office may write a new file and then report failure. Include such newly appearing files too.
+                    if not existed_docx and docx not in created and os.path.isfile(docx):
+                        created.append(docx)
+                    if pdf and not existed_pdf and pdf not in pdfs and os.path.isfile(pdf):
+                        pdfs.append(pdf)
+                    return {"ok": False, "stopped_at_row": idx, "stopped_at_sheet_row": sheet_location["row"],
+                            "error": com.translate(exc), "created_files": created, "created_pdfs": pdfs}
         finally:
             _quit_private_word(wapp)
     out = {
-        "ok": True, "output_dir": out_dir, "documents_created": len(created), "files": created[:50],
+        "ok": True, "output_dir": out_dir, "documents_created": len(created), "files": [os.path.basename(p) for p in created[:50]],
+        "created_files": created, "created_pdfs": pdfs,
         "unfilled_placeholders": sorted(leftovers),
     }
     if pdfs:
-        out["pdf_files"] = pdfs[:50]
+        out["pdf_files"] = [os.path.basename(p) for p in pdfs[:50]]
     if renamed:
         out["renamed_for_uniqueness"] = renamed[:50]
     if blank_rows:
-        out["skipped_blank_rows"] = blank_rows
+        out["skipped_blank_rows"] = len(blank_rows)
     return out

@@ -3,10 +3,14 @@
 import json
 import os
 import sys
+import weakref
 
 from office_live.probe import StdioClient
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+LIVE_CLIENTS: "weakref.WeakSet[Stdio]" = weakref.WeakSet()  # серверы тестов: сторож обрывает их при зависании Office
 
 
 class ToolFailed(Exception):
@@ -23,6 +27,7 @@ class Stdio(StdioClient):
         command = command or ([executable] if os.path.basename(executable).lower() == "office-live-mcp.exe"
                               else [executable, "-m", "office_live"])
         super().__init__(command, env=env, cwd=ROOT, timeout=timeout)
+        LIVE_CLIENTS.add(self)
 
     def raw_call(self, name, args, /):
         resp = self.rpc("tools/call", {"name": name, "arguments": args})

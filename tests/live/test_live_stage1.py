@@ -53,7 +53,8 @@ def in_word(path, fn):
 def word_state(path):
     from office_live.undo import word_fingerprint
 
-    return in_word(path, lambda doc: (word_fingerprint(doc), bool(doc.Saved), int(doc.Revisions.Count)))
+    # styles=False: Word adds style definitions (Table Grid, the hidden Revision style) that its own Undo never removes.
+    return in_word(path, lambda doc: (word_fingerprint(doc, styles=False), bool(doc.Saved), int(doc.Revisions.Count)))
 
 
 @contextlib.contextmanager

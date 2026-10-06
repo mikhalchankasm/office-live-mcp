@@ -62,6 +62,11 @@ def identity(app, obj):
 
 
 def word_range(doc, params):
+    if "span" in params:
+        start, end = map(int, params["span"].split("-"))
+        if not int(doc.Content.Start) <= start <= end <= int(doc.Content.End):
+            raise ToolError("The linked fragment no longer exists; request a new preview/comment list.")
+        return doc.Range(start, end)
     if "paragraph" in params:
         return wd.paragraphs_range(doc, int(params["paragraph"]))
     if "paragraphs" in params:

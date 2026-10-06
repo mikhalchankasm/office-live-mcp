@@ -3,7 +3,15 @@
 Сгенерировано командой `python -m office_live tools --markdown`. Описания — на английском: их читает агент.
 Вид `write (readonly: list)` — многоактный инструмент: в режиме `OFFICE_LIVE_MODE=readonly` доступны только перечисленные действия чтения.
 
-### excel_core (35)
+### history (3)
+
+| Tool | Kind | What it does |
+|---|---|---|
+| `office_journal` | write (readonly: read, status) | Read a document's on-disk change journal or enable/disable the optional Excel 'Лог' sheet. Pass exactly one workbook or document name/path. Read and status are available in read-only mode. |
+| `office_undo` | destructive (readonly: history) | Undo recent agent changes to an open workbook/document, or read the session's undo history. Stops at unsupported operations (barriers). Later user edits block undo unless force=true. In Word, force also undoes the user's later edits to reach the state before the agent change, up to 20 native steps per entry; reports native_steps and stops at a barrier if that state cannot be reached. Excel is tried first, then Word. |
+| `office_link` | read | Build a clickable officelive:// link for a plan or result. Checks an exact, already open local target and existing location without selecting or editing it. Clicking only navigates. A range requires an explicit sheet; Word accepts one paragraph interval, table or bookmark. |
+
+### excel_core (36)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -40,10 +48,11 @@
 | `excel_merge_cells` | write | Merge a range into one cell (only the top-left value survives) or unmerge it. |
 | `excel_manage_names` | write (readonly: list) | List, add or delete defined names (named ranges / named formulas). |
 | `excel_calculate` | write | Force recalculation and/or change the calculation mode (affects the whole Excel instance). |
+| `excel_subtotals` | write | Add/remove Excel subtotals with structural undo. Existing outline/subtotals and remove create explicit barriers. |
 | `excel_create_from_template` | save | Make a new workbook as an exact copy of a sample file (all formatting, merged cells, column widths, conditional formats, formulas, named ranges, and macros are kept) and open it. The sample itself is never modified. Then clear the old data and write the new data. For .xlsm samples keep the .xlsm extension; macros stay disabled in the copy until the user enables them in Excel. |
 | `excel_autofill` | write | Do what dragging the fill handle does: extend a pattern from `source` over `dest` (which must contain `source`). Formulas adjust their relative references, numbers/dates continue as a series, formats are copied. Use it to carry a template row's formulas AND formatting down to new rows. |
 
-### excel_format (11)
+### excel_format (12)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -58,8 +67,9 @@
 | `excel_sheet_view` | write | Change how a sheet looks on screen: freeze panes, zoom, gridlines, row/column headings. |
 | `excel_page_setup` | write | Print settings of a sheet (the needed printer driver must be available to Windows). |
 | `excel_render_range_image` | read | Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content is unchanged, but Excel marks the workbook as modified and the Undo history is cleared; AutoSave is paused meanwhile). |
+| `excel_sparklines` | write (readonly: list) | List, add or clear sparkline groups. list works in readonly. Add undo deletes the exact created group; clear restores readable properties or reports a barrier. |
 
-### word_core (21)
+### word_core (24)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -83,9 +93,12 @@
 | `word_make_list` | write | Turn paragraphs into a bulleted or numbered list, or remove list formatting. |
 | `word_get_selection` | read | What the user currently has selected (or where the cursor is) in a Word document: text, paragraph numbers, style, whether it is inside a table. Use it for requests like 'rewrite the paragraph I selected'. |
 | `word_select` | ui | Move the user's cursor/selection and scroll there, to point at a result. |
+| `word_insert_document` | write | Insert a saved document into a Range without changing Selection. Uses one Word UndoRecord. |
 | `word_create_from_template` | save | Make a new Word document as an exact copy of a sample (.docx/.docm/.dotx/.dotm: styles, headers, footers, tables, placeholders, macros kept) and open it. The sample is never modified. Then use word_fill_placeholders / word_insert_text / word_write_table to put the new content in. |
+| `word_edit_preview` | read | Preview an exact fragment edit in a main-story paragraph without changes, journal or undo. |
+| `word_edit_apply` | write | Apply an agreed exact fragment replacement as tracked changes; restores TrackRevisions even on failure. |
 
-### word_layout (13)
+### word_layout (14)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -102,8 +115,9 @@
 | `word_manage_footnotes` | write (readonly: list) | List, add or delete footnotes. |
 | `word_document_properties` | write (readonly: get) | Read or set built-in document properties (File > Info): Title, Subject, Author, Keywords, Comments, Category, Company, Manager. |
 | `word_render_page_image` | read | Render one page of a Word document exactly as laid out (fonts, tables, pictures, headers/footers) and return it as a PNG image - use it to visually verify a document. Needs the Pillow package. The user's document window is switched to Print Layout briefly and restored. |
+| `word_restrict_editing` | write (readonly: status) | Read or set Word protection. Passwords are redacted and create PASSWORD_BARRIER; passwordless protection uses a custom inverse (Word UndoRecord does not undo protection). |
 
-### word_tables (7)
+### word_tables (8)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -114,8 +128,9 @@
 | `word_sort_table` | write | Sort a plain Word table by 1..3 columns, preserving its header by default; supports office_undo and refuses later user edits on undo. Returns the first 20 rows. |
 | `word_modify_table` | write | Change a table's structure. |
 | `word_format_table` | write | Format a table or a block of its cells. Only the properties you pass are changed. Cell block = row_from..row_to x col_from..col_to (all zero = the whole table). |
+| `word_table_text` | write | Convert a plain table to text or a paragraph range to a table, with one Word UndoRecord. |
 
-### bridge (7)
+### bridge (8)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -124,6 +139,7 @@
 | `bridge_excel_range_to_word_table` | write | Copy an Excel range into a Word document as a real, editable Word table. By default the text is exactly what Excel shows (number formats, dates, percentages), hidden rows/columns are skipped, and numeric columns are right-aligned. |
 | `bridge_excel_range_to_word_picture` | write | Paste an Excel range into Word as a PICTURE that looks exactly as on the Excel screen (fills, borders, conditional formats, fonts). Not editable text - use bridge_excel_range_to_word_table for that. Briefly uses the Windows clipboard. |
 | `bridge_excel_chart_to_word` | write | Insert an Excel chart into a Word document as a picture. |
+| `bridge_excel_to_word_preview` | read | Preview Excel rows -> Word/PDF generation. Available in readonly; creates no files/directories and opens no Word documents. |
 | `bridge_excel_to_word_documents` | save | Generate one Word document per Excel row from a Word template containing {{Header}} placeholders (the header names are the first row of `cells`). Typical use: letters, contracts, certificates, acts. Each document is saved into output_dir (and optionally as PDF); the template is never changed. |
 | `office_inspect_file` | read | Analyse an .xlsx/.xlsm/.docx/.docm file WITHOUT opening it in Office: sheets and their size, merged ranges, frozen panes, hidden columns, conditional-format rules, validations, tables/charts/pivots, defined names, the first rows of content, and the macros (module and procedure names, optionally the VBA source code - read only, never executed). Use it first to understand a sample file. |
 
@@ -133,7 +149,7 @@
 |---|---|---|
 | `office_run_python` | destructive | ADVANCED / DANGEROUS: run Python code with live COM objects when no dedicated tool covers a need. Predefined names: `excel` (Excel.Application or None), `wb` (workbook or None), `ws` (its active sheet), `word` (Word.Application or None), `doc` (document or None), `pythoncom`, `win32com`. Set `result = ...` to return a value; print() output is returned too. COM rules: pass arguments POSITIONALLY (no name=value), use None for skipped optional arguments, and avoid Range.Resize/Offset (they misbehave in late binding). Only available when the server was started with OFFICE_LIVE_ALLOW_EVAL=1. |
 
-### excel_analysis (15)
+### excel_analysis (16)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -146,20 +162,13 @@
 | `excel_manage_charts` | write (readonly: list, export_image) | List, restyle, move, delete or export charts. |
 | `excel_profile_range` | read | Statistical profile of a data block, column by column: types, empty/unique counts, min/max/mean/median/sum for numbers, date range, most frequent values, duplicates, formula counts. Use it to understand unfamiliar data before analysing or cleaning it. |
 | `excel_find_issues` | read | Audit a sheet/range for problems: error values, numbers stored as text, inconsistent formulas down a column, hard-coded numbers among formulas, stray spaces, blank rows/headers, duplicate headers, mixed types in a column, merged cells. |
+| `excel_goal_seek` | write | Find a numeric constant making a formula reach target_value. Snapshots only changing_cell for office_undo. |
 | `excel_pivot_info` | read | Describe a pivot table in detail: every field with its role (row/column/filter/data/unused), the items of each field and whether they are visible (hidden = filtered out), data fields with their function, and applied filters. Use it before filtering or restructuring. |
 | `excel_pivot_filter` | write (readonly: list) | Filter a pivot table - hide/show rows (items) of a field, apply label/value/top-N filters, or clear filters. This is what the field's filter dropdown does in Excel. |
 | `excel_pivot_fields` | write | Restructure a pivot table: add/move/remove fields, change how a value is aggregated, sort, group dates or numbers, add calculated fields, expand/collapse. |
 | `excel_pivot_options` | write | Layout and behaviour options of a pivot table. |
 | `excel_manage_slicers` | write (readonly: list) | Create and drive slicers (clickable filter buttons, 'срезы') and date timelines for pivot tables and Excel tables. |
 | `excel_describe_layout` | read | Produce a BLUEPRINT of a sheet so it can be re-created with new data: where the title/header block ends (frozen rows), merged header cells, every column (header text, width, hidden, number format, data type, typical values, the formula it contains), the KINDS of data rows (e.g. section rows vs item rows - grouped by how they actually look on screen incl. conditional formatting - with examples and code patterns), conditional-format rules in English with their colors, hidden rows, tables/charts/pivots/validation/macros. Read it, then build the analogue. |
-
-### history (3)
-
-| Tool | Kind | What it does |
-|---|---|---|
-| `office_journal` | write (readonly: read, status) | Read a document's on-disk change journal or enable/disable the optional Excel 'Лог' sheet. Pass exactly one workbook or document name/path. Read and status are available in read-only mode. |
-| `office_link` | read | Build a clickable officelive:// link for a plan or result. Checks an exact, already open local target and existing location without selecting or editing it. Clicking only navigates. A range requires an explicit sheet; Word accepts one paragraph interval, table or bookmark. |
-| `office_undo` | destructive (readonly: history) | Undo recent agent changes to an open workbook/document, or read the session's undo history. Stops at unsupported operations (barriers). Later user edits block undo unless force=true. In Word, force also undoes the user's later edits to reach the state before the agent change, up to 20 native steps per entry; reports native_steps and stops at a barrier if that state cannot be reached. Excel is tried first, then Word. |
 
 ### window (1)
 

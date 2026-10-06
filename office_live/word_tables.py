@@ -1,16 +1,22 @@
 """Word: таблицы — чтение, создание, запись ячеек, строки/столбцы, объединение, оформление."""
 
+
 import ctypes
 import re
 
 import pywintypes
 
-from . import com
+from . import com, undo
+from . import wd_common as wd
 from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .util import clean_word_text, cm_to_points, parse_color, to_com_grid, to_word_text
 from .wd_common import (
-    ALIGNMENTS, apply_table_style, ensure_free_anchor, paragraph_index_at, pick_document,
+    ALIGNMENTS,
+    apply_table_style,
+    ensure_free_anchor,
+    paragraph_index_at,
+    pick_document,
 )
 
 _BORDER_IDS = {"top": -1, "left": -2, "bottom": -3, "right": -4, "inside_horizontal": -5, "inside_vertical": -6}
@@ -318,9 +324,9 @@ def word_sort_table(document: str, table_index: int, keys: list[dict], header: b
         raise ToolError("table_index must be a positive 1-based integer.")
     app, doc = pick_document(document)
     tbl = get_table(doc, table_index)
-    if bool(doc.TrackRevisions):
+    if bool(doc.TrackRevisions) and int(doc.ProtectionType) != 0:
         raise ToolError("Turn off Track Changes first: sorting would create many tracked insertions/deletions.")
-    if int(doc.ProtectionType) != -1:
+    if int(doc.ProtectionType) not in {-1, 0}:
         raise ToolError("The document is protected; no rows were changed.")
     if not bool(tbl.Uniform):
         raise ToolError("Merged or nonuniform tables cannot be sorted.")
@@ -659,3 +665,104 @@ def _line_width(points: float) -> int:
     """pt -> WdLineWidth (константы фиксированного набора)."""
     table = [(0.25, 2), (0.5, 4), (0.75, 6), (1.0, 8), (1.5, 12), (2.25, 18), (3.0, 24), (4.5, 36), (6.0, 48)]
     return min(table, key=lambda t: abs(t[0] - points))[1]
+
+
+def _separator(separator, action):
+    if separator == "paragraph":
+        if action != "table_to_text":
+            raise ToolError("paragraph separator is only supported for table_to_text.")
+        return 0
+    value = {"tab": 1, "comma": 2, "semicolon": ";"}.get(separator, separator)
+    if isinstance(value, str) and (len(value) != 1 or value in "\r\n\x07"):
+        raise ToolError("separator must be tab/comma/semicolon or one non-paragraph character.")
+    return value
+
+
+@office_tool("word_tables", "write", title="Convert table/text")
+def word_table_text(document: str, action: str, table: int = 1, start_paragraph: int = 0, end_paragraph: int = 0,
+                    separator: str = "tab", columns: int = 0, header_row: bool = True, style: str = "") -> dict:
+    """Convert a plain table to text or a paragraph range to a table, with one Word UndoRecord.
+
+    Args:
+        document: exact document name.
+        action: table_to_text/text_to_table.
+        table: 1-based table index for table_to_text (nested/merged tables refused).
+        start_paragraph, end_paragraph: inclusive nonempty paragraph range outside tables for text_to_table.
+        separator: tab/comma/semicolon/one character; paragraph only for table_to_text.
+        columns: 0 infers the maximum fields per line; otherwise positive.
+        header_row: mark first row as repeating heading. style: optional existing table style.
+    """
+    if action not in {"table_to_text", "text_to_table"}:
+        raise ToolError("Invalid conversion action.")
+    sep = _separator(separator, action)
+    if type(columns) is not int or not 0 <= columns <= 63:
+        raise ToolError("columns must be an integer between 0 and 63.")
+    app, doc = wd.pick_document(document)
+    if action == "table_to_text":
+        if type(table) is not int or table < 1:
+            raise ToolError("table must be a positive integer.")
+        tbl = get_table(doc, table)
+        if not bool(tbl.Uniform) or int(tbl.Tables.Count) or int(tbl.NestingLevel) != 1:
+            raise ToolError("Nested or merged tables cannot be converted.")
+        try:
+            rows, cols = int(tbl.Rows.Count), int(tbl.Columns.Count)
+        except pywintypes.com_error:
+            raise ToolError("Merged tables cannot be converted.") from None
+        if int(tbl.Range.Cells.Count) != rows * cols:
+            raise ToolError("Merged tables cannot be converted.")
+        before_tables = int(doc.Tables.Count)
+        undo.require_undo("document", app, doc)
+        try:
+            result = tbl.ConvertToText(sep, False)
+            return {"document": doc.Name, "start_paragraph": wd.paragraph_index_at(doc, int(result.Start)),
+                    "end_paragraph": wd.paragraph_index_at(doc, max(int(result.Start), int(result.End) - 1)),
+                    "start": int(result.Start), "end": int(result.End)}
+        except pywintypes.com_error as exc:
+            try:
+                applied = rows if int(doc.Tables.Count) < before_tables else "unknown"
+            except pywintypes.com_error:
+                applied = "unknown"
+            raise PartialChangeError(f"ConvertToText interrupted: applied={applied} converted rows. {com.translate(exc)}") from None
+    if any(type(n) is not int for n in (start_paragraph, end_paragraph)) or not 1 <= start_paragraph <= end_paragraph <= int(doc.Paragraphs.Count):
+        raise ToolError("Paragraph range is outside the document or reversed.")
+    rng = wd.paragraphs_range(doc, start_paragraph, end_paragraph)
+    if int(rng.Tables.Count) or wd._in_table(doc, int(rng.Start)) or wd._in_table(doc, max(int(rng.Start), int(rng.End) - 1)):
+        raise ToolError("Paragraph range intersects a table.")
+    text = rng.Text.removesuffix("\r")  # remove the final paragraph marker, preserving selected empty paragraphs
+    if not text.strip():
+        raise ToolError("Paragraph range is empty.")
+    literal = {1: "\t", 2: ","}.get(sep, sep)
+    fields = [line.count(literal) + 1 for line in text.split("\r")]
+    num_columns = columns or max(fields)
+    if num_columns > 63:
+        raise ToolError("The inferred table exceeds Word's 63-column limit.")
+    style_obj = None
+    if style:
+        for candidate in wd.TABLE_STYLE_ALIASES.get(style.strip().lower(), [style]):
+            try:
+                item = doc.Styles(candidate)
+                if int(item.Type) == 3:
+                    style_obj = item
+                    break
+            except pywintypes.com_error:
+                continue
+        if style_obj is None:
+            raise ToolError("Table style was not found; no changes made.")
+    undo.require_undo("document", app, doc)
+    anchor = int(rng.Start)
+    try:
+        # live probe: NumRows=None reaches Word as 0 ("must be from 1 to 32767"); pass the row count explicitly
+        tbl = rng.ConvertToTable(sep, len(fields), num_columns)
+        tbl.Rows(1).HeadingFormat = bool(header_row)
+        if style_obj is not None:
+            tbl.Style = style_obj
+        index = next(i for i in range(1, int(doc.Tables.Count) + 1) if int(doc.Tables(i).Range.Start) == int(tbl.Range.Start))
+        return {"document": doc.Name, "table": index, "rows": int(tbl.Rows.Count), "columns": int(tbl.Columns.Count),
+                "uneven_rows": sum(n != max(fields) for n in fields) if columns == 0 else 0}
+    except (pywintypes.com_error, StopIteration) as exc:
+        try:
+            applied = next((int(doc.Tables(i).Rows.Count) for i in range(1, int(doc.Tables.Count) + 1)
+                            if int(doc.Tables(i).Range.Start) == anchor), 0)
+        except pywintypes.com_error:
+            applied = "unknown"
+        raise PartialChangeError(f"ConvertToTable interrupted: applied={applied} converted rows. {com.translate(exc)}") from None

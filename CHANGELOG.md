@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+New Excel and Word tools, a safe tracked-changes edit for Word, richer comment reading, a preview for mail merge, and a
+README rewritten around verifiable facts.
+
+- **Excel:** `excel_goal_seek` (dependency check without activating the sheet; an unconverged attempt is rolled back by
+  default; Excel's iteration settings are restored), `excel_subtotals` (optional sort, refuses tables/pivots, undo when the
+  block had no outline before), `excel_sparklines` (list/add/clear; existing sparklines are never overwritten silently).
+- **Word:** `word_insert_document` (saved file from allowed folders, no macro files, the user's selection is untouched),
+  `word_restrict_editing` (read-only / comments / tracked changes / forms; passwords are never stored or shown), and
+  `word_table_text` (table ↔ text). Other writing tools refuse a protected document with a clear message; closing, saving
+  and exporting it still work.
+- **Tracked fragment edits:** `word_edit_preview` (readonly, no journal or undo record) and `word_edit_apply` — the agent
+  sends the new text; the target is re-checked before writing, the edit is always a tracked revision, `TrackRevisions` is
+  restored even on failure, fields/bookmarks/footnotes/content controls/partial comment anchors are refused up front.
+- **Comments:** `word_manage_comments(action="list")` adds replies, dates, context, location, links, paging and a
+  `thread_key`; reply/resolve/delete refuse when the index now points to another thread. The old response keys stay.
+- **Mail merge preview:** `bridge_excel_to_word_preview` (readonly) shows column ↔ placeholder matching, file names,
+  collisions, existing files, skipped rows and a sample, without creating files or opening Word. A partial failure of the
+  generation now returns the exact list of created files.
+- **Undo:** when Word splits one agent change into several native steps (seen live for a paragraph style under
+  tracked-changes protection and for text → table), `office_undo` collects up to two extra steps — only when no user edit
+  followed — and otherwise puts them back and says so.
+- **Fixed after live probes on Excel/Word 16 (Russian UI):** sparkline series colour path, `PlotBy` only for square data,
+  unreadable `DateRange`; `TrackRevisions` unreadable under forms protection; protection undo ignoring style definitions
+  Word adds by itself; `ConvertToTable` row count.
+- **Docs:** README positioning (any MCP agent, MIT, server-side limits, bridges, journal/undo, COM without an add-in);
+  comparison rebuilt from public documentation checked on 2026-10-06, without star ratings and with "not confirmed" where
+  the documentation is silent. Office versions other than Microsoft 365 are no longer claimed. Four reproducible examples
+  in `docs/examples`.
+
 ## 0.4.3 — 2026-10-06
 
 Mail merge no longer flashes Word windows over your work; shorter README with a demo teaser.

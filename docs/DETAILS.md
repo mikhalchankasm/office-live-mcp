@@ -65,15 +65,19 @@ For installations managed by setup.exe, prefer setup.exe for future updates.
 
 ## What it can do
 
-114 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — full list in [TOOLS.md](TOOLS.md).
+123 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — full list in [TOOLS.md](TOOLS.md).
 
 | Group | Highlights |
 |---|---|
-| Excel | read/write ranges, **compare ranges by position or key**, **clean text, parse explicit dates and split columns with preview/undo**, **trace formula inputs/consumers with completeness reporting**, **sheet/workbook protection**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
-| Word | **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
-| Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF, inspect a file without opening it |
+| Excel | read/write ranges, **compare ranges by position or key**, **clean text, parse explicit dates and split columns with preview/undo**, **trace formula inputs/consumers with completeness reporting**, **sheet/workbook protection, goal seek, subtotals and sparklines**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
+| Word | **fragment preview/apply as tracked changes and threaded comment metadata**, **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, **insert saved documents, restrict editing and convert tables ↔ text**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
+| Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF with a read-only plan, inspect a file without opening it |
 | History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes, **clickable links** to plans and results (`office_link`) |
 | Windows | `office_window`: status, verified focus, Office/chat layouts with monitor/DPI/frame handling, restore the last layout; available in readonly |
+
+### Reproducible examples
+
+[Register → Word/PDF](examples/register-to-acts.md) · [Comments → tracked edits](examples/comments-to-tracked-edits.md) · [Compare registers](examples/compare-registers.md) · [Range → report table](examples/range-to-report-table.md)
 
 ## Windows and clickable links
 
@@ -101,25 +105,47 @@ See [link formats and safety](GUIDE.ru.md#кликабельные-ссылки)
 - Optional audit log (`OFFICE_LIVE_AUDIT_LOG`) and strict targeting (`OFFICE_LIVE_STRICT_TARGET`).
 - Protection passwords are masked in logs/errors/history. Password operations create an undo barrier; password-free protection restores flags and Locked properties.
 
-Everything runs locally; the server opens no ports. What the agent reads ends up in the model's context — limit the folders
+The server runs locally and opens no ports. What the agent reads is sent to its model provider — limit the folders
 for confidential files. Details and limits: [guide](GUIDE.ru.md) · [SECURITY.md](../SECURITY.md).
 
 ## How it compares
 
-The popular Office MCP servers edit **files on disk**; a few drive the **running** application.
+Facts below come from each product's public documentation, **checked on 2026-10-06**. "Not confirmed" means the
+documentation does not mention the feature — not that it is missing. Corrections are welcome.
 
-| Project | Approach | Pros | Cons | Rating* |
-|---|---|---|---|:---:|
-| **Office Live MCP** (this) | Live COM, attaches to the files you have open; Excel **and** Word | sees unsaved edits and recalculated values; works next to you; pivots, slicers, charts; Word↔Excel bridges; read-only mode, allowed folders, journal, undo; clickable links to changed cells; one-file installer | Windows + desktop Office only; COM is slower than file editing; Excel's own Ctrl+Z history is cleared by automation; no Power Query/DAX yet | ★★★★★ |
-| [sbroenne/mcp-server-excel](https://github.com/sbroenne/mcp-server-excel) | Live COM (.NET), Excel only | very broad Excel coverage: Power Query, DAX, Power Pivot, VBA, 300+ operations | asks you to close your open workbooks first; no Word; Windows only | ★★★★☆ |
-| [haris-musa/excel-mcp-server](https://github.com/haris-musa/excel-mcp-server) | Files via openpyxl | cross-platform, no Excel needed, `uvx` install, HTTP transport, read-only and folder limits | no live workbooks; formulas are not recalculated; pivot "tables" are static summaries; no Word | ★★★☆☆ |
-| [negokaz/excel-mcp-server](https://github.com/negokaz/excel-mcp-server) | Files (Go), live editing on Windows | `npx` install, cross-platform file mode, screenshots on Windows | small toolset (8 tools); no Word | ★★☆☆☆ |
-| [GongRzhe/Office-Word-MCP-Server](https://github.com/GongRzhe/Office-Word-MCP-Server) | Files via python-docx | no Word needed, rich document creation, PDF export | no live documents, no track changes; archived (read-only) since March 2026 | ★★☆☆☆ |
-| [OfficeMCP/OfficeMCP](https://github.com/OfficeMCP/OfficeMCP) | Live COM via generic `RunPython` | many Office apps (Outlook, PowerPoint, Access…) | no typed tools, no safety limits — the agent runs arbitrary code | ★★☆☆☆ |
+### Office AI assistants (add-ins)
 
-\* *Subjective rating by the author of this project for one use case: an AI agent assisting a person in the Excel and
-Word documents that are open right now. For headless or cross-platform file pipelines the order would be different —
-there a file-based server is the better choice.*
+| | **Office Live MCP** | [Claude for Excel](https://claude.com/docs/office-agents/excel) / [Word](https://claude.com/docs/office-agents/word) | [ChatGPT for Excel](https://help.openai.com/en/articles/20001063-chatgpt-for-excel) / [Word](https://help.openai.com/en/articles/20001526-chatgpt-for-word) |
+|---|---|---|---|
+| Form | MCP server, local process, COM; no Office add-in | Office add-in (sidebar) | Office add-in (sidebar) |
+| Agent and model | any MCP client and the model it uses | Claude | ChatGPT; Codex in the ChatGPT desktop app can work with an open Excel workbook through the add-in |
+| Apps | Excel, Word | Excel, Word, PowerPoint; Outlook in beta ([overview](https://claude.com/claude-for-microsoft-365)) | Excel, Google Sheets, Word, PowerPoint |
+| Platforms and versions | Windows, desktop Office. Tested on Microsoft 365 Apps (version 16), Windows 11, Russian UI; other versions not verified | web, Windows (Microsoft 365 builds listed in the docs), Mac; not Office 2016/2019 perpetual | Excel desktop and web; Word: not specified |
+| Word tracked changes | yes: track-changes control, fragment edits recorded as revisions | yes: tracked changes mode | not confirmed |
+| Word comment threads | list threads with replies, reply, resolve | works through threads, edits the anchored text and replies | not confirmed |
+| Excel pivot tables | create, fields, filters, slicers, timelines | edits pivot tables | not confirmed |
+| Macros / VBA | VBA source is read from the file, never run | not supported | "may not be fully supported" |
+| Price | server is free (MIT); the agent/model is billed by its provider | paid Claude plans | all ChatGPT plans, Free with limited usage |
+| Where data goes | the server runs locally and opens no ports; what the agent reads goes to that agent's model provider | processed by Anthropic; inputs/outputs deleted within 30 days per the docs | per ChatGPT plan; some logs may be kept 30 days per the docs |
+| Source code | open, MIT | proprietary | proprietary |
+
+Working in the open document, cell references, pivot tables, Word revisions and context shared between Excel and Word
+exist in these assistants too. Office Live MCP is for people who want **their own agent** (Claude Code, Cursor, Codex
+CLI, ZCode, VS Code…) to work in Office, with server-side limits they control.
+
+### MCP servers for Office
+
+| Project | How it works | Office documents | Notes from its README |
+|---|---|---|---|
+| **Office Live MCP** | COM to running Excel and Word | the files you have open | Word↔Excel bridges, journal, undo of supported actions, read-only mode, allowed folders |
+| [sbroenne/mcp-server-excel](https://github.com/sbroenne/mcp-server-excel) (MIT) | COM to Excel (.NET), MCP server or CLI | asks to close open workbooks first (exclusive access) | Excel only; Power Query, DAX, VBA, 326 operations; Excel 2016 or later |
+| [haris-musa/excel-mcp-server](https://github.com/haris-musa/excel-mcp-server) (MIT) | files via openpyxl, no Excel needed | files on disk | cross-platform; formulas stored, not calculated; summary tables instead of real PivotTables; folder confinement, read-only mode |
+| [negokaz/excel-mcp-server](https://github.com/negokaz/excel-mcp-server) (MIT) | files; live editing on Windows | files; open workbooks on Windows | 7 tools listed; screen capture on Windows |
+| [GongRzhe/Office-Word-MCP-Server](https://github.com/GongRzhe/Office-Word-MCP-Server) (MIT) | files via python-docx | files on disk | repository archived (read-only) |
+| [OfficeMCP/OfficeMCP](https://github.com/OfficeMCP/OfficeMCP) | COM via a generic `RunPython` tool | running Office apps | many Office apps; the agent runs arbitrary Python, no license file |
+
+File-based servers are the better choice for headless or cross-platform pipelines; COM servers need Windows and
+desktop Office.
 
 ## Development
 

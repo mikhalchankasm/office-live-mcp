@@ -17,6 +17,43 @@ from tests.live.office_cleanup import (excel_pids, hidden_idle_excel_pids, hung_
                                       quit_word_if_idle, word_running)
 
 
+# Быстрый набор (pytest tests/live -m smoke, ~3 мин): по одному-два ключевых сценария на группу плюс тесты, которые уже
+# ловили настоящие ошибки Office. Полный набор (~12 мин) — перед релизом.
+SMOKE = {
+    "test_live.py": ("test_write_read_and_text_mode", "test_number_formats_roundtrip_in_any_locale", "test_formulas_fill_down_and_r1c1",
+                     "test_sort_filter_find_replace_dedupe", "test_conditional_format_and_validation", "test_chart_table_profile_and_issues",
+                     "test_pivot_filters_slicers_and_hiding", "test_render_range_image_is_a_real_png", "test_readonly_server_exposes_no_writing_tools",
+                     "test_errors_are_actionable", "test_strict_target_requires_explicit_names", "test_word_insert_structure_find_literal_replace",
+                     "test_word_layout_headers_toc_comments_bookmarks_revisions", "test_word_tables_stay_separate_and_multiline_cells",
+                     "test_bridge_word_table_to_excel_numbers_and_codes", "test_bridge_excel_to_word_table_picture_and_chart"),
+    "test_live_demo_fixes.py": ("test_live_mail_merge_shows_no_windows_and_keeps_the_user_document",),
+    "test_live_undo.py": ("test_live_write_range_undo", "test_live_word_insert_text_undo"),
+    "test_live_links.py": ("test_link_selects_own_workbook_range",),
+    "test_live_stage1.py": ("test_live_clean_text_preview_types_formats_and_undo", "test_live_compare_ranges_key_two_workbooks",
+                            "test_live_compare_documents_sources_saved_and_temporary_cleanup"),
+    "test_live_stage2.py": ("test_live_split_preview_literal_types_full_undo_and_conflict", "test_live_trace_cross_sheet_names_table_and_no_ui",
+                            "test_live_protection_no_password_inverse_flags_locked"),
+    "test_live_office_operations.py": ("test_probe_goal_seek_bool_no_dialog_manual_settings_and_undo",
+                                       "test_probe_sparkline_clear_properties_theme_date_axis_roundtrip",
+                                       "test_probe_word_protection_inverse_guard_comments_tracking"),
+    "test_live_word_review.py": ("test_probe_tracked_fragment_style_numbering_selection_and_undo",
+                                 "test_probe_comment_threads_reply_key_date_and_context"),
+    "test_live_window.py": ("test_own_excel_and_word_side_by_side",),
+}
+
+
+def pytest_collection_modifyitems(config, items):
+    found = set()
+    for item in items:
+        if item.originalname in SMOKE.get(item.path.name, ()):
+            item.add_marker(pytest.mark.smoke)
+            found.add((item.path.name, item.originalname))
+    collected = {item.path.name for item in items}
+    missing = [f"{f}::{n}" for f, names in SMOKE.items() if f in collected for n in names if (f, n) not in found]
+    if missing and "smoke" in (config.option.markexpr or ""):
+        raise pytest.UsageError(f"SMOKE names not found (renamed tests?): {missing}")
+
+
 EXCEL_BEFORE: set[int] = set()  # процессы Excel до прогона (их не закрываем никогда)
 SESSION = {"started": False}
 
@@ -76,7 +113,7 @@ def _fresh_excel_when_bloated():
     # запускает свежий — пользователю не приходится снимать его в диспетчере задач
     yield
     if SESSION["started"]:  # до запуска сервера список «чужих» процессов ещё не снят
-        quit_excel_if_idle(EXCEL_BEFORE, gdi_over=3000, mem_over_mb=600)  # свежий Excel 365 сам по себе ~250–450 МБ
+        quit_excel_if_idle(EXCEL_BEFORE, gdi_over=6000, mem_over_mb=900)  # свежий Excel 365 ~250–450 МБ; лимит GDI Windows 10 000
 
 
 @pytest.fixture(scope="session")

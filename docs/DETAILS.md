@@ -136,7 +136,8 @@ desktop Office.
 ```bat
 python -m venv .venv && .venv\Scripts\pip install -r requirements.txt pytest ruff
 .venv\Scripts\python -m pytest tests -q          :: unit tests, no Office needed
-set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q   :: real Excel/Word
+set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -m smoke -q   :: quick live subset, ~4 min (real Excel/Word)
+set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q            :: full live suite, ~12 min, before a release
 .venv\Scripts\python packaging\build.py          :: build setup.exe + ZIP (needs pyinstaller and Inno Setup 6.7+)
 ```
 

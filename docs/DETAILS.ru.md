@@ -137,7 +137,8 @@ Codex CLI, ZCode, VS Code…), с ограничениями на стороне
 ```bat
 python -m venv .venv && .venv\Scripts\pip install -r requirements.txt pytest ruff
 .venv\Scripts\python -m pytest tests -q          :: юнит-тесты, Office не нужен
-set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q   :: настоящие Excel и Word
+set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -m smoke -q   :: быстрый живой набор, ~4 мин (настоящие Excel и Word)
+set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q            :: полный живой набор, ~12 мин, перед релизом
 .venv\Scripts\python packaging\build.py          :: собрать setup.exe + ZIP (нужны pyinstaller и Inno Setup 6.7+)
 ```
 

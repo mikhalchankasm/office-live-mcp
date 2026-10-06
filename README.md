@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
-    <img alt="Office Live MCP — your AI agent in the Excel and Word files you already have open" src="docs/assets/banner-light.svg" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.svg">
+    <img alt="Office Live MCP — your AI agent in the Excel and Word files you already have open" src="docs/assets/hero-light.svg" width="100%">
   </picture>
 </p>
 
@@ -33,40 +33,23 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
 ## Why Office Live MCP
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h4>🤖&nbsp; Your agent, your model</h4>
-      Keep your instructions and workflow. Use any model your MCP client supports.
-    </td>
-    <td width="33%" valign="top">
-      <h4>📄&nbsp; Excel → Word → PDF</h4>
-      One document per spreadsheet row from your template — with file names and conflicts previewed first.
-    </td>
-    <td width="33%" valign="top">
-      <h4>🛡️&nbsp; Access you control</h4>
-      Read-only mode, allowed folders and enabled tools — enforced by the server, not by a prompt.
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-      <h4>👀&nbsp; Changes you can see</h4>
-      Works in the documents already open, unsaved edits included. Results appear on screen at once.
-    </td>
-    <td width="33%" valign="top">
-      <h4>↩️&nbsp; Review and undo</h4>
-      Word edits are previewed and recorded as tracked revisions. Journal and undo, with conflict checks.
-    </td>
-    <td width="33%" valign="top">
-      <h4>🔓&nbsp; Free and open</h4>
-      No server subscription, MIT source. One installer — no Python, no admin rights.
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/features-dark.svg">
+    <img alt="Your agent and model; Excel to Word to PDF; access you control; changes you can see; review and undo; free and open source" src="docs/assets/features-light.svg" width="100%">
+  </picture>
+</p>
 
 <p align="center">
   <b>Works with</b>&nbsp; Claude Code · Claude Desktop · Cursor · Codex CLI · ZCode · VS Code<br>
   <sub>and other MCP clients</sub>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-dark.svg">
+    <img alt="How it works: your AI agent → Office Live MCP, running locally with read-only mode, allowed folders, journal and undo → the Excel and Word files you already have open" src="docs/assets/how-light.svg" width="100%">
+  </picture>
 </p>
 
 ## Try it on a real task

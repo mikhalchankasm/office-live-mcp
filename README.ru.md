@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-ru-dark.svg">
-    <img alt="Office Live MCP — ваш ИИ-агент в уже открытых файлах Excel и Word" src="docs/assets/banner-ru-light.svg" width="100%">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-ru-dark.svg">
+    <img alt="Office Live MCP — ваш ИИ-агент в уже открытых файлах Excel и Word" src="docs/assets/hero-ru-light.svg" width="100%">
   </picture>
 </p>
 
@@ -33,40 +33,23 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
 ## Почему Office Live MCP
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
-      <h4>🤖&nbsp; Свой агент и модель</h4>
-      Сохраняйте свои инструкции и привычный порядок работы. Любая модель, которую поддерживает ваш MCP-клиент.
-    </td>
-    <td width="33%" valign="top">
-      <h4>📄&nbsp; Excel → Word → PDF</h4>
-      Документ на каждую строку реестра по вашему шаблону — с предпросмотром имён файлов и конфликтов.
-    </td>
-    <td width="33%" valign="top">
-      <h4>🛡️&nbsp; Доступ под контролем</h4>
-      Режим только чтения, разрешённые папки и набор инструментов — их проверяет сервер, а не подсказка модели.
-    </td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-      <h4>👀&nbsp; Правки сразу видны</h4>
-      Работа в уже открытых документах, включая несохранённые правки. Результат сразу на экране.
-    </td>
-    <td width="33%" valign="top">
-      <h4>↩️&nbsp; Просмотр и отмена</h4>
-      Правки Word — с предпросмотром и через исправления. Журнал и отмена с проверкой конфликтов.
-    </td>
-    <td width="33%" valign="top">
-      <h4>🔓&nbsp; Бесплатно и открыто</h4>
-      Без подписки на сервер, код под MIT. Один установщик — без Python и прав администратора.
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/features-ru-dark.svg">
+    <img alt="Свой агент и модель; Excel → Word → PDF; доступ под контролем; правки сразу видны; просмотр и отмена; бесплатно и открыто" src="docs/assets/features-ru-light.svg" width="100%">
+  </picture>
+</p>
 
 <p align="center">
   <b>Работает с</b>&nbsp; Claude Code · Claude Desktop · Cursor · Codex CLI · ZCode · VS Code<br>
   <sub>и другими MCP-клиентами</sub>
+</p>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/how-ru-dark.svg">
+    <img alt="Как это работает: ваш ИИ-агент → Office Live MCP локально, с режимом только чтения, разрешёнными папками, журналом и отменой → уже открытые Excel и Word" src="docs/assets/how-ru-light.svg" width="100%">
+  </picture>
 </p>
 
 ## Попробуйте на конкретной задаче

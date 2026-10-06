@@ -173,7 +173,7 @@ def features(lang, theme):
         out.append(icon(ic, x + 50, y + 50, accent))
         out.append(t(x + 92, y + 58, title, 21, c["ink"], 700))
         for k, line in enumerate(lines):
-            out.append(t(x + 24, y + 116 + k * 26, line, 16, c["muted"]))
+            out.append(t(x + 24, y + 116 + k * 27, line, 17, c["muted"]))
     alt = escape("; ".join(f"{f[2]}: {' '.join(f[3])}" for f in T["features"]))
     return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{W}" height="{H}" viewBox="0 0 {W} {H}" role="img" aria-label="{alt}">'
             + "".join(out) + "</svg>\n")
@@ -200,7 +200,7 @@ def how(lang, theme):
             tx = x + 70
         out.append(t(tx, y + 44, title, 20, c["ink"], 700))
         for k, line in enumerate(lines):
-            out.append(t(x + 24, y + 86 + k * 24, line, 15, c["muted"]))
+            out.append(t(x + 24, y + 86 + k * 25, line, 16, c["muted"]))
         if i < 2:
             ax = x + 320
             out.append(f'<path d="M{ax+8} {y+68} h44" stroke="{c["agent2"]}" stroke-width="3" stroke-linecap="round"/>'

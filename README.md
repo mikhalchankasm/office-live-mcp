@@ -8,9 +8,25 @@
 [![English](https://img.shields.io/badge/English-README-0969da?style=for-the-badge)](README.md)
 [![Русский](https://img.shields.io/badge/%D0%A0%D1%83%D1%81%D1%81%D0%BA%D0%B8%D0%B9-README-cf222e?style=for-the-badge)](README.ru.md)
 
-An open-source (MIT) MCP server that lets **any MCP agent** — Claude Code, Claude Desktop, Cursor, Codex CLI, ZCode,
+An open-source (MIT) MCP server that lets **your MCP agent** — Claude Code, Claude Desktop, Cursor, Codex CLI, ZCode,
 VS Code… — work in the Excel and Word documents **you already have open**. Changes appear on screen immediately, and you
 keep working next to the agent. It connects to running Excel and Word through COM — no Office add-in to install.
+
+## Why choose Office Live MCP?
+
+[Claude for Excel/Word](https://claude.com/claude-for-microsoft-365) and
+[ChatGPT for Excel](https://help.openai.com/en/articles/20001063-chatgpt-for-excel) / [Word](https://help.openai.com/en/articles/20001526-chatgpt-for-word)
+bring their assistants into Office. Office Live MCP gives **your existing agent** access to Office, with these advantages:
+
+- **Choose your agent and model.** Use a compatible MCP client and the models it supports; keep your existing development tools, instructions and workflow when working in Excel and Word.
+- **Own and extend the integration.** The source is open under MIT: inspect how documents are accessed, add tools and adapt the server to your team's workflow. There is no server subscription fee.
+- **Set access limits on the server.** Choose read-only mode, allowed folders, enabled tool groups and explicit document targeting. These settings are enforced by the server rather than depending only on instructions to the model.
+- **Automate Word ↔ Excel document workflows.** Transfer tables, ranges and charts; generate a Word/PDF document for each Excel row from your template, with a read-only preview of file names, placeholders and collisions. Text identifiers such as `007` stay text.
+- **Review and undo supported changes.** Preview targeted Word edits and apply them as tracked revisions; inspect the local change journal and undo supported agent actions. Undo refuses conflicting later edits instead of silently replacing them.
+
+**Simple setup:** one Windows installer, without Python, git, administrator rights or an Office add-in.
+The server runs locally; data read by your agent goes to that agent's model provider, and agent/model costs follow its provider's terms.
+[Detailed comparison with Claude, ChatGPT and other MCP servers](docs/DETAILS.md#how-it-compares).
 
 https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 
@@ -21,8 +37,6 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 - **Works in what you have open** — sees unsaved edits, recalculated formulas, pivots, charts and your current selection.
 - **Excel and Word, 123 tools** — ranges, formulas, clean-up, goal seek, subtotals, pivots with slicers, charts; Word structure, templates, tracked edits, comment threads, document compare.
 - **Bridges** — Word tables → Excel with real numbers, Excel ranges and charts → Word, one Word/PDF document per Excel row with a read-only preview first.
-- **Limits you control** — read-only mode, allowed folders, tool groups and strict targeting; nothing is saved automatically; a local journal and undo of supported actions that refuses when you edited the same content afterwards.
-- **Any MCP agent, one installer** — no Python, git or admin rights. The server is free and runs locally; the agent and its model are billed by their provider, and what the agent reads is sent to it.
 
 ## Install
 

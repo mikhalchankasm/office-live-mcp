@@ -55,10 +55,39 @@ def _word_body_xml(doc):
     return parts or _XML_NOISE.sub("", xml)
 
 
-def word_fingerprint(doc):
+def entry_fingerprint(entry, doc):
+    """Отпечаток для проверки «пользователь менял документ после агента». Для защиты — без styles.xml: Word сам дописывает
+    туда служебные стили, пока документ защищён «только исправления» (живая проверка), это не правка пользователя."""
+    return word_fingerprint(doc, styles=entry.tool != "word_restrict_editing")
+
+
+def _tracked_protection(doc) -> bool:
+    """Защищён ли документ «только исправления». Закрытый за время вызова документ (временная копия сравнения) даёт
+    RPC_E_DISCONNECTED — живая проверка: такой документ просто пропускаем."""
+    try:
+        return int(doc.ProtectionType) == 0
+    except pywintypes.com_error as exc:
+        if com.is_busy(exc):
+            raise
+        return False
+
+
+def word_fingerprint(doc, styles=True):
+    """styles=False — для проверки отмены защиты: Word сам дописывает в styles.xml служебные стили (скрытый «Revision»
+    при защите «только исправления», стили примечаний при добавлении примечания) — живая проверка."""
     state = [doc.Content.Text, int(doc.Paragraphs.Count), int(doc.Tables.Count), int(doc.InlineShapes.Count)]
     try:
-        state.append(_word_body_xml(doc))  # замечает и ручное форматирование: без этого Undo(1) отменил бы правку пользователя
+        tracking = bool(doc.TrackRevisions)
+    except pywintypes.com_error as exc:
+        if com.is_busy(exc) or com.is_dead(exc):
+            raise
+        tracking = "unavailable"  # защита «только формы»: Word не даёт даже прочитать TrackRevisions (живая проверка)
+    state.extend([int(doc.ProtectionType), tracking])
+    try:
+        body = _word_body_xml(doc)  # замечает и ручное форматирование: без этого Undo(1) отменил бы правку пользователя
+        if not styles and isinstance(body, list):
+            body = [(name, part) for name, part in body if not name.startswith("/word/styles")]
+        state.append(body)
     except (AttributeError, pywintypes.com_error):
         pass
     state.extend([int(doc.Comments.Count), int(doc.Footnotes.Count), int(doc.Endnotes.Count), int(doc.Shapes.Count)])
@@ -433,6 +462,7 @@ class Entry:
     force_reason: str = ""
     fingerprint: str = ""
     before_fingerprint: str = ""
+    before_light: str = ""  # Word: без styles.xml — для досбора шагов, на которые Word разбил одну правку агента
     refresh_previous: bool = True
     backup_token: str = ""
     backup_sheets: list = field(default_factory=list)
@@ -584,7 +614,7 @@ def excel_fingerprint(app, wb, entry):
         modes = {op.get("restore", "all") for op in ops} or {"all"}
         state.append([area, _formula_state(rng) if modes & {"all", "contents"} else None,
                       _format_state(rng) if modes & {"all", "formats"} else None])
-        if entry.tool in {"excel_clean_text", "excel_split_column"}:
+        if entry.tool in {"excel_clean_text", "excel_split_column", "excel_goal_seek"}:
             state.append([_property_state(rng, p) for p in ("NumberFormat", "PrefixCharacter")])
         for mode in modes & {"all", "formats", "comments", "validation", "rules"}:
             state.append(_metadata_state(rng, "formats" if mode == "rules" else mode))
@@ -620,6 +650,16 @@ def excel_fingerprint(app, wb, entry):
             target = wb.Worksheets(op["sheet"]) if op["scope"] == "sheet" else wb
             state.append(_protection_state(target, op["scope"]))
             state.extend(_property_state(target.Range(a), "Locked") for a in op["locked"])
+        elif what == "subtotal":
+            from .excel_core import outline_levels
+
+            state.append(outline_levels(wb.Worksheets(op["sheet"]), wb.Worksheets(op["sheet"]).Range(op["current_address"])))
+        elif what == "sparklines":
+            from .excel_format import spark_groups, spark_state
+
+            ws = wb.Worksheets(op["sheet"])
+            location = ws.Range(op["address"])
+            state.append([spark_state(g, full=op["full"]) for g in spark_groups(ws) if app.Intersect(location, g.Location) is not None])
     return _hash(state)
 
 
@@ -699,6 +739,28 @@ def _protection(app, wb, entry, args):
         return
     entry.ops.append({"op": "protection", "scope": scope, "sheet": args["_protection_sheet"],
                       "state": _protection_state(target, scope), "locked": {a: _property_state(target.Range(a), "Locked") for a in ranges}})
+
+
+def _goal_seek(app, wb, entry, args):
+    rng = wb.Worksheets(args["_goal_sheet"]).Range(args["_goal_cell"])
+    _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
+
+
+def _subtotals(app, wb, entry, args):
+    if args.get("_operation_barrier"):
+        entry.barrier(args["_operation_barrier"])
+        return
+    rng = wb.Worksheets(args["_subtotal_sheet"]).Range(args["_subtotal_range"])
+    entry.ops.append({"op": "subtotal", **_area(rng), "current_address": xl.addr_of(rng), "rows": int(rng.Rows.Count)})
+    _snapshots(app, wb, entry, [rng], restore="contents", properties=("NumberFormat",))
+
+
+def _sparklines(app, wb, entry, args):
+    if args.get("_operation_barrier"):
+        entry.barrier(args["_operation_barrier"])
+        return
+    entry.ops.append({"op": "sparklines", "sheet": args["_spark_sheet"], "address": args["_spark_location"],
+                      "before": args["_spark_before"], "full": args.get("action") == "clear"})
 
 
 def _autofill(app, wb, entry, args):
@@ -899,6 +961,7 @@ RESOLVERS = dict.fromkeys((
     "excel_manage_comments", "excel_add_hyperlink", "excel_sort_range", "excel_remove_duplicates",
 ), _simple_range)
 RESOLVERS.update({
+    "excel_goal_seek": _goal_seek, "excel_subtotals": _subtotals, "excel_sparklines": _sparklines,
     "excel_clean_text": _clean_text,
     "excel_split_column": _split_column, "excel_protection": _protection,
     "excel_write_range": _write_range, "excel_set_formula": _write_range, "excel_autofill": _autofill,
@@ -916,7 +979,8 @@ def _finish_excel(wb, entry, result):
         what = op["op"]
         if what == "range":
             rng = _range(wb, op)
-            op["properties"] = {p: before for p, before in op.get("properties", {}).items() if before != _property_state(rng, p)}
+            if entry.tool not in {"excel_goal_seek", "excel_subtotals"}:
+                op["properties"] = {p: before for p, before in op.get("properties", {}).items() if before != _property_state(rng, p)}
         elif what == "delete_created_sheet":
             before = op.pop("before")
             created = [n for n in xl.sheet_names(wb, any_type=True) if n not in before]
@@ -944,7 +1008,37 @@ def restore_excel(app, wb, entry):
     backup = _backup(app, entry.backup_token) if entry.backup_sheets else None
     for op in entry.ops:
         what = op["op"]
-        if what == "range":
+        if what == "subtotal":
+            ws = wb.Worksheets(op["sheet"])
+            current = ws.Range(op["current_address"])
+            current_rows = int(current.Rows.Count)
+            start = int(current.Row)
+            below = ws.Cells(start + current_rows, int(current.Column))
+            current.RemoveSubtotal()
+            if int(below.Row) - start != op["rows"]:
+                raise ToolError("Subtotal undo did not restore the original row count; snapshot was not written.")
+        elif what == "sparklines":
+            from .excel_format import spark_groups, spark_state
+
+            ws = wb.Worksheets(op["sheet"])
+            location = ws.Range(op["address"])
+            for group in spark_groups(ws):
+                if app.Intersect(location, group.Location) is not None:
+                    if int(app.Intersect(location, group.Location).Count) != int(group.Location.Count):
+                        raise ToolError("Sparkline undo refuses a group extending outside the recorded location.")
+                    group.Delete()
+            for before in op["before"]:
+                group = ws.Range(before["location"]).SparklineGroups.Add(before["type"], before["source"])
+                for path, value in before["properties"].items():
+                    if path == "DateRange" and not value:
+                        continue  # a newly added group already has no date axis; Excel may reject an empty DateRange setter
+                    if path == "PlotBy" and not value:
+                        continue  # 0 = non-square data: Excel chooses the orientation and rejects the setter
+                    obj, member = _property_object(group, path)
+                    setattr(obj, member, value)
+                if spark_state(group, full=True) != before:
+                    raise ToolError("Sparkline restore could not be verified.")
+        elif what == "range":
             target = _range(wb, op)
             mode = op.get("restore", "all")
             if mode == "all":
@@ -1045,7 +1139,8 @@ def restore_excel(app, wb, entry):
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
             "excel_close_workbook", "word_close_document", "word_compare_documents"}
 
-DEFERRED = {"excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table"}
+DEFERRED = {"excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table",
+            "excel_goal_seek", "excel_subtotals", "excel_sparklines", "word_insert_document", "word_table_text", "word_restrict_editing", "word_edit_apply", "word_manage_comments"}
 
 
 class Recording:
@@ -1081,11 +1176,20 @@ class Recording:
         self.preparing = True
         try:
             if kind == "document":
-                record = app.UndoRecord
-                if bool(record.IsRecordingCustomRecord):
+                if self.tool == "word_restrict_editing":
+                    from .excel_format import PASSWORD_BARRIER
+
+                    entry.before_fingerprint = word_fingerprint(obj, styles=False)
+                    if self.args.get("_has_secret"):
+                        entry.barrier(PASSWORD_BARRIER)
+                    else:
+                        entry.ops.append({"op": "word_protection", "mode": self.args["_word_protection_before"], "tracking": self.args.get("_word_tracking_before")})
+                elif bool(app.UndoRecord.IsRecordingCustomRecord):
                     entry.barrier("Word is already recording another custom undo record.")
                 else:
+                    record = app.UndoRecord
                     entry.before_fingerprint = word_fingerprint(obj)
+                    entry.before_light = word_fingerprint(obj, styles=False)
                     record.StartCustomRecord(f"Office Live: {self.tool}")
                     self.records.append(record)
             elif self.tool == "excel_copy_range":
@@ -1114,7 +1218,7 @@ class Recording:
                 if prior and prior[-1].undoable:
                     pa, po = self.targets[pending_key]
                     try:
-                        current = word_fingerprint(po) if pending.kind == "document" else excel_fingerprint(pa, po, prior[-1])
+                        current = entry_fingerprint(prior[-1], po) if pending.kind == "document" else excel_fingerprint(pa, po, prior[-1])
                         pending.refresh_previous = current == prior[-1].fingerprint
                     except Exception:  # noqa: BLE001
                         pending.refresh_previous = False
@@ -1215,6 +1319,9 @@ class Recording:
         from .navigation import result_links
 
         result_links(self, result)
+        if self.kind in {"write", "destructive", "save"} and isinstance(result, dict):
+            if any(key[0] == "document" and _tracked_protection(obj) for key, (_, obj) in self.targets.items()):
+                result.setdefault("warnings", []).append("Документ защищён в режиме tracked_changes: Word записывает правки исправлениями.")
         if self.kind in {"write", "destructive"} and self.tool != "office_undo":
             for key, (app, obj) in self.targets.items():
                 if key[0] == "workbook":
@@ -1226,7 +1333,7 @@ class Recording:
             app, obj = self.targets[key]
             if entry.undoable:
                 try:
-                    entry.fingerprint = word_fingerprint(obj) if entry.kind == "document" else excel_fingerprint(app, obj, entry)
+                    entry.fingerprint = entry_fingerprint(entry, obj) if entry.kind == "document" else excel_fingerprint(app, obj, entry)
                 except Exception as exc:  # noqa: BLE001
                     if partial:
                         entry.force_reason = f"Could not fingerprint the partial result: {exc}; pass force=true to restore the pre-call state."
@@ -1257,7 +1364,7 @@ class Recording:
                 stack = STACKS.get(key, [])
                 if stack:
                     try:
-                        current = word_fingerprint(obj) if entry.kind == "document" else excel_fingerprint(app, obj, entry)
+                        current = entry_fingerprint(entry, obj) if entry.kind == "document" else excel_fingerprint(app, obj, entry)
                     except Exception:  # noqa: BLE001
                         current = None
                     if not entry.before_fingerprint or current != entry.before_fingerprint:
@@ -1413,7 +1520,7 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
                 if pe.force_reason and not force:
                     raise ToolError(f"{pe.tool}: {pe.force_reason}")
                 try:
-                    current = word_fingerprint(po) if pk[0] == "document" else excel_fingerprint(pa, po, pe)
+                    current = entry_fingerprint(pe, po) if pk[0] == "document" else excel_fingerprint(pa, po, pe)
                 except Exception as exc:  # noqa: BLE001
                     current = f"unavailable: {exc}"
                 if current != pe.fingerprint and not force:
@@ -1427,6 +1534,17 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
         try:
             for pk, pa, po, pe in participants:
                 if pk[0] == "document":
+                    if pe.tool == "word_restrict_editing":
+                        op = pe.ops[0]
+                        if int(po.ProtectionType) != -1:
+                            po.Unprotect("")
+                        if op["tracking"] is not None:
+                            po.TrackRevisions = op["tracking"]  # set while unprotected; protected Word may refuse even the same value
+                        if op["mode"] != -1:
+                            po.Protect(op["mode"], True, "", False, False)
+                        if word_fingerprint(po, styles=False) != pe.before_fingerprint:
+                            raise ToolError("Word protection undo could not be verified.")
+                        continue
                     for _ in range(20 if force else 1):
                         if force and word_fingerprint(po) == pe.before_fingerprint:
                             break
@@ -1434,6 +1552,21 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
                             raise ToolError("Word refused Undo(1); its undo history may have been cleared.")
                         native_steps += 1
                         out["native_steps"] += 1
+                    if not force and pe.before_light and word_fingerprint(po, styles=False) != pe.before_light:
+                        # Word sometimes splits one agent change into several native steps (live probe: a paragraph style
+                        # under tracked-changes protection lands outside the custom record). No user edit followed the agent
+                        # (checked above), so up to two extra steps are the agent's own; if that still does not reach the
+                        # state before the agent, Redo them back and say so.
+                        extra = 0
+                        while extra < 2 and word_fingerprint(po, styles=False) != pe.before_light and po.Undo(1):
+                            extra += 1
+                        if word_fingerprint(po, styles=False) == pe.before_light:
+                            native_steps += extra
+                            out["native_steps"] += extra
+                        else:
+                            if extra:
+                                po.Redo(extra)
+                            out.setdefault("warnings", []).append(f"{pe.tool}: Word's single undo step did not fully restore the document; check it or use Ctrl+Z.")
                     if force and word_fingerprint(po) != pe.before_fingerprint:
                         raise ToolError("The limit of 20 native undo steps was reached.")
                 else:
@@ -1472,7 +1605,7 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
             # Ручные правки МЕЖДУ вызовами не становятся «своими» после отмены нового шага.
             if peer_stack and peer_stack[-1].undoable and pe.refresh_previous:
                 try:
-                    peer_stack[-1].fingerprint = word_fingerprint(po) if pk[0] == "document" else excel_fingerprint(pa, po, peer_stack[-1])
+                    peer_stack[-1].fingerprint = entry_fingerprint(peer_stack[-1], po) if pk[0] == "document" else excel_fingerprint(pa, po, peer_stack[-1])
                 except Exception as exc:  # noqa: BLE001
                     peer_stack[-1].barrier(f"Could not fingerprint after undo: {exc}")
     return out

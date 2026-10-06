@@ -1,5 +1,6 @@
 """Excel: форматирование, условное форматирование, валидация, ссылки, примечания, вид листа, картинки."""
 
+
 import io
 import json
 import os
@@ -13,14 +14,24 @@ import pythoncom
 import pywintypes
 from mcp.server.mcpserver import Image
 
-from . import com
+from . import com, config, undo
+from . import xl_common as xl
 from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .safety import IMAGE_EXTS, check_path
-from .util import a1_cell, cm_to_points, color_to_hex, parse_a1, parse_color, quote_sheet
+from .util import a1_cell, cm_to_points, color_to_hex, parse_a1, parse_color, quote_sheet, to_grid
 from .xl_common import (
-    addr_of, bounds, count_nonempty, delocalize_formulas, get_range, localize_formula, read_number_format,
-    set_number_format, pick_sheet, pick_workbook, suspend_events,
+    addr_of,
+    bounds,
+    count_nonempty,
+    delocalize_formulas,
+    get_range,
+    localize_formula,
+    pick_sheet,
+    pick_workbook,
+    read_number_format,
+    set_number_format,
+    suspend_events,
 )
 
 # ------------------------------------------------------------------ словари значений
@@ -1127,3 +1138,140 @@ def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "
     data = render_range_png(app, wb, ws, rng, max_cells)
     info = {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "png_bytes": len(data)}
     return [json.dumps(info, ensure_ascii=False), Image(data=data, format="png")]
+
+
+SPARK_TYPES = {"line": 1, "column": 2, "win_loss": 3}
+SPARK_POINTS = {"high": "Highpoint", "low": "Lowpoint", "first": "Firstpoint", "last": "Lastpoint", "negative": "Negative", "all": "Markers"}
+SPARK_PROPERTIES = ("DateRange", "DisplayBlanksAs", "DisplayHidden", "LineWeight", "PlotBy",
+                    "Axes.Horizontal.RightToLeftPlotOrder", "Axes.Vertical.MinScaleType", "Axes.Vertical.MaxScaleType",
+                    "Axes.Vertical.CustomMinScaleValue", "Axes.Vertical.CustomMaxScaleValue")
+SPARK_COLORS = ("SeriesColor", "Axes.Horizontal.Axis", *("Points." + p for p in SPARK_POINTS.values()))
+
+
+def _spark_read(obj, member):
+    try:
+        return getattr(obj, member)
+    except pywintypes.com_error as exc:
+        if com.is_busy(exc) or com.is_dead(exc):
+            raise
+        if member == "DateRange":
+            return ""  # live probe: reading DateRange raises until a date axis is set
+        raise
+
+
+def spark_state(group, full=False):
+    # Live probe (Excel 16): SparklineGroup.SeriesColor IS a FormatColor; Points.* and Axes.Horizontal.Axis have .Color.
+    result = {"location": xl.addr_of(group.Location), "source": group.SourceData, "type": int(group.Type),
+              "color": int(group.SeriesColor.Color),
+              "markers": [k for k, p in SPARK_POINTS.items() if bool(getattr(group.Points, p).Visible)]}
+    if full:
+        result["properties"] = {}
+        for p in SPARK_PROPERTIES:
+            obj, member = undo._property_object(group, p)
+            result["properties"][p] = _spark_read(obj, member)
+        for p in SPARK_COLORS:
+            obj, member = undo._property_object(group, p)
+            owner = getattr(obj, member)
+            fc, prefix = (owner, p) if p == "SeriesColor" else (owner.Color, p + ".Color")
+            try:
+                theme = int(fc.ThemeColor)
+            except pywintypes.com_error as exc:
+                if com.is_busy(exc) or com.is_dead(exc):
+                    raise
+                theme = 0  # FormatColor has no ThemeColor for explicit RGB (same contract as undo._property_state).
+            result["properties"][prefix + (".ThemeColor" if 1 <= theme <= 12 else ".Color")] = theme if 1 <= theme <= 12 else int(fc.Color)
+            result["properties"][prefix + ".TintAndShade"] = fc.TintAndShade
+            if p != "SeriesColor":
+                result["properties"][p + ".Visible"] = bool(owner.Visible)
+    return result
+
+
+def spark_groups(ws):
+    coll = ws.Range("A1:XFD1048576").SparklineGroups
+    return [coll.Item(i) for i in range(1, int(coll.Count) + 1)]
+
+
+@office_tool("excel_format", "write", title="Sparklines", read_actions=("list",))
+def excel_sparklines(workbook: str = "", sheet: str = "", action: str = "list", data: str = "", location: str = "",
+                     type: str = "line", color: str = "", markers: list[str] | None = None) -> dict:
+    """List, add or clear sparkline groups. list works in readonly. Add undo deletes the exact created group; clear restores readable properties or reports a barrier.
+
+    Args:
+        workbook, sheet: selected workbook and location sheet.
+        action: list/add/clear.
+        data: source rectangle, optionally prefixed by a sheet name in the same workbook.
+        location: one row or column; clear requires whole groups, never a partial group.
+        type: line/column/win_loss.
+        color: optional series color; markers: high/low/first/last/negative/all.
+    """
+    if action not in {"list", "add", "clear"} or type not in SPARK_TYPES:
+        raise ToolError("Invalid sparkline action or type.")
+    if markers is not None and (not isinstance(markers, list) or any(m not in SPARK_POINTS for m in markers)):
+        raise ToolError("Invalid sparkline markers.")
+    rgb = parse_color(color) if color else None
+    app, wb = xl.pick_workbook(workbook)
+    ws = xl.pick_sheet(wb, sheet)
+    if action == "list":
+        return {"workbook": wb.Name, "sheet": ws.Name, "groups": [spark_state(g) for g in spark_groups(ws)]}
+    ws, dest = xl.get_range(wb, ws.Name, location, empty_means_used=False)
+    xl.validate_rectangle(dest, ws, wb)
+    if int(dest.Count) > config.SETTINGS.undo_max_cells:
+        raise ToolError("Sparkline location exceeds OFFICE_LIVE_UNDO_MAX_CELLS.")
+    if bool(ws.ProtectContents):
+        raise ToolError("The worksheet is protected.")
+    if dest.MergeCells is not False:
+        raise ToolError("Sparkline location must not contain merged cells.")
+    affected = [g for g in spark_groups(ws) if app.Intersect(dest, g.Location) is not None]
+    if action == "add":
+        if affected:
+            raise ToolError("location already contains sparklines.")
+        source_ws, source = xl.get_range(wb, ws.Name, data, empty_means_used=False, allow_other_sheet=True)
+        xl.validate_rectangle(source, source_ws, wb)
+        dr, dc = int(dest.Rows.Count), int(dest.Columns.Count)
+        if dr != 1 and dc != 1:
+            raise ToolError("location must be one row or one column.")
+        sr, sc = int(source.Rows.Count), int(source.Columns.Count)
+        plot = 1 if dc == 1 and (dr > 1 or sr == 1) else 2
+        if (plot == 1 and dr != sr) or (plot == 2 and dc != sc):
+            raise ToolError("data and location dimensions do not match.")
+        source_ref = xl.ref_label(source_ws, source)
+        content = sum(v is not None for row in to_grid(dest.Formula) for v in row)
+        undo.require_undo("workbook", app, wb, plan={"_spark_sheet": ws.Name, "_spark_location": xl.addr_of(dest), "_spark_before": []})
+        try:
+            group = dest.SparklineGroups.Add(SPARK_TYPES[type], source_ref)
+            if sr == sc:  # live probe: PlotBy can only be set for square data; otherwise Excel orients itself (1004)
+                group.PlotBy = plot  # xlSparklineRowsSquare / xlSparklineColumnsSquare
+            if rgb is not None:
+                group.SeriesColor.Color = rgb
+            if markers is not None:
+                for key, member in SPARK_POINTS.items():
+                    getattr(group.Points, member).Visible = key in markers
+            return {"workbook": wb.Name, "sheet": ws.Name, "groups": [spark_state(group)], "cells_with_content": content}
+        except (pywintypes.com_error, ToolError) as exc:
+            try:
+                applied = int(dest.SparklineGroups.Count)
+            except (pywintypes.com_error, ToolError):
+                applied = "unknown"
+            raise PartialChangeError(f"Sparkline add interrupted: applied={applied} groups. {com.translate(exc)}") from None
+    for group in affected:
+        if int(app.Intersect(dest, group.Location).Count) != int(group.Location.Count):
+            raise ToolError("clear must include whole sparkline groups; partial locations are refused.")
+    before, barrier = [], ""
+    try:
+        before = [spark_state(g, full=True) for g in affected]
+    except (AttributeError, pywintypes.com_error) as exc:
+        if com.is_busy(exc) or com.is_dead(exc):
+            raise
+        barrier = "Sparkline properties cannot all be read; clear is an undo barrier."
+    if not affected:
+        return {"workbook": wb.Name, "sheet": ws.Name, "cleared_groups": 0}
+    undo.require_undo("workbook", app, wb, plan={"_spark_sheet": ws.Name, "_spark_location": xl.addr_of(dest),
+                                                "_spark_before": before, "_operation_barrier": barrier}, barrier_reason=barrier)
+    applied = 0
+    try:
+        for group in affected:
+            group.Delete()
+            applied += 1
+    except pywintypes.com_error as exc:
+        raise PartialChangeError(f"Sparkline clear interrupted: applied={applied} groups. {com.translate(exc)}") from None
+    return {"workbook": wb.Name, "sheet": ws.Name, "cleared_groups": applied}

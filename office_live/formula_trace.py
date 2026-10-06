@@ -298,3 +298,40 @@ def validate_trace(direction, depth, max_nodes):
         raise ToolError("depth must be an integer from 1 to 5.")
     if type(max_nodes) is not int or not 1 <= max_nodes <= 2000:
         raise ToolError("max_nodes must be an integer from 1 to 2000.")
+
+
+def same_sheet_dependency(app, wb, target, changing, max_nodes=2000):
+    """Parse a bounded transitive graph without DirectPrecedents, activation or formula evaluation."""
+    trace = Trace(app, wb, "precedents", max_nodes, max_nodes)
+    queue, seen, found = deque([target]), set(), False
+    ws = target.Worksheet
+    wanted = (int(changing.Row), int(changing.Column))
+    while queue:
+        cell = queue.popleft()
+        key = (int(cell.Row), int(cell.Column))
+        if key in seen:
+            continue
+        if len(seen) >= max_nodes:
+            trace.limited("node_limit")
+            break
+        seen.add(key)
+        if not bool(cell.HasFormula):
+            continue
+        for rng in trace.references(ws, str(cell.Formula)):
+            if rng.Worksheet.Name.casefold() != ws.Name.casefold():
+                trace.reasons.add("cross_sheet_dependency")
+                continue
+            r, c, end, right = bounds(rng)
+            if r <= wanted[0] <= end and c <= wanted[1] <= right:
+                found = True
+            for row in range(r, end + 1):
+                for col in range(c, right + 1):
+                    if (row, col) in seen:
+                        continue
+                    if len(seen) + len(queue) >= max_nodes:
+                        trace.limited("node_limit")
+                        break
+                    queue.append(ws.Cells(row, col))
+                if "node_limit" in trace.reasons:
+                    break
+    return found, not trace.reasons, sorted(trace.reasons)

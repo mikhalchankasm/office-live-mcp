@@ -28,6 +28,7 @@ class Book:
         self.Path = path
         self.FullName = (path + "\\" + name) if path else name
         self.AutoSaveOn = autosave
+        self.ProtectionType = -1  # this fake also represents Word documents
         self.Worksheets = self.Sheets = Coll([Sheet(n) for n in sheets])
         self.ActiveSheet = self.Worksheets(1)
 

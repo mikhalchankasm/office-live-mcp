@@ -64,8 +64,24 @@ def document_allowed(doc) -> bool:
     return safety.doc_allowed(document_path(doc))
 
 
+# Source-only reads and tools that do not change the content (closing without saving, saving, export, selection) are
+# allowed on a protected document; live probe: otherwise a protected document could not even be closed.
+PROTECTION_EXEMPT = frozenset({"bridge_word_table_to_excel", "bridge_word_text_to_excel", "bridge_excel_to_word_documents",
+                               "word_close_document", "word_save", "word_save_as", "word_export_pdf", "word_select"})
+
+
 def _guard_document(app, doc, allow_autosave: bool = False):
     com.note_target(f"document:{document_path(doc) or doc.Name}")
+    from .undo import _active
+
+    if com.current_kind() in WRITE_KINDS:
+        tool = _active.tool if _active is not None else ""
+        mode = int(doc.ProtectionType)
+        source_only = tool in PROTECTION_EXEMPT
+        if not source_only and mode not in {-1, 0} and tool not in {"word_restrict_editing", "office_undo"} and not (mode == 1 and tool == "word_manage_comments"):
+            from .word_layout import protection_mode
+
+            raise ToolError(f"Документ защищён (режим {protection_mode(doc)}; protected): снимите ограничение word_restrict_editing action=unprotect или попросите пользователя.")
     if com.current_kind() in WRITE_KINDS and not allow_autosave and config.SETTINGS.autosave == "block":
         try:
             auto = bool(doc.AutoSaveOn)
@@ -379,3 +395,26 @@ def collapsed_at(doc, position: str, paragraph: int = 0):
         e = int(p.End) - 1  # конец текста абзаца, до маркера
         return doc.Range(e, e)
     raise ToolError("position must be 'end', 'start', 'after_paragraph', 'before_paragraph' or 'selection'.")
+
+
+def range_location(doc, rng, paragraph=0):
+    """Cheap range metadata; Information never moves Selection or computes statistics."""
+    location = {"paragraph": paragraph or paragraph_index_at(doc, int(rng.Start)),
+                "start": int(rng.Start), "end": int(rng.End), "page": None,
+                "in_table": None, "row": None, "column": None}
+    try:
+        location["page"] = int(rng.Information(3))  # wdActiveEndPageNumber
+        location["in_table"] = bool(rng.Information(12))  # wdWithInTable
+        if location["in_table"]:
+            location["row"] = int(rng.Information(13))  # wdStartOfRangeRowNumber
+            location["column"] = int(rng.Information(16))  # wdStartOfRangeColumnNumber
+    except (AttributeError, pywintypes.com_error):
+        pass
+    return location
+
+
+def range_link(doc, paragraph, rng=None):
+    from .links import build
+
+    place = {"span": f"{int(rng.Start)}-{int(rng.End)}"} if rng is not None else {"paragraph": paragraph}
+    return build("word", doc=document_path(doc) or doc.Name, **place)

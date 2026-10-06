@@ -40,8 +40,9 @@ def describe(arguments):
     sheet = arguments.get("dest_sheet") or arguments.get("sheet", "")
     cells = next((arguments[k] for k in ("dest_cell", "cells", "cell", "top_left", "dest", "source", "lines") if arguments.get(k)), "")
     where = f"{sheet}!{cells}" if sheet and cells and "!" not in str(cells) else cells
+    fragment_edit = "expected_text" in arguments and "new_text" in arguments
     summary = ", ".join(
-        f"{key}={_brief(value)!r}" if isinstance(value, str) else f"{key}={_brief(value)}"
+        f"{key}={(value[:200] if fragment_edit and key in {'expected_text', 'new_text'} else _brief(value))!r}" if isinstance(value, str) else f"{key}={_brief(value)}"
         for key, value in arguments.items()
         if key not in {"workbook", "document", "dest_workbook", "sheet", "dest_sheet", "cells", "cell", "top_left", "dest_cell"}
     )

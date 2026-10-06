@@ -9,6 +9,20 @@ import pytest
 pytestmark = pytest.mark.live
 
 
+@pytest.fixture(autouse=True)
+def _visible_test_excel(wb):
+    """A bloated test Excel restarted mid-run (Quit while the test server still held references) stays alive but
+    hidden, and window tests then see "a target window is hidden". Make the instance that hosts OUR workbook visible."""
+    from office_live import com, xl_common
+
+    def show():
+        app, _ = xl_common.pick_workbook(wb)
+        if not bool(app.Visible):
+            app.Visible = True
+
+    com.run_com(show)
+
+
 @pytest.mark.parametrize("kind", ["excel", "word"])
 def test_own_window_status_focus_arrange_restore(srv, wb, doc, kind):
     target = {"workbook": wb} if kind == "excel" else {"document": doc}

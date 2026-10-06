@@ -3,21 +3,55 @@
 import os
 import re
 import unicodedata
+from collections import Counter
 
 import pywintypes
 
-from . import com
+from . import com, config, undo
+from . import xl_common as xl
 from .errors import PartialChangeError, ToolError
 from .registry import office_tool
 from .safety import EXCEL_EXTS, check_path
 from .util import (
-    cell_kind, MAX_COLS, MAX_ROWS, a1_cell, a1_range, col_letter, col_number, parse_a1,
-    DATE_FORMATS, excel_date_serial, parse_color, quote_sheet, smart_number, to_com_grid, to_grid,
+    DATE_FORMATS,
+    MAX_COLS,
+    MAX_ROWS,
+    a1_cell,
+    a1_range,
+    cell_kind,
+    col_letter,
+    col_number,
+    excel_date_serial,
+    parse_a1,
+    parse_color,
+    quote_sheet,
+    smart_number,
+    to_com_grid,
+    to_grid,
 )
 from .xl_common import (
-    addr_of, all_workbooks, localize_formula, workbook_allowed, suspend_events, bounded_range, bounds, clip_to_used, count_nonempty, error_cells, formula_cells, get_range,
-    pick_sheet, pick_workbook, preview, read_grid, ref_label, sheet_is_empty, sheet_names, sub_range,
-    validate_sheet_name, set_number_format,
+    addr_of,
+    all_workbooks,
+    bounded_range,
+    bounds,
+    clip_to_used,
+    count_nonempty,
+    error_cells,
+    formula_cells,
+    get_range,
+    localize_formula,
+    pick_sheet,
+    pick_workbook,
+    preview,
+    read_grid,
+    ref_label,
+    set_number_format,
+    sheet_is_empty,
+    sheet_names,
+    sub_range,
+    suspend_events,
+    validate_sheet_name,
+    workbook_allowed,
 )
 
 Cell = str | int | float | bool | None
@@ -1824,3 +1858,133 @@ def excel_calculate(workbook: str = "", scope: str = "workbook", mode: str = "")
         raise ToolError("scope must be 'workbook', 'sheet', 'full' or 'rebuild'.")
     calc = {-4105: "automatic", -4135: "manual", 2: "semiautomatic"}.get(int(app.Calculation))
     return {"ok": True, "workbook": wb.Name, "calculation_mode": calc, "scope": s}
+
+
+FUNCTIONS = {"sum": -4157, "count": -4112, "average": -4106, "max": -4136, "min": -4139,
+             "product": -4149, "count_numbers": -4113, "stdev": -4155, "stdevp": -4156, "var": -4164, "varp": -4165}
+SUBTOTAL_BARRIER = "Existing subtotals/outline cannot be reconstructed safely; this operation is an undo barrier."
+REMOVE_BARRIER = "Removing subtotals has no safe reconstruction strategy; this operation is an undo barrier."
+
+
+def _column(rng, headers, key):
+    matches = [i + 1 for i, h in enumerate(headers) if h == key]
+    if not matches:
+        matches = [i + 1 for i in range(len(headers)) if col_letter(int(rng.Column) + i) == key]
+    if len(matches) != 1:
+        raise ToolError(f"Column {key!r} was not found or is ambiguous.")
+    return matches[0]
+
+
+def outline_levels(ws, rng):
+    return [int(ws.Rows(i).OutlineLevel) for i in range(int(rng.Row), int(rng.Row) + int(rng.Rows.Count))]
+
+
+@office_tool("excel_core", "write", title="Subtotals")
+def excel_subtotals(workbook: str, sheet: str, cells: str, action: str = "add", group_by: str = "",
+                    function: str = "sum", columns: list[str] | None = None, replace_existing: bool = True,
+                    page_breaks: bool = False, summary_below: bool = True, sort_first: bool = False) -> dict:
+    """Add/remove Excel subtotals with structural undo. Existing outline/subtotals and remove create explicit barriers.
+
+    Args:
+        workbook, sheet, cells: exact workbook, sheet and required header/data rectangle within the undo limit.
+        action: add or remove.
+        group_by, columns: exact headers or absolute column letters inside the block; columns required for add.
+        function: sum/count/average/max/min/product/count_numbers/stdev/stdevp/var/varp.
+        replace_existing, page_breaks, summary_below: Subtotal options.
+        sort_first: sort by group_by, with header, before adding subtotals. Undo restores the original order.
+    """
+    if action not in {"add", "remove"} or function not in FUNCTIONS:
+        raise ToolError("Invalid action or subtotal function.")
+    if action == "add" and (not group_by or not isinstance(columns, list) or not columns or any(not isinstance(c, str) for c in columns)):
+        raise ToolError("group_by and nonempty columns are required for add.")
+    app, wb = xl.pick_workbook(workbook)
+    ws, rng = xl.get_range(wb, sheet, cells, empty_means_used=False)
+    xl.validate_rectangle(rng, ws, wb)
+    size = int(rng.Count)
+    if xl.bounds(rng)[2] >= xl.MAX_ROWS:
+        raise ToolError("Block must leave a row below it for structural undo verification.")
+    if size > config.SETTINGS.undo_max_cells:
+        raise ToolError("Block exceeds OFFICE_LIVE_UNDO_MAX_CELLS; narrow the block.")
+    if bool(ws.ProtectContents) or rng.MergeCells is not False:
+        raise ToolError("Protected sheets and merged cells are not supported.")
+    xl.reject_pivots(app, ws, rng)
+    for table in ws.ListObjects:
+        if app.Intersect(rng, table.Range) is not None:
+            raise ToolError("Block intersects an Excel table.")
+    if bool(ws.AutoFilterMode):
+        af = ws.AutoFilter
+        if app.Intersect(rng, af.Range) is not None and any(bool(f.On) for f in af.Filters):
+            raise ToolError("Block has active AutoFilter conditions.")
+    levels = outline_levels(ws, rng)
+    formulas = to_grid(rng.Formula)
+    existing = any(level != 1 for level in levels) or any(isinstance(f, str) and "SUBTOTAL(" in f.upper() for row in formulas for f in row)
+    groups = unsorted = 0
+    if action == "add":
+        if int(rng.Rows.Count) < 2:
+            raise ToolError("Block must contain a header and data rows.")
+        values = to_grid(rng.Value2)
+        headers = values[0]
+        if any(n > 1 for h, n in Counter(h for h in headers if h not in (None, "")).items()):
+            raise ToolError("Duplicate headers are ambiguous.")
+        key = _column(rng, headers, group_by)
+        totals = [_column(rng, headers, c) for c in columns]
+        if len(set(totals)) != len(totals):
+            raise ToolError("Duplicate subtotal columns.")
+        series = [row[key - 1] for row in values[1:]]
+        runs = [v for i, v in enumerate(series) if i == 0 or v != series[i - 1]]
+        counts = Counter(runs)
+        unsorted = sum(n > 1 for n in counts.values())
+        groups = len(counts) if sort_first else len(runs)
+        if not config.SETTINGS.undo:
+            raise ToolError("Subtotals add requires OFFICE_LIVE_UNDO to be enabled.")
+        # The enlarged block must also fit the fingerprint limit, before sorting or inserting any rows.
+        if (int(rng.Rows.Count) + groups + 1) * int(rng.Columns.Count) > config.SETTINGS.undo_max_cells:
+            raise ToolError("Subtotal result exceeds OFFICE_LIVE_UNDO_MAX_CELLS.")
+        if int(rng.Row) + int(rng.Rows.Count) + groups + 1 > xl.MAX_ROWS:
+            raise ToolError("Subtotal result would exceed worksheet row boundaries.")
+        if xl.bounds(ws.UsedRange)[2] + groups + 1 >= xl.MAX_ROWS:
+            raise ToolError("Subtotal insertion could shift used cells past worksheet row boundaries.")
+    barrier = REMOVE_BARRIER if action == "remove" else SUBTOTAL_BARRIER if existing else ""
+    undo.require_undo("workbook", app, wb, plan={"_subtotal_sheet": ws.Name, "_subtotal_range": xl.addr_of(rng),
+                                                "_operation_barrier": barrier}, barrier_reason=barrier)
+    old_rows = int(rng.Rows.Count)
+    below = ws.Cells(int(rng.Row) + old_rows, int(rng.Column))
+    applied = 0
+    try:
+        if action == "add":
+            if sort_first:
+                rng.Sort(ws.Cells(int(rng.Row) + 1, int(rng.Column) + key - 1), 1, None, None, 1, None, 1, 1,
+                         1, False, 1, 1, 0, 0, 0, None)
+                applied = old_rows - 1
+            rng.Subtotal(key, FUNCTIONS[function], tuple(totals), bool(replace_existing), bool(page_breaks), 1 if summary_below else 0)
+        else:
+            rng.RemoveSubtotal()
+        current = subtotal_extent(app, wb, ws, rng, below)
+        return {"workbook": wb.Name, "sheet": ws.Name, "action": action, "groups": groups,
+                "unsorted_groups": 0 if sort_first else unsorted, "inserted_rows": int(current.Rows.Count) - old_rows,
+                "range": xl.addr_of(current), "outline_levels": sorted(set(outline_levels(ws, current)))}
+    except (pywintypes.com_error, ToolError) as exc:
+        try:
+            current = subtotal_extent(app, wb, ws, rng, below)
+            delta = int(current.Rows.Count) - old_rows
+        except (pywintypes.com_error, ToolError):
+            delta = "unknown"
+            if undo._active is not None:
+                entry = undo._active.pending.get(undo.stack_key("workbook", app, wb))
+                if entry is not None:
+                    entry.barrier("Subtotal block extent is unreadable; structural undo cannot safely remove rows.")
+        raise PartialChangeError(f"Subtotal interrupted: applied={applied} sorted rows, row_delta={delta}. {com.translate(exc)}") from None
+
+
+def subtotal_extent(app, wb, ws, rng, below):
+    rows = int(below.Row) - int(rng.Row)
+    if rows < 1:
+        raise ToolError("Cannot determine subtotal block extent.")
+    r, c, _, c2 = xl.bounds(rng)
+    current = xl.sub_range(ws, r, c, r + rows - 1, c2)
+    if undo._active is not None:
+        entry = undo._active.pending.get(undo.stack_key("workbook", app, wb))
+        if entry is not None and entry.undoable:
+            entry.areas = [undo._area(current)]
+            entry.ops[0]["current_address"] = xl.addr_of(current)
+    return current

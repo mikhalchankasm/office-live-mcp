@@ -251,7 +251,7 @@ def _install(ns, setup_args: list[str]) -> int:
     for label, present in found.items():
         print(f"  {'OK   ' if present else 'НЕТ  '}{label} " + ("установлен" if present else "не установлен — его инструменты работать не будут"))
     if not any(found.values()):
-        print("  FAIL нужен настольный Excel или Word (Microsoft 365 / Office 2016+). Установите Office и запустите установку ещё раз.")
+        print("  FAIL нужен настольный Excel или Word (проверено на Microsoft 365; другие версии не проверялись). Установите Office и запустите установку ещё раз.")
         return 1
 
     _step(3, total, f"Копирование программы в {app}")

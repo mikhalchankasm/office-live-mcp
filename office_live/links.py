@@ -11,7 +11,7 @@ from .util import MAX_COLS, MAX_ROWS, parse_a1
 MAX_URI = 2048
 MAX_INDEX = 1_000_000
 MAX_LINKS = 20
-FIELDS = {"excel": {"book", "sheet", "range"}, "word": {"doc", "paragraph", "paragraphs", "table", "bookmark"}}
+FIELDS = {"excel": {"book", "sheet", "range"}, "word": {"doc", "paragraph", "paragraphs", "table", "bookmark", "span"}}
 
 
 def _fail():
@@ -90,6 +90,12 @@ def validate(app, params):
             value = params[key]
             if key in {"paragraph", "table"}:
                 _index(value)
+            elif key == "span":
+                if not re.fullmatch(r"(?:0|[1-9][0-9]{0,9})-(?:0|[1-9][0-9]{0,9})", value, flags=re.ASCII):
+                    _fail()
+                start, end = map(int, value.split("-"))
+                if not 0 <= start <= end <= 2147483647:
+                    _fail()
             elif key == "paragraphs":
                 parts = value.split("-")
                 if len(parts) != 2 or _index(parts[0]) > _index(parts[1]):

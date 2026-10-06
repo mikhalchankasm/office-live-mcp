@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+- `bridge_excel_to_word_documents` no longer flashes Word windows over the user's work. In the demo (5 rows,
+  `export_pdf=True`) every generated document opened in a visible Word window on top of Excel, first as the template with
+  unfilled `{{Manager}}`/`{{Region}}` placeholders, then as the filled letter, for the whole ~8.5 s call. Documents are
+  now generated in a separate hidden Word instance (`DispatchEx`) as windowless documents. That instance quits when the
+  call ends, also after a failure, so no hidden documents or `~$` lock files are left behind. The user's Word, its
+  documents, the active window and the foreground window (usually Excel) stay as they were. If Word still takes the
+  foreground, it is handed back, but only when Word took it. The result contract (`files`, `pdf_files`,
+  `unfilled_placeholders`, …) is unchanged.
+- Why a separate instance: windowless documents in the user's Word are unreliable. After the user closes a visible
+  document, `Close` silently fails for every other hidden document, which stay open with their lock files (checked
+  live). Opening documents visibly and hiding them at once (the 0.4.1 `word_compare_documents` pattern) still flashes a
+  window. Cost: about 2 s to start that Word per call (5 rows with PDF took ~5.8 s instead of ~3.5 s on the test machine).
+- Unit regressions with COM fakes (`tests/test_demo_fixes.py`), plus live scenarios in `tests/live/test_live_demo_fixes.py`:
+  no Word window appears during the merge, the foreground and the user's active document are unchanged, and a template
+  that is open in the user's Word works.
+
 ## 0.4.2 — 2026-10-06
 
 A normal Windows installer instead of unpacking a zip and running install.cmd.

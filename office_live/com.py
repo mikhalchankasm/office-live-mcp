@@ -313,6 +313,16 @@ def launch_app(kind: str):
     return app
 
 
+def private_app(kind: str):
+    """Отдельный невидимый экземпляр (DispatchEx) для фоновой работы: экземпляр пользователя, его окна и документы
+    не затрагиваются. Закрывает экземпляр (Quit) вызывающий — и при сбое тоже."""
+    info = APPS[kind]
+    try:
+        return Proxy(win32com.client.DispatchEx(info["progid"]))
+    except pywintypes.com_error as exc:
+        raise ToolError(f"Could not start a background {info['label']} (is it installed?): " + com_error_text(exc)) from None
+
+
 def apps(kind: str, launch: bool = False) -> list:
     """Все запущенные экземпляры приложения (активный в ROT — первым). launch=True — запустить, если нет ни одного."""
     primary = _active_object(APPS[kind]["progid"])

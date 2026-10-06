@@ -1,4 +1,4 @@
-"""Регрессии дефектов, найденных на живых Excel/Word при съёмке демо 2026-10-05 (подделки COM, без Office).
+"""Регрессии дефектов, найденных на живых Excel/Word при съёмке демо 2026-10-05 и 2026-10-06 (подделки COM, без Office).
 
 Отмена условного форматирования — в test_undo.py, формат чисел с LCID 1033 — в test_util.py; живые сценарии всех
 пунктов — в tests/live/test_live_demo_fixes.py.
@@ -241,3 +241,127 @@ def test_number_format_unsupported_lcid_write_falls_back_to_local(monkeypatch):
     monkeypatch.setattr(xl_common, "number_format_for_write", lambda app, fmt, shortcuts=None: "local:" + fmt)
     xl_common.set_number_format(NS(), cell, "0.00")
     assert cell.NumberFormat == "local:0.00"
+
+
+# ------------------------------------------------------------------ слияние Excel -> Word без окон (демо 2026-10-06)
+
+
+class MergeDoc:
+    def __init__(self, word, template, visible):
+        self.word, self.template, self.visible, self.closed = word, template, visible, False
+
+    def SaveAs2(self, path, fmt, /):
+        assert fmt == 16 and self.word.DisplayAlerts == 0
+        if self.word.fail_save_at == len(self.word.added):
+            raise com_error("Диск переполнен")
+        open(path, "w").close()
+
+    def ExportAsFixedFormat(self, path, *args):
+        open(path, "w").close()
+
+    def Close(self, save, /):
+        assert save == 0
+        self.closed = True
+        self.word.docs.remove(self)
+
+
+class PrivateWord:
+    """Фоновый Word слияния (DispatchEx): невидимый, свой для каждого вызова."""
+
+    def __init__(self, desktop):
+        self.desktop, self.docs, self.added, self.quits = desktop, [], [], []
+        self.AutomationSecurity, self.DisplayAlerts, self.Visible = 1, True, False
+        self.NormalTemplate = NS(Saved=False)
+        self.fail_save_at, self.steal_focus = 0, False
+        self.Documents = NS(Add=self.add)
+
+    def add(self, template, new_template, doc_type, visible, /):
+        assert self.AutomationSecurity == 3 and not self.quits  # макросы шаблона отключены
+        doc = MergeDoc(self, template, visible)
+        self.docs.append(doc)
+        self.added.append(doc)
+        if self.steal_focus:  # например, диалог Word вышел на передний план
+            self.desktop.foreground_hwnd = 84
+        return doc
+
+    def Quit(self, save, /):
+        assert self.NormalTemplate.Saved is True  # без вопроса о сохранении Normal.dotm
+        self.quits.append(save)
+        self.docs.clear()
+
+
+@pytest.fixture
+def merge(monkeypatch, tmp_path):
+    from office_live import bridge, com
+    from tests.window_fakes import FakeWin32
+
+    desktop = FakeWin32()
+    desktop.foreground_hwnd = 42  # пользователь работает в Excel
+    word = PrivateWord(desktop)
+    rows = [["Name", "Region"], ["Ivanov", "North"], ["Petrov", "South"], ["Sidorov", "East"]]
+    monkeypatch.setattr(bridge, "Win32", lambda: desktop)
+    launched = []
+    monkeypatch.setattr(com, "private_app", lambda kind: launched.append(kind) or word)
+
+    def user_apps(kind, launch=False):  # демо: документы создавались в Word пользователя и показывались поверх Excel
+        raise AssertionError(f"the user's {kind} must not be used for the merge")
+
+    monkeypatch.setattr(com, "apps", user_apps)
+    monkeypatch.setattr(bridge, "pick_workbook", lambda name: ("excel", "book"))
+    monkeypatch.setattr(bridge, "get_range", lambda wb, sheet, cells: ("sheet", NS(Rows=NS(Count=len(rows)))))
+    monkeypatch.setattr(bridge, "read_grid", lambda rng, what: rows)
+
+    def fill(doc, values, left, right, scope):
+        assert not doc.closed and doc.visible is False
+        return {"replaced": {}, "unfilled_placeholders": ["Manager"]}
+
+    monkeypatch.setattr(bridge, "fill_placeholders", fill)
+    template = tmp_path / "letter.docx"
+    template.write_text("template")
+
+    def run(**kwargs):
+        return bridge.bridge_excel_to_word_documents("Book.xlsx", "A1:B4", str(template), str(tmp_path / "out"), filename_column="Name", **kwargs)
+
+    return NS(word=word, desktop=desktop, run=run, launched=launched, out=tmp_path / "out", template=template)
+
+
+def test_merge_runs_in_a_private_hidden_word_and_quits_it(merge):
+    result = merge.run(export_pdf=True)
+    assert result["files"] == ["Ivanov.docx", "Petrov.docx", "Sidorov.docx"]
+    assert result["pdf_files"] == ["Ivanov.pdf", "Petrov.pdf", "Sidorov.pdf"] and result["unfilled_placeholders"] == ["Manager"]
+    assert merge.launched == ["word"] and merge.word.Visible is False and merge.word.quits == [0]
+    assert len(merge.word.added) == 3 and all(d.visible is False and d.closed for d in merge.word.added)
+    assert all(d.template == str(merge.template) for d in merge.word.added) and merge.word.AutomationSecurity == 1
+    assert merge.desktop.foreground_hwnd == 42 and not merge.desktop.calls  # передний план не трогали
+    assert sorted(p.name for p in merge.out.iterdir()) == ["Ivanov.docx", "Ivanov.pdf", "Petrov.docx", "Petrov.pdf", "Sidorov.docx", "Sidorov.pdf"]
+
+
+def test_merge_failure_closes_the_document_quits_word_and_restores_the_foreground(merge):
+    merge.word.fail_save_at, merge.word.steal_focus = 2, True
+    with pytest.raises(ToolError, match=r"Stopped at data row 2 \(Petrov.docx\).*Created before the failure: 1 document"):
+        merge.run()
+    assert [d.closed for d in merge.word.added] == [True, True] and merge.word.quits == [0]
+    assert merge.desktop.foreground_hwnd == 42 and ("focus", 42, 42) in merge.desktop.calls  # Excel снова впереди
+    assert sorted(p.name for p in merge.out.iterdir()) == ["Ivanov.docx"]
+
+
+def test_merge_does_not_take_the_foreground_back_from_another_app(merge):
+    original_add = merge.word.add
+
+    def add_and_switch(*args):  # пользователь сам ушёл в браузер — не возвращаем его в Excel
+        merge.desktop.foreground_hwnd = 142
+        return original_add(*args)
+
+    merge.word.Documents.Add = add_and_switch
+    merge.run()
+    assert merge.desktop.foreground_hwnd == 142 and not merge.desktop.calls
+
+
+def test_merge_without_win32_still_works(merge, monkeypatch):
+    from office_live import bridge
+
+    def unavailable():
+        raise OSError("user32 unavailable")
+
+    monkeypatch.setattr(bridge, "Win32", unavailable)
+    assert merge.run()["documents_created"] == 3 and merge.word.quits == [0]

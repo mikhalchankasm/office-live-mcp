@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Office Live MCP — web test</title>
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <style>
+    body { font: 13px/1.45 "Segoe UI", system-ui, sans-serif; margin: 12px; color: #1f2328; background: #fff; }
+    h1 { font-size: 15px; margin: 0 0 4px; }
+    p { margin: 4px 0 10px; color: #555; }
+    button { font: inherit; padding: 6px 14px; border: 0; border-radius: 4px; background: #217346; color: #fff; cursor: pointer; }
+    button:disabled { background: #999; cursor: default; }
+    #verdict { margin: 10px 0; padding: 8px; border-radius: 4px; font-weight: 600; display: none; }
+    #verdict.ok { display: block; background: #e6f4ea; color: #145c2e; }
+    #verdict.bad { display: block; background: #fdecea; color: #8a1c13; }
+    #log { margin-top: 8px; font: 12px/1.4 Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
+    .ok { color: #145c2e; } .bad { color: #b42318; } .dim { color: #777; }
+  </style>
+</head>
+<body>
+  <h1>Office Live MCP — проверка браузера</h1>
+  <p>Откройте <b>пустую</b> книгу. Тест запишет пару ячеек в A1:B2 текущего листа.</p>
+  <button id="run" disabled>Проверить подключение</button>
+  <div id="verdict"></div>
+  <div id="log"></div>
+  <script src="taskpane.js"></script>
+</body>
+</html>

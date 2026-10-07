@@ -1,8 +1,5 @@
 "use strict";
 // Feasibility test: can an add-in in Excel on the web reach a server on 127.0.0.1?
-const PORT = 47863;
-const HTTP_URL = `http://127.0.0.1:${PORT}/ping`;
-const WS_URL = `ws://127.0.0.1:${PORT}/ws`;
 const logBox = document.getElementById("log");
 const button = document.getElementById("run");
 const verdict = document.getElementById("verdict");
@@ -35,20 +32,6 @@ async function permissionInfo() {
     try { out[name] = (await navigator.permissions.query({ name })).state; } catch (e) { out[name] = "unsupported"; }
   }
   return out;
-}
-
-async function tryFetch() {
-  const started = performance.now();
-  try {
-    const resp = await fetch(HTTP_URL, { cache: "no-store" });
-    const body = await resp.json();
-    const ms = Math.round(performance.now() - started);
-    log(`HTTP fetch: OK ${resp.status} за ${ms} мс (сервер ${body.server})`, "ok");
-    return { ok: true, ms };
-  } catch (e) {
-    log(`HTTP fetch: ошибка — ${e.name}: ${e.message}`, "bad");
-    return { ok: false, error: `${e.name}: ${e.message}` };
-  }
 }
 
 // Excel calls requested by the server.
@@ -86,34 +69,14 @@ const handlers = {
   },
 };
 
-function tryWebSocket(fetchResult) {
+function driveSocket(ws, fetchResult) {
   return new Promise((resolve) => {
-    const started = performance.now();
-    let opened = false;
-    let ws;
-    try {
-      ws = new WebSocket(WS_URL);
-    } catch (e) {
-      log(`WebSocket: исключение — ${e.name}: ${e.message}`, "bad");
-      resolve({ ok: false, error: `${e.name}: ${e.message}` });
-      return;
-    }
-    ws.onopen = () => {
-      opened = true;
-      log(`WebSocket: подключено за ${Math.round(performance.now() - started)} мс`, "ok");
-      ws.send(JSON.stringify({
-        type: "hello", ua: navigator.userAgent, origin: location.origin,
-        host: Office.context.host, platform: Office.context.platform,
-        excelApi17: Office.context.requirements.isSetSupported("ExcelApi", "1.7"),
-        fetch: fetchResult, policy: report.policy, permissions: report.permissions,
-      }));
-    };
     ws.onmessage = async (event) => {
       const msg = JSON.parse(event.data);
       if (msg.type === "call") {
         try {
           const result = await handlers[msg.method](msg.params || {});
-          if (msg.method !== "read" || !msg.quiet) log(`сервер → ${msg.method}: OK`, "ok");
+          if (!msg.quiet) log(`сервер → ${msg.method}: OK`, "ok");
           ws.send(JSON.stringify({ type: "result", id: msg.id, result }));
         } catch (e) {
           log(`сервер → ${msg.method}: ошибка — ${e.message}`, "bad");
@@ -126,13 +89,13 @@ function tryWebSocket(fetchResult) {
         resolve({ ok: true });
       }
     };
-    ws.onerror = () => log("WebSocket: событие error (подробности браузер не сообщает)", "bad");
-    ws.onclose = (event) => {
-      if (!opened) {
-        log(`WebSocket: не подключился, код ${event.code}`, "bad");
-        resolve({ ok: false, error: `closed before open, code ${event.code}` });
-      }
-    };
+    ws.onclose = () => resolve({ ok: false, error: "closed during test" });
+    ws.send(JSON.stringify({
+      type: "hello", ua: navigator.userAgent, origin: location.origin, wsUrl: ws.url,
+      host: Office.context.host, platform: Office.context.platform,
+      excelApi17: Office.context.requirements.isSetSupported("ExcelApi", "1.7"),
+      fetch: fetchResult, policy: report.policy, permissions: report.permissions,
+    }));
   });
 }
 
@@ -146,8 +109,9 @@ async function run() {
   log(`Origin: ${location.origin}; Office: ${Office.context.host} / ${Office.context.platform}`, "dim");
   log(`Permissions-Policy: ${JSON.stringify(report.policy)}`, "dim");
   log(`Разрешения: ${JSON.stringify(report.permissions)}`, "dim");
-  report.steps.fetch = await tryFetch();
-  report.steps.ws = await tryWebSocket(report.steps.fetch);
+  report.steps.fetch = await diagFetchVariants(log);
+  const ws = await diagSocket(log);
+  report.steps.ws = ws ? await driveSocket(ws, report.steps.fetch) : { ok: false };
   if (!report.steps.ws.ok) {
     setVerdict(false, "✗ Браузер не пустил надстройку к серверу на компьютере. Если браузер спрашивал разрешение — нажмите «Разрешить» и повторите.");
   }

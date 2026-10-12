@@ -398,14 +398,13 @@ def excel_format_ranges(workbook: str, sheet: str, ranges: list[dict]) -> dict:
             if not isinstance(value, expected) or (key in number_keys and isinstance(value, bool)):
                 raise ToolError(f"Invalid value for formatting parameter: {key}.")
     app, wb = pick_workbook(workbook)
-    ws = pick_sheet(wb, sheet)
     plans, specs = [], []
     for spec in ranges:
-        _, rng = get_range(wb, ws.Name, spec["cells"], empty_means_used=False)
+        ws, rng = get_range(wb, sheet, spec["cells"], empty_means_used=False)
         xl.validate_rectangle(rng, ws, wb)
         plans.append(_prepare_format(app, wb, ws, rng, **spec["format"]))
-        specs.append({"cells": addr_of(rng), "format": spec["format"]})
-    undo.require_undo("workbook", app, wb, plan={"sheet": ws.Name, "_format_ranges": specs})
+        specs.append({"cells": xl.ref_label(ws, rng), "format": spec["format"]})
+    undo.require_undo("workbook", app, wb, plan={"sheet": sheet, "_format_ranges": specs})
     results = []
     try:
         for apply in plans:

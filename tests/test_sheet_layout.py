@@ -16,6 +16,95 @@ def formats(o, ranges):
     return o.call("excel_format_ranges", workbook=o.wb.Name, sheet="Data", ranges=ranges)
 
 
+@pytest.fixture
+def qualified_sheets(office):
+    office.ws.Name = "Sheet1"
+    target = office.wb.Worksheets.Add()
+    target.Name = "Sheet2"
+    office.ws.Activate()
+    assert office.wb.ActiveSheet is office.ws
+    return office.ws, target
+
+
+@pytest.mark.parametrize("kwargs,widths,heights", [
+    ({"column_width": 22}, [22, 22, 22], [15, 15, 15]),
+    ({"row_height": 30}, [8.43, 8.43, 8.43], [30, 30, 30]),
+    ({"column_widths": {"A": 22, "C": 24}}, [22, 8.43, 24], [15, 15, 15]),
+    ({"row_heights": {"1": 30, "3": 32}}, [8.43, 8.43, 8.43], [30, 15, 32]),
+    ({"autofit": "columns"}, [22, 22, 22], [15, 15, 15]),
+    ({"autofit": "rows"}, [8.43, 8.43, 8.43], [30, 30, 30]),
+    ({"autofit": "both"}, [22, 22, 22], [30, 30, 30]),
+])
+def test_dimensions_resolve_qualified_cells_with_blank_sheet(
+    office, qualified_sheets, monkeypatch, kwargs, widths, heights,
+):
+    active, target = qualified_sheets
+    calls, fit_sheets = [], []
+
+    def effect(rng, axis):
+        fit_sheets.append(rng.Worksheet)
+        if axis == "Columns":
+            rng.ColumnWidth = 22
+        else:
+            rng.RowHeight = 30
+
+    autofit_spy(monkeypatch, calls, effect)
+    result = office.call("excel_set_dimensions", workbook=office.wb.Name,
+                         sheet="", cells="Sheet2!A1:C3", **kwargs)
+    assert result["sheet"] == "Sheet2" and result["undo"] == "available"
+    assert [target.Columns(i).ColumnWidth for i in range(1, 4)] == widths
+    assert [target.Rows(i).RowHeight for i in range(1, 4)] == heights
+    if "autofit" in kwargs:
+        mode = kwargs["autofit"]
+        expected = []
+        if mode in {"columns", "both"}:
+            expected += [("Columns", f"{col}1:{col}3") for col in "ABC"]
+        if mode in {"rows", "both"}:
+            expected += [("Rows", f"A{row}:C{row}") for row in range(1, 4)]
+        assert calls == expected
+        assert all(ws is target for ws in fit_sheets)
+    else:
+        assert calls == []
+    assert [active.Columns(i).ColumnWidth for i in range(1, 4)] == [active.StandardWidth] * 3
+    assert [active.Rows(i).RowHeight for i in range(1, 4)] == [15] * 3
+    assert len(stack(office)) == 1
+    revert(office)
+    assert [target.Columns(i).ColumnWidth for i in range(1, 4)] == [target.StandardWidth] * 3
+    assert [target.Rows(i).RowHeight for i in range(1, 4)] == [15] * 3
+
+
+def test_format_ranges_resolve_qualified_cells_with_blank_sheet(office, qualified_sheets):
+    active, target = qualified_sheets
+    result = office.call("excel_format_ranges", workbook=office.wb.Name, sheet="", ranges=[
+        {"cells": "Sheet2!A1:C3", "format": {"bold": True}},
+        {"cells": "Sheet2!B2:C3", "format": {"italic": True}},
+    ])
+    assert result["sheet"] == "Sheet2" and result["undo"] == "available"
+    assert all(r["sheet"] == "Sheet2" for r in result["ranges"])
+    assert target.Range("A1:C3").Font.Bold is True
+    assert target.Range("B2:C3").Font.Italic is True
+    assert active.Range("A1:C3").Font.Bold is False
+    assert active.Range("A1:C3").Font.Italic is False
+    assert len(stack(office)) == 1
+    revert(office)
+    assert target.Range("A1:C3").Font.Bold is False
+    assert target.Range("A1:C3").Font.Italic is False
+
+
+@pytest.mark.parametrize("tool", ["excel_set_dimensions", "excel_format_ranges"])
+def test_layout_still_rejects_explicit_conflicting_sheets(office, qualified_sheets, tool):
+    active, target = qualified_sheets
+    kwargs = ({"cells": "Sheet2!A1:C3", "column_width": 22}
+              if tool == "excel_set_dimensions" else
+              {"ranges": [{"cells": "Sheet2!A1:C3", "format": {"bold": True}}]})
+    with pytest.raises(ToolError, match="Conflicting sheets"):
+        office.call(tool, workbook=office.wb.Name, sheet="Sheet1", **kwargs)
+    for ws in (active, target):
+        assert ws.Range("A1:C3").Font.Bold is False
+        assert [ws.Columns(i).ColumnWidth for i in range(1, 4)] == [ws.StandardWidth] * 3
+    assert stack(office) == []
+
+
 def test_ten_widths_and_row_heights_one_call_one_undo(office):
     o = office
     widths = {chr(65 + i): 12 + i for i in range(10)}

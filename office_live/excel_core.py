@@ -1389,8 +1389,8 @@ def excel_set_dimensions(
     options = dict(cells=cells, column_width=column_width, row_height=row_height,
                    autofit=autofit, column_widths=column_widths, row_heights=row_heights)
     app, wb = pick_workbook(workbook)
-    ws = pick_sheet(wb, sheet)
-    targets, fit_range, mode = _dimension_targets(wb, ws.Name, options)
+    ws, _ = get_range(wb, sheet, cells)
+    targets, fit_range, mode = _dimension_targets(wb, sheet, options)
     snapshots = [{"cells": addr_of(rng), "property": prop} for rng, prop, _ in targets]
     for axis, prop in (("columns", "ColumnWidth"), ("rows", "RowHeight")):
         if mode in {axis, "both"}:
@@ -1434,6 +1434,8 @@ def _dimension_targets(wb, sheet, args):
     if mode and mode not in {"columns", "rows", "both"}:
         raise ToolError("autofit must be 'columns', 'rows' or 'both'.")
     ws, used = get_range(wb, sheet, args.get("cells", ""))
+    # The undo caller reuses these arguments to resolve unqualified snapshots.
+    args["sheet"] = ws.Name
     targets = []
     def size(value, prop):
         limit = 255 if prop == "ColumnWidth" else 409.5

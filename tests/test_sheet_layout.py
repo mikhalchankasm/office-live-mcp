@@ -1,9 +1,11 @@
 """Issue #13: batch layout operations, using fake COM only."""
 
+from functools import wraps
+
 import pytest
 
 from office_live import excel_core, xl_common as xl
-from office_live.errors import ToolError
+from office_live.errors import PartialChangeError, ToolError
 from tests.history_fakes import Range, fake_office  # noqa: F401
 from tests.test_undo import revert, stack
 
@@ -197,8 +199,58 @@ def test_autofit_refuses_oversized_used_range_before_com(office, monkeypatch):
     assert calls == [] and stack(o) == []
 
 
+@pytest.mark.parametrize("mode,strip_count", [("columns", 3), ("rows", 2), ("both", 5)])
+def test_final_autofit_strip_crossing_deadline_succeeds(office, monkeypatch, mode, strip_count):
+    o = office
+    now = [0.0]
+    monkeypatch.setattr(excel_core.time, "monotonic", lambda: now[0])
+    calls = []
+
+    def fit(rng, axis):
+        if axis == "Columns":
+            rng.ColumnWidth = 22
+        else:
+            rng.RowHeight = 30
+        if len(calls) == strip_count:
+            now[0] = 6.0
+
+    autofit_spy(monkeypatch, calls, fit)
+    result = dimensions(o, cells="A1:C2", autofit=mode)
+    assert now[0] == 6.0
+    assert result["ok"] is True and result["applied"] == [f"autofit={mode}"]
+    assert result["undo"] == "available" and len(stack(o)) == 1
+    expected = []
+    if mode in {"columns", "both"}:
+        expected += [("Columns", f"{col}1:{col}2") for col in "ABC"]
+    if mode in {"rows", "both"}:
+        expected += [("Rows", f"A{row}:C{row}") for row in range(1, 3)]
+    assert calls == expected
+    assert [o.ws.Columns(i).ColumnWidth for i in range(1, 4)] == (
+        [22] * 3 if mode in {"columns", "both"} else [o.ws.StandardWidth] * 3
+    )
+    assert [o.ws.Rows(i).RowHeight for i in range(1, 3)] == (
+        [30] * 2 if mode in {"rows", "both"} else [15] * 2
+    )
+    revert(o)
+    assert [o.ws.Columns(i).ColumnWidth for i in range(1, 4)] == [o.ws.StandardWidth] * 3
+    assert [o.ws.Rows(i).RowHeight for i in range(1, 3)] == [15] * 2
+
+
 def test_autofit_deadline_stops_following_calls_and_preserves_undo(office, monkeypatch):
     o = office
+    partial_errors = []
+    original = excel_core.excel_set_dimensions
+
+    @wraps(original)
+    def observe_partial_error(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except PartialChangeError as exc:
+            partial_errors.append(exc)
+            raise
+
+    # Observe the core error before the undo/registry layers translate it to ToolError.
+    monkeypatch.setattr(excel_core, "excel_set_dimensions", observe_partial_error)
     o.ws.Range("A1:J336").Value = "content"
     now = [0.0]
     monkeypatch.setattr(excel_core.time, "monotonic", lambda: now[0])
@@ -209,7 +261,11 @@ def test_autofit_deadline_stops_following_calls_and_preserves_undo(office, monke
     autofit_spy(monkeypatch, calls, slow)
     with pytest.raises(ToolError, match="[Aa]utofit.*time.*office_undo"):
         dimensions(o, autofit="both")
+    assert len(partial_errors) == 1
     assert len(calls) == 1 and len(stack(o)) == 1
+    assert o.ws.Columns(1).ColumnWidth == 22
+    assert [o.ws.Columns(i).ColumnWidth for i in range(2, 11)] == [o.ws.StandardWidth] * 9
+    assert [o.ws.Rows(i).RowHeight for i in range(1, 337)] == [15] * 336
     revert(o)
     assert o.ws.Columns(1).ColumnWidth == o.ws.StandardWidth
 

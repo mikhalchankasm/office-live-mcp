@@ -1417,7 +1417,8 @@ def excel_set_dimensions(
                     strip = sub_range(ws, r1, i, r2, i) if axis == "columns" else sub_range(ws, i, c1, i, c2)
                     attempted = True
                     (strip.Columns if axis == "columns" else strip.Rows).AutoFit()
-                    check_time()
+                    if axis != axes[-1] or i != (c2 if axis == "columns" else r2):
+                        check_time()
             applied.append(f"autofit={mode}")
     except (pywintypes.com_error, ToolError) as exc:
         if attempted:

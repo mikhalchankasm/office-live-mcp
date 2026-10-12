@@ -3,6 +3,30 @@
 Каталог основных инструментов работы с документами и данными. Полный список доступен командой `python -m office_live tools --markdown`. Описания — на английском: их читает агент.
 Вид `write (readonly: list)` — многоактный инструмент: в режиме `OFFICE_LIVE_MODE=readonly` доступны только перечисленные действия чтения.
 
+## Compact responses
+
+`excel_find`, `excel_compare_ranges`, `excel_find_issues`, `excel_trace_formula`, `word_find` and
+`word_get_structure` accept `per_match_links` (boolean, default `false`). They return at most one
+file-level `officelive://` link for the whole result. Match addresses, differences, examples, nodes and
+paragraph numbers remain in their existing fields. For a comparison across workbooks, the compact link
+opens the first workbook with a reported difference. Pass `per_match_links=true` for the previous
+individual-location links, still deduplicated and capped at 20 with `links_truncated` indicating the cap.
+Results without a linkable location keep their previous behavior. Write/undo links are unchanged.
+
+`excel_write_range` accepts `readback`:
+
+| Mode | Returned read-back |
+|---|---|
+| `full` (default) | Existing `readback` value grid preview (normally up to 200 cells), `readback_types` counts and `errors`; existing keys and behavior are preserved. |
+| `summary` | `readback` object with actual target `shape` (rows, columns), `total_cells`, `nonempty_cells`, `empty_cells` and up to five row-major `samples` (`cell`, `value`). `readback_types` counts all nonempty values by type. No full value grid is echoed. |
+| `none` | Omits `readback` and `readback_types`; retains write metadata and `errors`. No sample values are echoed. |
+
+Summary and none scan the entire written target in chunks, so errors beyond the samples or the default
+preview are still reported. All modes retain the existing limit of 20 reported error cells. `written_shape`
+continues to describe the supplied values; summary `shape` describes the actual target, including scalar
+fills and expanded blocks. These options change response detail only; undo snapshots and journal recording
+are unchanged.
+
 ### history (2)
 
 | Tool | Kind | What it does |

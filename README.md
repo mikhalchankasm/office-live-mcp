@@ -63,6 +63,11 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 **123 tools** for Excel, Word and document workflows — formulas, data cleanup, goal seek, pivots, charts, templates,
 comment threads and more. [Full catalog →](docs/TOOLS.md)
 
+For compact responses, searches, comparisons, issue reports, formula traces and Word outlines return at most one
+`officelive://` link for the whole result; request `per_match_links=true` for individual locations.
+`excel_write_range` keeps its existing read-back by default. Use `readback="summary"` for shape, counts, errors and
+up to five sample cells, or `readback="none"` to omit value echoes. Undo and journaling work as before.
+
 ## Install
 
 > **Requirements:** Windows 10/11 (64-bit) and desktop Excel and/or Word.

@@ -160,9 +160,10 @@ def _result_links(recording, result):
         return
     tool, args = recording.tool, recording.args
     found, seen = [], set()
+    compact = tool in {"excel_find", "excel_compare_ranges", "excel_find_issues", "excel_trace_formula", "word_find", "word_get_structure"} and not args.get("per_match_links", False)
 
     def add(app, obj, **place):
-        if len(found) > links.MAX_LINKS:
+        if (compact and found) or len(found) > links.MAX_LINKS:
             return
         try:
             if app == "excel":
@@ -174,7 +175,9 @@ def _result_links(recording, result):
                 place = {"sheet": str(ws.Name), "range": links.a1(place["range"])}
             else:
                 word_range(obj, {k: str(v) for k, v in place.items()})
-            link = item(app, obj, **place)
+            # One file-level link represents the whole read result, including multiple sheets.
+            # Write destinations are left intact for undo and journal records.
+            link = item(app, obj, **({} if compact else place))
             if link["uri"] not in seen:
                 seen.add(link["uri"])
                 found.append(link)

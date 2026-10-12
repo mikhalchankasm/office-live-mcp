@@ -1,7 +1,9 @@
 """Excel: книги, листы, чтение/запись, формулы, структура, сортировка, фильтры, имена, выделение."""
 
+import math
 import os
 import re
+import time
 import unicodedata
 from collections import Counter
 
@@ -1365,40 +1367,114 @@ def excel_set_dimensions(
     column_width: float | None = None,
     row_height: float | None = None,
     autofit: str = "",
+    column_widths: dict[str, float] | None = None,
+    row_heights: dict[str, float] | None = None,
 ) -> dict:
-    """Set column width / row height or autofit them (to hide rows/columns use excel_hide_rows_columns).
+    """Set column widths / row heights individually or in maps, or autofit the used range with size/time guards.
 
     Args:
         workbook: exact workbook name.
         sheet: sheet name ('' = active).
-        cells: range whose columns/rows are affected ('' = the whole sheet for autofit).
+        cells: range whose columns/rows are affected ('' = used range for autofit; entire sheet for scalar sizes).
         column_width: width in characters (e.g. 12).
         row_height: height in points (e.g. 18).
-        autofit: 'columns', 'rows' or 'both' - fit to content.
+        autofit: 'columns', 'rows' or 'both' - fit to content; at most 100000 cells and 1000 dimensions, with a 5 s budget checked between COM calls.
+        column_widths: map of individual column letters or 1-based indices to widths, e.g. {'A': 12, 'B': 24}.
+        row_heights: map of individual 1-based row indices to heights, e.g. {'1': 24, '3': 18}.
+
+    Scalar sizes are applied first, then maps, then autofit. One office_undo entry restores all dimensions.
+    A synchronous Excel COM call cannot be interrupted; the time budget stops subsequent calls and retains undo for partial changes.
     """
+    deadline = time.monotonic() + 5.0
+    options = dict(cells=cells, column_width=column_width, row_height=row_height,
+                   autofit=autofit, column_widths=column_widths, row_heights=row_heights)
     app, wb = pick_workbook(workbook)
-    ws, rng = get_range(wb, sheet, cells)
-    if not cells:
-        rng = ws.Cells
+    targets, fit_range, mode = _dimension_targets(wb, sheet, options)
+    ws = fit_range.Worksheet
+    snapshots = [{"cells": ref_label(rng.Worksheet, rng), "property": prop} for rng, prop, _ in targets]
+    for axis, prop in (("columns", "ColumnWidth"), ("rows", "RowHeight")):
+        if mode in {axis, "both"}:
+            snapshots.append({"cells": ref_label(ws, fit_range), "property": prop})
+    if mode or column_widths is not None or row_heights is not None:
+        undo.require_undo("workbook", app, wb, plan={"sheet": ws.Name, "_dimension_targets": snapshots})
     applied = []
-    if column_width is not None:
-        rng.ColumnWidth = float(column_width)
-        applied.append(f"column_width={column_width}")
-    if row_height is not None:
-        rng.RowHeight = float(row_height)
-        applied.append(f"row_height={row_height}")
-    if autofit:
-        mode = autofit.lower()
-        if mode in ("columns", "both"):
-            rng.Columns.AutoFit()
-        if mode in ("rows", "both"):
-            rng.Rows.AutoFit()
-        if mode not in ("columns", "rows", "both"):
-            raise ToolError("autofit must be 'columns', 'rows' or 'both'.")
-        applied.append(f"autofit={mode}")
-    if not applied:
-        raise ToolError("Nothing to do: pass column_width, row_height or autofit.")
-    return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng) if cells else "entire sheet", "applied": applied}
+    attempted = False
+    try:
+        for rng, prop, value in targets:
+            attempted = True
+            setattr(rng, prop, value)
+            applied.append(f"{addr_of(rng)}: {prop}={value}")
+        if mode:
+            r1, c1, r2, c2 = bounds(fit_range)
+            def check_time():
+                if time.monotonic() >= deadline:
+                    raise ToolError("Autofit time limit (5 s) exceeded; use a smaller cells range or explicit dimension maps.")
+            # Small strips keep each call bounded in work and permit deadline checks.
+            axes = ["columns", "rows"] if mode == "both" else [mode]
+            for axis in axes:
+                for i in (range(c1, c2 + 1) if axis == "columns" else range(r1, r2 + 1)):
+                    check_time()
+                    strip = sub_range(ws, r1, i, r2, i) if axis == "columns" else sub_range(ws, i, c1, i, c2)
+                    attempted = True
+                    (strip.Columns if axis == "columns" else strip.Rows).AutoFit()
+                    if axis != axes[-1] or i != (c2 if axis == "columns" else r2):
+                        check_time()
+            applied.append(f"autofit={mode}")
+    except (pywintypes.com_error, ToolError) as exc:
+        if attempted:
+            raise PartialChangeError(f"Dimensions interrupted. {com.translate(exc)}") from None
+        undo.cancel_prepared("workbook", app, wb)
+        raise
+    address = addr_of(fit_range) if mode else cells or ("mapped dimensions" if column_widths or row_heights else "entire sheet")
+    return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": address, "applied": applied}
+
+
+def _dimension_targets(wb, sheet, args):
+    """Validate the complete layout before snapshotting or changing dimensions."""
+    mode = args.get("autofit", "").lower()
+    if mode and mode not in {"columns", "rows", "both"}:
+        raise ToolError("autofit must be 'columns', 'rows' or 'both'.")
+    _, used = get_range(wb, sheet, args.get("cells", ""))
+    ws = used.Worksheet
+    # The undo caller reuses these arguments to resolve unqualified snapshots.
+    args["sheet"] = ws.Name
+    targets = []
+    def size(value, prop):
+        limit = 255 if prop == "ColumnWidth" else 409.5
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 0 <= value <= limit:
+            raise ToolError(f"{prop} must be a finite number between 0 and {limit}.")
+        return float(value)
+    for key, prop in (("column_width", "ColumnWidth"), ("row_height", "RowHeight")):
+        if args.get(key) is not None:
+            scalar_range = used if args.get("cells") else ws.Cells
+            targets.append((scalar_range, prop, size(args[key], prop)))
+    for key, prop in (("column_widths", "ColumnWidth"), ("row_heights", "RowHeight")):
+        mapping = args.get(key)
+        if mapping is None:
+            continue
+        if not isinstance(mapping, dict):
+            raise ToolError(f"{key} must be a map of individual columns/rows to sizes.")
+        for label, value in mapping.items():
+            label = str(label)
+            if prop == "ColumnWidth" and re.fullmatch(r"[A-Za-z]{1,3}", label):
+                index = col_number(label)
+            elif re.fullmatch(r"[1-9][0-9]*", label):
+                index = int(label)
+            else:
+                raise ToolError(f"Invalid {key} index: {label!r}.")
+            if index > (MAX_COLS if prop == "ColumnWidth" else MAX_ROWS):
+                raise ToolError(f"Invalid {key} index: {label!r}.")
+            # A one-cell range changes its whole column/row without huge range snapshots.
+            rng = ws.Range(a1_cell(1, index) if prop == "ColumnWidth" else a1_cell(index, 1))
+            targets.append((rng, prop, size(value, prop)))
+    if mode:
+        rows, cols = int(used.Rows.Count), int(used.Columns.Count)
+        count = (cols if mode in {"columns", "both"} else 0) + (rows if mode in {"rows", "both"} else 0)
+        if rows * cols > 100000 or count > 1000:
+            raise ToolError("Autofit size limit exceeded (100000 cells / 1000 dimensions); use a smaller cells range or explicit dimension maps.")
+    if not targets and not mode:
+        raise ToolError("Nothing to do: pass column_width, row_height, column_widths, row_heights or autofit.")
+    return targets, used, mode
 
 
 def _runs(numbers: list[int]) -> list[tuple[int, int]]:

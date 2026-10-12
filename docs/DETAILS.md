@@ -63,7 +63,7 @@ For installations managed by setup.exe, prefer setup.exe for future updates.
 
 ## What it can do
 
-123 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — catalog in [TOOLS.md](TOOLS.md).
+124 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — catalog in [TOOLS.md](TOOLS.md).
 
 | Group | Highlights |
 |---|---|

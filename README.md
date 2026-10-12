@@ -60,13 +60,30 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 | *“Compare these two registers by code and show what changed.”* | [Differences matched by key](docs/examples/compare-registers.md). |
 | *“Read the comments in Word and propose edits. Apply them after I approve.”* | [Targeted edits recorded as tracked revisions](docs/examples/comments-to-tracked-edits.md). |
 
-**123 tools** for Excel, Word and document workflows — formulas, data cleanup, goal seek, pivots, charts, templates,
+**124 tools** for Excel, Word and document workflows - formulas, data cleanup, goal seek, pivots, charts, templates,
 comment threads and more. [Full catalog →](docs/TOOLS.md)
 
 For compact responses, searches, comparisons, issue reports, formula traces and Word outlines return at most one
 `officelive://` link for the whole result; request `per_match_links=true` for individual locations.
 `excel_write_range` keeps its existing read-back by default. Use `readback="summary"` for shape, counts, errors and
 up to five sample cells, or `readback="none"` to omit value echoes. Undo and journaling work as before.
+
+Lay out a sheet in two calls, each with one `office_undo` entry:
+
+```python
+excel_set_dimensions(workbook="Report.xlsx", sheet="Data",
+                     column_widths={"A": 12, "B": 24, "C": 18},
+                     row_heights={"1": 28, "2": 20})
+excel_format_ranges(workbook="Report.xlsx", sheet="Data", ranges=[
+    {"cells": "A1:C1", "format": {"bold": True, "fill_color": "lightblue"}},
+    {"cells": "B2:B336", "format": {"number_format": "0.00"}},
+])
+```
+
+`excel_set_dimensions(..., cells="", autofit="columns")` fits only the used range.
+Autofit rejects ranges above 100,000 cells or 1,000 affected dimensions and checks a
+5-second budget between small COM calls, returning a clear error with undo for partial
+changes. A synchronous Excel COM call cannot be interrupted while it is running.
 
 ## Install
 

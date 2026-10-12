@@ -1,6 +1,7 @@
 """Excel: форматирование, условное форматирование, валидация, ссылки, примечания, вид листа, картинки."""
 
 
+import inspect
 import io
 import json
 import os
@@ -238,9 +239,36 @@ def excel_format_range(
         borders: all|outline|inside|top|bottom|left|right|none. border_style: thin|medium|thick|dashed|dotted|double|hair. border_color: color of borders.
         style: apply a named cell style first (e.g. 'Good', 'Bad', 'Neutral', 'Heading 1', 'Total').
     """
+    options = locals().copy()
+    for key in ("workbook", "sheet", "cells"):
+        options.pop(key)
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
-    # --- чистые проверки и переводы значений — ДО первого изменения: ошибка в аргументах не оставит полуотформатированный диапазон
+    return _prepare_format(app, wb, ws, rng, **options)()
+
+
+def _prepare_format(app, wb, ws, rng, *,
+    bold: bool | None = None,
+    italic: bool | None = None,
+    underline: bool | None = None,
+    strikethrough: bool | None = None,
+    font_name: str | None = None,
+    font_size: float | None = None,
+    font_color: str | None = None,
+    fill_color: str | None = None,
+    number_format: str | None = None,
+    horizontal_alignment: str | None = None,
+    vertical_alignment: str | None = None,
+    wrap_text: bool | None = None,
+    shrink_to_fit: bool | None = None,
+    indent: int | None = None,
+    text_rotation: int | None = None,
+    borders: str | None = None,
+    border_style: str = "thin",
+    border_color: str = "#000000",
+    style: str | None = None,
+):
+    # Validate the complete format before the first assignment.
     if not any(v is not None for v in (style, bold, italic, underline, strikethrough, font_size, font_color, fill_color, number_format,
                                         horizontal_alignment, vertical_alignment, wrap_text, shrink_to_fit, indent, text_rotation, borders)) and not font_name:
         raise ToolError("Nothing to apply: pass at least one formatting parameter.")
@@ -264,73 +292,127 @@ def excel_format_range(
         raise ToolError("text_rotation must be between -90 and 90 degrees.")
     border_plan = _border_plan(rng, borders.lower(), border_style.lower(), border_color) if borders is not None else None
 
-    applied = []
-    # Стиль и формат числа Excel может отвергнуть только при применении — делаем их первыми, чтобы отказ не оставил частичного оформления
-    if style is not None:
-        try:
-            rng.Style = style
-        except pywintypes.com_error:
-            raise ToolError(f"Cell style '{style}' not found (style names depend on the Excel UI language). Nothing was changed.") from None
-        applied.append(f"style={style}")
-    if number_format is not None:
-        try:
-            set_number_format(app, rng, number_format, NUMBER_FORMATS)
-        except pywintypes.com_error:
-            raise ToolError(
-                f"Excel rejected number_format '{number_format}'. Use codes like '0', '0.00', '#,##0.00', '0.0%', 'dd.mm.yyyy', '@' or a shortcut ({sorted(NUMBER_FORMATS)})."
-                + (f" Already applied: {applied}." if applied else " Nothing was changed.")
-            ) from None
-        applied.append(f"number_format={number_format}")
-    font = rng.Font
-    if bold is not None:
-        font.Bold = bool(bold)
-        applied.append(f"bold={bold}")
-    if italic is not None:
-        font.Italic = bool(italic)
-        applied.append(f"italic={italic}")
-    if underline is not None:
-        font.Underline = 2 if underline else -4142
-        applied.append(f"underline={underline}")
-    if strikethrough is not None:
-        font.Strikethrough = bool(strikethrough)
-        applied.append(f"strikethrough={strikethrough}")
-    if font_name:
-        font.Name = font_name
-        applied.append(f"font_name={font_name}")
-    if font_size is not None:
-        font.Size = float(font_size)
-        applied.append(f"font_size={font_size}")
-    if font_rgb is not None:
-        font.Color = font_rgb
-        applied.append(f"font_color={font_color}")
-    if fill_color is not None:
-        if fill_none:
-            rng.Interior.ColorIndex = -4142
-        else:
-            rng.Interior.Color = fill_rgb
-        applied.append(f"fill_color={fill_color}")
-    if h_code is not None:
-        rng.HorizontalAlignment = h_code
-        applied.append(f"horizontal_alignment={horizontal_alignment.lower()}")
-    if v_code is not None:
-        rng.VerticalAlignment = v_code
-        applied.append(f"vertical_alignment={vertical_alignment.lower()}")
-    if wrap_text is not None:
-        rng.WrapText = bool(wrap_text)
-        applied.append(f"wrap_text={wrap_text}")
-    if shrink_to_fit is not None:
-        rng.ShrinkToFit = bool(shrink_to_fit)
-        applied.append(f"shrink_to_fit={shrink_to_fit}")
-    if indent is not None:
-        rng.IndentLevel = int(indent)
-        applied.append(f"indent={indent}")
-    if text_rotation is not None:
-        rng.Orientation = int(text_rotation)
-        applied.append(f"text_rotation={text_rotation}")
-    if border_plan is not None:
-        _apply_border_plan(rng, border_plan)
-        applied.append(f"borders={borders}")
-    return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "applied": applied}
+
+    def apply():
+        applied = []
+
+        # Стиль и формат числа Excel может отвергнуть только при применении — делаем их первыми, чтобы отказ не оставил частичного оформления
+        if style is not None:
+            try:
+                rng.Style = style
+            except pywintypes.com_error:
+                raise ToolError(f"Cell style '{style}' not found (style names depend on the Excel UI language). Nothing was changed.") from None
+            applied.append(f"style={style}")
+        if number_format is not None:
+            try:
+                set_number_format(app, rng, number_format, NUMBER_FORMATS)
+            except pywintypes.com_error:
+                raise ToolError(
+                    f"Excel rejected number_format '{number_format}'. Use codes like '0', '0.00', '#,##0.00', '0.0%', 'dd.mm.yyyy', '@' or a shortcut ({sorted(NUMBER_FORMATS)})."
+                    + (f" Already applied: {applied}." if applied else " Nothing was changed.")
+                ) from None
+            applied.append(f"number_format={number_format}")
+        font = rng.Font
+        if bold is not None:
+            font.Bold = bool(bold)
+            applied.append(f"bold={bold}")
+        if italic is not None:
+            font.Italic = bool(italic)
+            applied.append(f"italic={italic}")
+        if underline is not None:
+            font.Underline = 2 if underline else -4142
+            applied.append(f"underline={underline}")
+        if strikethrough is not None:
+            font.Strikethrough = bool(strikethrough)
+            applied.append(f"strikethrough={strikethrough}")
+        if font_name:
+            font.Name = font_name
+            applied.append(f"font_name={font_name}")
+        if font_size is not None:
+            font.Size = float(font_size)
+            applied.append(f"font_size={font_size}")
+        if font_rgb is not None:
+            font.Color = font_rgb
+            applied.append(f"font_color={font_color}")
+        if fill_color is not None:
+            if fill_none:
+                rng.Interior.ColorIndex = -4142
+            else:
+                rng.Interior.Color = fill_rgb
+            applied.append(f"fill_color={fill_color}")
+        if h_code is not None:
+            rng.HorizontalAlignment = h_code
+            applied.append(f"horizontal_alignment={horizontal_alignment.lower()}")
+        if v_code is not None:
+            rng.VerticalAlignment = v_code
+            applied.append(f"vertical_alignment={vertical_alignment.lower()}")
+        if wrap_text is not None:
+            rng.WrapText = bool(wrap_text)
+            applied.append(f"wrap_text={wrap_text}")
+        if shrink_to_fit is not None:
+            rng.ShrinkToFit = bool(shrink_to_fit)
+            applied.append(f"shrink_to_fit={shrink_to_fit}")
+        if indent is not None:
+            rng.IndentLevel = int(indent)
+            applied.append(f"indent={indent}")
+        if text_rotation is not None:
+            rng.Orientation = int(text_rotation)
+            applied.append(f"text_rotation={text_rotation}")
+        if border_plan is not None:
+            _apply_border_plan(rng, border_plan)
+            applied.append(f"borders={borders}")
+        return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "applied": applied}
+
+    return apply
+
+
+@office_tool("excel_format", "write", title="Format multiple ranges")
+def excel_format_ranges(workbook: str, sheet: str, ranges: list[dict]) -> dict:
+    """Apply several {cells, format} objects in order with one office_undo entry. All ranges and formatting arguments are validated before editing.
+
+    Args:
+        workbook: exact workbook name.
+        sheet: selected sheet name.
+        ranges: nonempty list (at most 128) of {'cells': 'A1:D1', 'format': {'bold': True}}.
+            format accepts the existing excel_format_range parameters; overlapping ranges apply in list order.
+
+    Combined range sizes must fit OFFICE_LIVE_UNDO_MAX_CELLS when undo is enabled.
+    On partial Excel errors, office_undo restores every range to its pre-call state.
+    """
+    if not isinstance(ranges, list) or not 1 <= len(ranges) <= 128:
+        raise ToolError("ranges must contain 1 to 128 {cells, format} objects.")
+    signature = inspect.signature(_prepare_format)
+    bool_keys = {"bold", "italic", "underline", "strikethrough", "wrap_text", "shrink_to_fit"}
+    number_keys = {"font_size", "indent", "text_rotation"}
+    for spec in ranges:
+        if not isinstance(spec, dict) or set(spec) != {"cells", "format"}:
+            raise ToolError("Each range must contain exactly cells and format.")
+        if not isinstance(spec["cells"], str) or not spec["cells"].strip() or not isinstance(spec["format"], dict):
+            raise ToolError("Each range needs nonempty cells and a format object.")
+        for key, value in spec["format"].items():
+            if key not in signature.parameters or key in {"app", "wb", "ws", "rng"}:
+                raise ToolError(f"Unknown formatting parameter: {key}.")
+            if value is None:
+                continue
+            expected = bool if key in bool_keys else (int, float) if key in number_keys else str
+            if not isinstance(value, expected) or (key in number_keys and isinstance(value, bool)):
+                raise ToolError(f"Invalid value for formatting parameter: {key}.")
+    app, wb = pick_workbook(workbook)
+    plans, specs = [], []
+    for spec in ranges:
+        _, rng = get_range(wb, sheet, spec["cells"], empty_means_used=False)
+        ws = rng.Worksheet
+        xl.validate_rectangle(rng, ws, wb)
+        plans.append(_prepare_format(app, wb, ws, rng, **spec["format"]))
+        specs.append({"cells": xl.ref_label(ws, rng), "format": spec["format"]})
+    undo.require_undo("workbook", app, wb, plan={"sheet": "", "_format_ranges": specs})
+    results = []
+    try:
+        for apply in plans:
+            results.append(apply())
+    except (pywintypes.com_error, ToolError) as exc:
+        raise PartialChangeError(f"Formatting interrupted after {len(results)} completed ranges. {com.translate(exc)}") from None
+    return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "ranges": results}
 
 
 def _border_plan(rng, which: str, style: str, color: str) -> tuple:

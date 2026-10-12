@@ -175,6 +175,15 @@ def test_catalog_is_sane(catalog):
         assert len(info.doc.split("\n")[0]) >= 15, f"{name}: add a one-line description"
 
 
+def test_instruction_tool_count_matches_catalog(catalog):
+    from office_live.registry import INSTRUCTIONS
+
+    cat, _ = catalog
+    count = re.search(r"The catalog contains (\d+) tools", INSTRUCTIONS)
+    assert count is not None
+    assert int(count.group(1)) == len(cat) == 124
+
+
 def test_every_registered_tool_publishes_a_valid_schema(catalog):
     _, mcp = catalog
     tools = asyncio.run(mcp.list_tools())

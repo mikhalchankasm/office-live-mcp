@@ -1205,8 +1205,9 @@ def render_range_png(app, wb, ws, rng, max_cells: int = 1500) -> bytes:
     return data
 
 
-@office_tool("excel_format", "read", title="Render range as image", unstructured=True, read_only=False)
-def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "", max_cells: int = 1500) -> list:
+@office_tool("excel_format", "read", title="Render range as image", unstructured=True, read_only=False, file_args=("save_to",))
+def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "", max_cells: int = 1500,
+                             save_to: str = "", overwrite: bool = False) -> list:
     """Render a range exactly as it looks on screen (fonts, fills, borders, conditional formats) and return it as a PNG image - use it to visually verify formatting. Briefly uses the Windows clipboard and a temporary chart object on the sheet (removed at once; the workbook content is unchanged, but Excel marks the workbook as modified and the Undo history is cleared; AutoSave is paused meanwhile).
 
     Args:
@@ -1214,11 +1215,34 @@ def excel_render_range_image(workbook: str = "", sheet: str = "", cells: str = "
         sheet: sheet name or '' for active.
         cells: range to render ('' = the used range); at most max_cells cells.
         max_cells: safety cap on range size.
+        save_to: optional PNG file path within OFFICE_LIVE_ALLOWED_DIRS; creates parent folders. Returns only metadata
+            (absolute path, png_bytes, size_px=[width, height]) instead of an inline image. Not available in read-only mode.
+        overwrite: allow save_to to replace an existing file (default false).
     """
+    dest = None
+    if save_to:
+        if config.SETTINGS.readonly:
+            raise ToolError("save_to writes a file, which read-only mode does not allow; omit it to just get the image back.")
+        dest = check_path(save_to, "write", {"png"})
+        if os.path.exists(dest) and not overwrite:
+            raise ToolError(f"File already exists: {dest}. Pass overwrite=true to replace it.")
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells)
     data = render_range_png(app, wb, ws, rng, max_cells)
     info = {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(rng), "png_bytes": len(data)}
+    if dest:
+        from PIL import Image as PILImage
+
+        with PILImage.open(io.BytesIO(data)) as image:
+            size_px = list(image.size)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        try:
+            with open(dest, "wb" if overwrite else "xb") as output:
+                output.write(data)
+        except FileExistsError:
+            raise ToolError(f"File already exists: {dest}. Pass overwrite=true to replace it.") from None
+        info.update(path=dest, size_px=size_px)
+        return [json.dumps(info, ensure_ascii=False)]
     return [json.dumps(info, ensure_ascii=False), Image(data=data, format="png")]
 
 

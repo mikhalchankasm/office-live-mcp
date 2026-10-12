@@ -681,7 +681,7 @@ def _simple_range(app, wb, entry, args):
             _snapshots(app, wb, entry, [_rule_closure(ws, xl.bounds(ws.UsedRange if whole else rng), whole_sheet=whole)], restore="formats", rules=True)
     elif entry.tool == "excel_clear_range" and args.get("what", "").lower() == "formats":
         _snapshots(app, wb, entry, [rng], restore="formats")
-    elif entry.tool == "excel_format_range" and args.get("style") is None:
+    elif entry.tool in {"excel_format_range", "excel_format_ranges"} and args.get("style") is None:
         mapping = {"bold": "Font.Bold", "italic": "Font.Italic", "underline": "Font.Underline", "strikethrough": "Font.Strikethrough",
                    "font_name": "Font.Name", "font_size": "Font.Size", "number_format": "NumberFormat",
                    "horizontal_alignment": "HorizontalAlignment", "vertical_alignment": "VerticalAlignment", "wrap_text": "WrapText",
@@ -697,7 +697,7 @@ def _simple_range(app, wb, entry, args):
             edges = _border_plan(rng, args["borders"].lower(), args.get("border_style", "thin").lower(), args.get("border_color", "#000000"))[0]
             properties += [f"Borders{EDGES[edge]}.{p}" for edge in edges for p in ("Color", "ThemeColor", "TintAndShade", "Weight", "LineStyle")]
         _snapshots(app, wb, entry, [rng], restore="properties", properties=properties)
-    elif entry.tool == "excel_format_range":
+    elif entry.tool in {"excel_format_range", "excel_format_ranges"}:
         _snapshots(app, wb, entry, [rng], restore="formats")
     else:
         _snapshots(app, wb, entry, [rng])
@@ -780,16 +780,35 @@ def _replace(app, wb, entry, args):
 
 
 def _dimensions_plan(app, wb, entry, args):
-    ws, rng = xl.get_range(wb, args["sheet"], args.get("cells", ""))
-    if not args.get("cells"):
-        rng = ws.Cells
-    columns = args.get("column_width") is not None or args.get("autofit", "").lower() in {"columns", "both"}
-    rows = args.get("row_height") is not None or args.get("autofit", "").lower() in {"rows", "both"}
-    count = (int(rng.Columns.Count) if columns else 0) + (int(rng.Rows.Count) if rows else 0)
+    targets = args.get("_dimension_targets")
+    if targets is None:
+        from .excel_core import _dimension_targets
+
+        sizes, fit, mode = _dimension_targets(wb, args["sheet"], args)
+        targets = [{"cells": xl.addr_of(rng), "property": prop} for rng, prop, _ in sizes]
+        if mode in {"columns", "both"}:
+            targets.append({"cells": xl.addr_of(fit), "property": "ColumnWidth"})
+        if mode in {"rows", "both"}:
+            targets.append({"cells": xl.addr_of(fit), "property": "RowHeight"})
+    ranges = [(xl.get_range(wb, args["sheet"], t["cells"])[1], t["property"]) for t in targets]
+    count = sum(int(rng.Columns.Count if prop == "ColumnWidth" else rng.Rows.Count) for rng, prop in ranges)
     if count > config.SETTINGS.undo_max_cells:
         entry.barrier(f"{count} dimensions exceeds OFFICE_LIVE_UNDO_MAX_CELLS")
         return
-    entry.ops.append({"op": "dimensions", **_area(rng), **_dimensions(rng, columns, rows, explicit=True)})
+    for rng, prop in ranges:
+        entry.ops.append({"op": "dimensions", **_area(rng),
+                          **_dimensions(rng, prop == "ColumnWidth", prop == "RowHeight", explicit=True)})
+
+
+def _format_ranges(app, wb, entry, args):
+    specs = args["_format_ranges"]
+    ranges = [xl.get_range(wb, args["sheet"], spec["cells"], empty_means_used=False)[1] for spec in specs]
+    if sum(_size(rng) for rng in ranges) > config.SETTINGS.undo_max_cells:
+        entry.barrier("Combined formatting ranges exceed OFFICE_LIVE_UNDO_MAX_CELLS")
+        return
+    # Every snapshot precedes the first edit, including overlapping rectangles.
+    for spec in specs:
+        _simple_range(app, wb, entry, {"sheet": args["sheet"], "cells": spec["cells"], **spec["format"]})
 
 
 def _hidden(app, wb, entry, args):
@@ -962,6 +981,7 @@ RESOLVERS = dict.fromkeys((
 ), _simple_range)
 RESOLVERS.update({
     "excel_goal_seek": _goal_seek, "excel_subtotals": _subtotals, "excel_sparklines": _sparklines,
+    "excel_format_ranges": _format_ranges,
     "excel_clean_text": _clean_text,
     "excel_split_column": _split_column, "excel_protection": _protection,
     "excel_write_range": _write_range, "excel_set_formula": _write_range, "excel_autofill": _autofill,
@@ -1139,7 +1159,7 @@ def restore_excel(app, wb, entry):
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
             "excel_close_workbook", "word_close_document", "word_compare_documents"}
 
-DEFERRED = {"excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table",
+DEFERRED = {"excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
             "excel_goal_seek", "excel_subtotals", "excel_sparklines", "word_insert_document", "word_table_text", "word_restrict_editing", "word_edit_apply", "word_manage_comments"}
 
 

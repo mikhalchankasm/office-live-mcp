@@ -37,7 +37,7 @@
 | `excel_delete_sheet` | destructive | Permanently delete a sheet with all its data. Requires confirm=true. Refuses to delete the last sheet. |
 | `excel_insert_rows_columns` | write | Insert empty rows or columns; existing content shifts down/right. |
 | `excel_delete_rows_columns` | destructive | Delete rows or columns together with their content; the rest shifts up/left. References to deleted cells become #REF!. |
-| `excel_set_dimensions` | write | Set column width / row height or autofit them (to hide rows/columns use excel_hide_rows_columns). |
+| `excel_set_dimensions` | write | Set column widths / row heights individually or in maps, or autofit the used range with size/time guards. |
 | `excel_hide_rows_columns` | write | Hide or unhide whole rows/columns - either by number or by a condition on the data ('hide every row whose Status is Done'). Hidden rows keep their data; unhide with hidden=false. |
 | `excel_group_rows_columns` | write | Create or remove outline groups (the +/- buttons in the margin) over rows or columns, or collapse/expand every group on the sheet. |
 | `excel_copy_range` | write | Copy (or move) a range to another place, optionally into another sheet or workbook. |
@@ -51,12 +51,13 @@
 | `excel_create_from_template` | save | Make a new workbook as an exact copy of a sample file (all formatting, merged cells, column widths, conditional formats, formulas, named ranges, and macros are kept) and open it. The sample itself is never modified. Then clear the old data and write the new data. For .xlsm samples keep the .xlsm extension; macros stay disabled in the copy until the user enables them in Excel. |
 | `excel_autofill` | write | Do what dragging the fill handle does: extend a pattern from `source` over `dest` (which must contain `source`). Formulas adjust their relative references, numbers/dates continue as a series, formats are copied. Use it to carry a template row's formulas AND formatting down to new rows. |
 
-### excel_format (12)
+### excel_format (13)
 
 | Tool | Kind | What it does |
 |---|---|---|
 | `excel_protection` | write (readonly: status) | Inspect, protect or unprotect a sheet/workbook. Status is available in readonly mode. Passwords are redacted from journals, audit, errors and history; password operations create an undo barrier and never retain the password. |
 | `excel_format_range` | write | Format a range. Only the properties you pass are changed. Colors: '#RRGGBB' or a name (red, lightblue, lightgreen, lightyellow, ...); fill_color='none' removes the fill. |
+| `excel_format_ranges` | write | Apply several {cells, format} objects in order with one office_undo entry. All ranges and formatting arguments are validated before editing. |
 | `excel_get_format` | read | Read the formatting of a range. A property is reported as 'mixed' when the cells of the range differ - narrow the range to see each value. |
 | `excel_conditional_format` | write (readonly: list) | Add, list or clear conditional formatting ('highlight cells that ...'). |
 | `excel_data_validation` | write (readonly: get) | Restrict what can be typed into cells (dropdown lists, number/date limits, custom rules), read the rule, or remove it. |

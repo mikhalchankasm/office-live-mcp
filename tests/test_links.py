@@ -196,18 +196,18 @@ def test_internal_hyperlinks_escape_apostrophes_and_skip_deleted_sheets(office):
 
 def test_read_links_limit_dedup_and_compare_both_books(office):
     office.ws.Range("A1:A25").Value = "match"
-    out = office.call("excel_find", workbook=office.wb.Name, query="match")
+    out = office.call("excel_find", workbook=office.wb.Name, query="match", per_match_links=True)
     assert len(out["links"]) == 20 and out["links_truncated"]
     other = office.excel.Workbooks.Add()
     other.ActiveSheet.Range("B1").Value = "different"
-    out = office.call("excel_compare_ranges", workbook_a=office.wb.Name, sheet_a="Data", cells_a="A1", workbook_b=other.Name, sheet_b="Data", cells_b="B1")
+    out = office.call("excel_compare_ranges", workbook_a=office.wb.Name, sheet_a="Data", cells_a="A1", workbook_b=other.Name, sheet_b="Data", cells_b="B1", per_match_links=True)
     assert {links.parse(link["uri"])[1]["book"] for link in out["links"]} == {office.wb.Name, other.Name}
 
 
 def test_trace_links_and_no_write_links_for_preview(office):
     office.ws.Range("B1").Formula = "=A1"
     office.ws.direct[("precedents", "B1")] = ["A1"]
-    out = office.call("excel_trace_formula", workbook=office.wb.Name, sheet="Data", cell="B1")
+    out = office.call("excel_trace_formula", workbook=office.wb.Name, sheet="Data", cell="B1", per_match_links=True)
     assert {links.parse(link["uri"])[1]["range"] for link in out["links"]} == {"A1", "B1"}
     office.ws.Range("A2").Value = " text "
     out = office.call("excel_clean_text", workbook=office.wb.Name, sheet="Data", cells="A2", operations=["trim"])
@@ -269,7 +269,7 @@ def test_office_link_readonly_registration_and_reject_mixed_arguments(office, mo
 
 
 def test_issues_links_use_reported_cells_and_columns(office):
-    recording = NS(tool="excel_find_issues", kind="read", args={}, targets={("workbook", office.wb.Name, 42): (office.excel, office.wb)}, pending={})
+    recording = NS(tool="excel_find_issues", kind="read", args={"per_match_links": True}, targets={("workbook", office.wb.Name, 42): (office.excel, office.wb)}, pending={})
     result = {"sheet": "Data", "issues": [{"examples": [{"cell": "B2"}, {"cell": "C"}, {"cell": "B2"}]}]}
     navigation.result_links(recording, result)
     assert [links.parse(link["uri"])[1]["range"] for link in result["links"]] == ["B2", "C:C"]

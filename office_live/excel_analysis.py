@@ -43,7 +43,7 @@ MISSING = pythoncom.Missing
 
 @office_tool("excel_analysis", "read", title="Trace formula")
 def excel_trace_formula(workbook: str = "", sheet: str = "", cell: str = "", direction: str = "precedents",
-                        depth: int = 1, max_nodes: int = 200) -> dict:
+                        depth: int = 1, max_nodes: int = 200, per_match_links: bool = False) -> dict:
     """Trace formula references without selection changes, sheet activation, arrows or evaluation. Edges always point from input to consumer. Never treat complete=false as a full graph.
 
     Args:
@@ -52,6 +52,7 @@ def excel_trace_formula(workbook: str = "", sheet: str = "", cell: str = "", dir
         direction: precedents (inputs) or dependents (consumers).
         depth: 1..5, default 1; an unexpanded edge sets depth_limit.
         max_nodes: 1..2000 including the root, default 200.
+        per_match_links: true returns links for individual nodes (up to 20); default returns one workbook link.
 
     Uses DirectPrecedents/DirectDependents on the already active sheet plus a conservative formula tokenizer.
     Supports A1 ranges, quoted sheets, range names and Table[Column]. Dependents scan Formula arrays once, at most 500000 cells across the workbook.
@@ -124,6 +125,7 @@ def excel_compare_ranges(
     ignore_whitespace: bool = False,
     tolerance: float = 0,
     max_differences: int = 200,
+    per_match_links: bool = False,
 ) -> dict:
     """Compare two rectangles by position or unique row keys, across sheets, workbooks or Excel instances; never modifies either range. Reports values/types, formula text or five direct formats, with bounded differences.
 
@@ -137,6 +139,7 @@ def excel_compare_ranges(
         ignore_case, ignore_whitespace: normalize text, including keys/headers; whitespace trims and collapses NBSP and other whitespace.
         tolerance: finite nonnegative absolute numeric tolerance; keys always match exactly by type and value.
         max_differences: 1..2000, default 200. Texts over 200 characters are marked as truncated.
+        per_match_links: true returns links for individual differences (up to 20); default returns one link to the first workbook with a difference.
 
     Limits: 200000 cells per range for values/formulas; 5000 for formats. Empty keys are skipped and counted; duplicate keys/headers are refused.
     """
@@ -1090,7 +1093,8 @@ def excel_profile_range(
 
 
 @office_tool("excel_analysis", "read", title="Find data issues")
-def excel_find_issues(workbook: str = "", sheet: str = "", cells: str = "", max_cells: int = 200000, limit: int = 15, has_header: bool = True) -> dict:
+def excel_find_issues(workbook: str = "", sheet: str = "", cells: str = "", max_cells: int = 200000, limit: int = 15, has_header: bool = True,
+                      per_match_links: bool = False) -> dict:
     """Audit a sheet/range for problems: error values, numbers stored as text, inconsistent formulas down a column, hard-coded numbers among formulas, stray spaces, blank rows/headers, duplicate headers, mixed types in a column, merged cells.
 
     Args:
@@ -1100,6 +1104,7 @@ def excel_find_issues(workbook: str = "", sheet: str = "", cells: str = "", max_
         max_cells: safety cap on analysed cells.
         limit: max examples listed per issue type.
         has_header: the first row of the audited range is a header row (false when `cells` starts at the data: header checks are skipped).
+        per_match_links: true returns links for individual issue examples (up to 20); default returns one workbook link.
     """
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells)

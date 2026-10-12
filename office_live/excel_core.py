@@ -424,6 +424,7 @@ def excel_find(
     regex: bool = False,
     max_results: int = 100,
     count_all: bool = False,
+    per_match_links: bool = False,
 ) -> dict:
     """Search cell values or formulas. Returns matching cells with their address and content.
 
@@ -436,6 +437,7 @@ def excel_find(
         match_case, whole_cell, regex: matching options.
         max_results: stop searching once more than this many matches exist (the answer then says truncated=true).
         count_all: keep scanning after max_results to count every match (up to 100000) - slower on big sheets.
+        per_match_links: true returns a link per match (up to 20); default returns one workbook link for the result.
     """
     if not query:
         raise ToolError("'query' is empty.")
@@ -939,6 +941,7 @@ def excel_write_range(
     values: list[list[Cell]] | list[Cell] | Cell,
     value_mode: str = "auto",
     overwrite: bool = True,
+    readback: str = "full",
 ) -> dict:
     """Write a block of values. Pass a single top-left cell (e.g. 'B2') and the block is placed from there; rows shorter than the widest are padded with blanks; a single value fills the whole target range. Returns a read-back.
 
@@ -951,9 +954,13 @@ def excel_write_range(
         values: 2-D array of rows (a flat list is one row; a single value fills the whole target range). null leaves a cell blank.
         value_mode: 'auto' or 'text'.
         overwrite: false refuses to write when the target already holds non-empty cells.
+        readback: 'full' (default) keeps the existing value preview; 'summary' returns target shape, counts and up to five sample cells;
+            'none' omits readback and readback_types. All modes report errors (up to 20). Summary/none scan the entire written target.
     """
     if value_mode not in ("auto", "text"):
         raise ToolError("value_mode must be 'auto' or 'text'.")
+    if readback not in ("full", "summary", "none"):
+        raise ToolError("readback must be 'full', 'summary' or 'none'.")
     app, wb = pick_workbook(workbook)
     ws, rng = get_range(wb, sheet, cells, empty_means_used=False)
     grid = to_com_grid(values)
@@ -972,7 +979,34 @@ def excel_write_range(
         target.Value = grid[0][0] if fill else grid
     except pywintypes.com_error as exc:
         raise ToolError("Excel refused the write (protected sheet, merged cells in the way, or invalid data): " + com.com_error_text(exc)) from None
-    r1, c1, _, _ = bounds(target)
+    r1, c1, r2, c2 = bounds(target)
+    out = {
+        "ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(target),
+        "written_shape": [rows, cols], "overwritten_nonempty_cells": max(before, 0),
+    }
+    if readback != "full":
+        types, samples, errors = {}, [], []
+        target_rows, target_cols = r2 - r1 + 1, c2 - c1 + 1
+        step = max(1, 20000 // target_cols)
+        for start in range(r1, r2 + 1, step):
+            chunk = read_grid(sub_range(ws, start, c1, min(r2, start + step - 1), c2))
+            for i, row in enumerate(chunk):
+                for j, value in enumerate(row):
+                    kind = cell_kind(value)
+                    if kind != "empty":
+                        types[kind] = types.get(kind, 0) + 1
+                    if readback == "summary" and len(samples) < 5:
+                        samples.append({"cell": a1_cell(start + i, c1 + j), "value": value})
+            if len(errors) < 20:
+                errors.extend(error_cells(chunk, start, c1, limit=20 - len(errors)))
+        out["errors"] = errors
+        if readback == "summary":
+            total = target_rows * target_cols
+            nonempty = sum(types.values())
+            out.update(readback={"shape": [target_rows, target_cols], "total_cells": total,
+                                 "nonempty_cells": nonempty, "empty_cells": total - nonempty, "samples": samples},
+                       readback_types=types)
+        return out
     back = preview(target)
     types: dict[str, int] = {}
     for row in back:
@@ -980,11 +1014,8 @@ def excel_write_range(
             k = cell_kind(v)
             if k != "empty":
                 types[k] = types.get(k, 0) + 1
-    return {
-        "ok": True, "workbook": wb.Name, "sheet": ws.Name, "cells": addr_of(target),
-        "written_shape": [rows, cols], "overwritten_nonempty_cells": max(before, 0),
-        "readback": back, "readback_types": types, "errors": error_cells(back, r1, c1),
-    }
+    out.update(readback=back, readback_types=types, errors=error_cells(back, r1, c1))
+    return out
 
 
 @office_tool("excel_core", "write", title="Set formulas")

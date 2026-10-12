@@ -207,12 +207,13 @@ def word_list_documents() -> dict:
 
 
 @office_tool("word_core", "read", title="Document structure")
-def word_get_structure(document: str = "", max_headings: int = 200) -> dict:
+def word_get_structure(document: str = "", max_headings: int = 200, per_match_links: bool = False) -> dict:
     """Overview of a document: counts (pages, words, paragraphs, tables, images, comments, tracked changes, bookmarks, fields), the heading outline with paragraph numbers, a summary of every table, and sections. Use it to navigate a long document before reading parts of it.
 
     Args:
         document: exact name, unique part of the name, full path, or '' for the active document.
         max_headings: cap on listed headings.
+        per_match_links: true returns links for individual headings (up to 20); default returns one document link.
     """
     app, doc = pick_document(document)
     n = para_count(doc)
@@ -453,6 +454,7 @@ def word_find(
     scope: str = "main",
     max_results: int = 100,
     context_chars: int = 60,
+    per_match_links: bool = False,
 ) -> dict:
     """Find every occurrence of a text and report where it is (paragraph number, position) with surrounding context.
 
@@ -464,6 +466,7 @@ def word_find(
         scope: 'main' (body), 'all' (also headers, footers, footnotes, text boxes) or 'selection'.
         max_results: stop collecting after this many hits.
         context_chars: characters of context on each side.
+        per_match_links: true returns links for individual matching paragraphs (up to 20); default returns one document link.
     """
     if not query:
         raise ToolError("'query' is empty.")

@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.5 — 2026-10-12
+
+Fewer and smaller calls for agents that build and lay out sheets — measured on a real 336-row report.
+
+- **Compact responses:** searches, comparisons, issue reports, formula traces and Word outlines return one
+  `officelive://` link for the whole result instead of one per match (`per_match_links=true` restores the old list);
+  `excel_write_range` takes `readback="summary"` (shape, counts, errors, five sample cells) or `"none"` instead of
+  echoing every written value. Defaults keep the previous keys.
+- **Sheet layout in one or two calls:** `excel_set_dimensions` accepts `column_widths` / `row_heights` maps; new
+  `excel_format_ranges` applies a list of `{cells, format}` with one undo entry; blank-`cells` autofit works on the used
+  range with size and time guards and returns a clear error instead of timing out. Sizes, autofit and undo apply to the
+  sheet the range belongs to (including defined names on another sheet).
+- **Render to a file:** `excel_render_range_image(save_to=...)` writes the PNG into an allowed folder and returns its
+  path and pixel size, for renders too large to inline.
+- The catalog has 124 tools.
+
 ## 0.4.4 — 2026-10-06
 
 New Excel and Word tools, a safe tracked-changes edit for Word, richer comment reading, a preview for mail merge, and a

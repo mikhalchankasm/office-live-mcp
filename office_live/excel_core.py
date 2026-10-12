@@ -1389,14 +1389,14 @@ def excel_set_dimensions(
     options = dict(cells=cells, column_width=column_width, row_height=row_height,
                    autofit=autofit, column_widths=column_widths, row_heights=row_heights)
     app, wb = pick_workbook(workbook)
-    ws, _ = get_range(wb, sheet, cells)
     targets, fit_range, mode = _dimension_targets(wb, sheet, options)
-    snapshots = [{"cells": addr_of(rng), "property": prop} for rng, prop, _ in targets]
+    ws = fit_range.Worksheet
+    snapshots = [{"cells": ref_label(rng.Worksheet, rng), "property": prop} for rng, prop, _ in targets]
     for axis, prop in (("columns", "ColumnWidth"), ("rows", "RowHeight")):
         if mode in {axis, "both"}:
-            snapshots.append({"cells": addr_of(fit_range), "property": prop})
+            snapshots.append({"cells": ref_label(ws, fit_range), "property": prop})
     if mode or column_widths is not None or row_heights is not None:
-        undo.require_undo("workbook", app, wb, plan={"_dimension_targets": snapshots})
+        undo.require_undo("workbook", app, wb, plan={"sheet": ws.Name, "_dimension_targets": snapshots})
     applied = []
     attempted = False
     try:
@@ -1434,7 +1434,8 @@ def _dimension_targets(wb, sheet, args):
     mode = args.get("autofit", "").lower()
     if mode and mode not in {"columns", "rows", "both"}:
         raise ToolError("autofit must be 'columns', 'rows' or 'both'.")
-    ws, used = get_range(wb, sheet, args.get("cells", ""))
+    _, used = get_range(wb, sheet, args.get("cells", ""))
+    ws = used.Worksheet
     # The undo caller reuses these arguments to resolve unqualified snapshots.
     args["sheet"] = ws.Name
     targets = []

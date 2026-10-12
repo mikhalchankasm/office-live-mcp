@@ -6,7 +6,7 @@ import pytest
 
 from office_live import excel_core, xl_common as xl
 from office_live.errors import PartialChangeError, ToolError
-from tests.history_fakes import Range, fake_office  # noqa: F401
+from tests.history_fakes import Range, Sheet, fake_office  # noqa: F401
 from tests.test_undo import revert, stack
 
 
@@ -28,6 +28,25 @@ def qualified_sheets(office):
     return office.ws, target
 
 
+@pytest.fixture
+def cross_sheet_names(office, qualified_sheets, monkeypatch):
+    _, target = qualified_sheets
+    names = {}
+    for name, address in (("LayoutTarget", "A1:C3"), ("LayoutOverlap", "B2:C3")):
+        defined = office.wb.Names.Add(name, f"=Sheet2!{address}")
+        defined.RefersToRange = target.Range(address)
+        names[name] = defined
+    original = Sheet.Range
+
+    def resolve(self, address):
+        if self.Parent is office.wb and address in names:
+            return names[address].RefersToRange
+        return original(self, address)
+
+    monkeypatch.setattr(Sheet, "Range", resolve)
+
+
+@pytest.mark.parametrize("cells", ["Sheet2!A1:C3", "LayoutTarget"])
 @pytest.mark.parametrize("kwargs,widths,heights", [
     ({"column_width": 22}, [22, 22, 22], [15, 15, 15]),
     ({"row_height": 30}, [8.43, 8.43, 8.43], [30, 30, 30]),
@@ -38,7 +57,7 @@ def qualified_sheets(office):
     ({"autofit": "both"}, [22, 22, 22], [30, 30, 30]),
 ])
 def test_dimensions_resolve_qualified_cells_with_blank_sheet(
-    office, qualified_sheets, monkeypatch, kwargs, widths, heights,
+    office, qualified_sheets, cross_sheet_names, monkeypatch, cells, kwargs, widths, heights,
 ):
     active, target = qualified_sheets
     calls, fit_sheets = [], []
@@ -52,7 +71,7 @@ def test_dimensions_resolve_qualified_cells_with_blank_sheet(
 
     autofit_spy(monkeypatch, calls, effect)
     result = office.call("excel_set_dimensions", workbook=office.wb.Name,
-                         sheet="", cells="Sheet2!A1:C3", **kwargs)
+                         sheet="", cells=cells, **kwargs)
     assert result["sheet"] == "Sheet2" and result["undo"] == "available"
     assert [target.Columns(i).ColumnWidth for i in range(1, 4)] == widths
     assert [target.Rows(i).RowHeight for i in range(1, 4)] == heights
@@ -70,16 +89,25 @@ def test_dimensions_resolve_qualified_cells_with_blank_sheet(
     assert [active.Columns(i).ColumnWidth for i in range(1, 4)] == [active.StandardWidth] * 3
     assert [active.Rows(i).RowHeight for i in range(1, 4)] == [15] * 3
     assert len(stack(office)) == 1
+    assert all(op["sheet"] == "Sheet2" for op in stack(office)[0].ops)
     revert(office)
     assert [target.Columns(i).ColumnWidth for i in range(1, 4)] == [target.StandardWidth] * 3
     assert [target.Rows(i).RowHeight for i in range(1, 4)] == [15] * 3
+    assert [active.Columns(i).ColumnWidth for i in range(1, 4)] == [active.StandardWidth] * 3
+    assert [active.Rows(i).RowHeight for i in range(1, 4)] == [15] * 3
+    assert office.wb.ActiveSheet is active
 
 
-def test_format_ranges_resolve_qualified_cells_with_blank_sheet(office, qualified_sheets):
+@pytest.mark.parametrize("cells,overlap", [
+    ("Sheet2!A1:C3", "Sheet2!B2:C3"), ("LayoutTarget", "LayoutOverlap"),
+])
+def test_format_ranges_resolve_qualified_cells_with_blank_sheet(
+    office, qualified_sheets, cross_sheet_names, cells, overlap,
+):
     active, target = qualified_sheets
     result = office.call("excel_format_ranges", workbook=office.wb.Name, sheet="", ranges=[
-        {"cells": "Sheet2!A1:C3", "format": {"bold": True}},
-        {"cells": "Sheet2!B2:C3", "format": {"italic": True}},
+        {"cells": cells, "format": {"bold": True}},
+        {"cells": overlap, "format": {"italic": True}},
     ])
     assert result["sheet"] == "Sheet2" and result["undo"] == "available"
     assert all(r["sheet"] == "Sheet2" for r in result["ranges"])
@@ -88,9 +116,13 @@ def test_format_ranges_resolve_qualified_cells_with_blank_sheet(office, qualifie
     assert active.Range("A1:C3").Font.Bold is False
     assert active.Range("A1:C3").Font.Italic is False
     assert len(stack(office)) == 1
+    assert all(op["sheet"] == "Sheet2" for op in stack(office)[0].ops)
     revert(office)
     assert target.Range("A1:C3").Font.Bold is False
     assert target.Range("A1:C3").Font.Italic is False
+    assert active.Range("A1:C3").Font.Bold is False
+    assert active.Range("A1:C3").Font.Italic is False
+    assert office.wb.ActiveSheet is active
 
 
 @pytest.mark.parametrize("tool", ["excel_set_dimensions", "excel_format_ranges"])

@@ -400,11 +400,12 @@ def excel_format_ranges(workbook: str, sheet: str, ranges: list[dict]) -> dict:
     app, wb = pick_workbook(workbook)
     plans, specs = [], []
     for spec in ranges:
-        ws, rng = get_range(wb, sheet, spec["cells"], empty_means_used=False)
+        _, rng = get_range(wb, sheet, spec["cells"], empty_means_used=False)
+        ws = rng.Worksheet
         xl.validate_rectangle(rng, ws, wb)
         plans.append(_prepare_format(app, wb, ws, rng, **spec["format"]))
         specs.append({"cells": xl.ref_label(ws, rng), "format": spec["format"]})
-    undo.require_undo("workbook", app, wb, plan={"sheet": sheet, "_format_ranges": specs})
+    undo.require_undo("workbook", app, wb, plan={"sheet": "", "_format_ranges": specs})
     results = []
     try:
         for apply in plans:

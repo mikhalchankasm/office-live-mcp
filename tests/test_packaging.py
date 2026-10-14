@@ -52,3 +52,18 @@ def test_packaged_installer_stays_ascii_with_windows_line_endings():
     raw = (ROOT / "packaging" / "install.cmd").read_bytes()
     raw.decode("ascii")
     assert b"\r\n" in raw and b"\n" not in raw.replace(b"\r\n", b"")
+
+
+def test_inno_preparation_guard_and_version_contract():
+    text = (ROOT / "packaging/office-live-mcp.iss").read_text(encoding="utf-8-sig")
+    assert "function PrepareToInstall(var NeedsRestart: Boolean): String;" in text
+    assert "CreateFileW@kernel32.dll stdcall" in text and "DLLGetLastError" in text
+    assert "CheckExeAvailable('office-live-mcp.exe')" in text
+    assert "CheckExeAvailable('office-live-link.exe')" in text
+    for language in ("en", "ru"):
+        assert re.search(rf"^{language}\.AppBusy=.+%1$", text, re.M)
+        assert re.search(rf"^{language}\.AppNoAccess=.+%1.+%2.+$", text, re.M)
+    assert "CloseApplications=yes" in text and "CloseApplications=force" not in text
+    assert "#ifndef AppVersionNumeric\n  #error" in text
+    assert "VersionInfoVersion={#AppVersionNumeric}" in text
+    assert "VersionInfoProductTextVersion={#AppVersion}" in text

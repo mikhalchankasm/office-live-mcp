@@ -39,6 +39,8 @@ The program lives in `%LOCALAPPDATA%\Programs\office-live-mcp\app`. Start menu s
 
 ### Silent installation
 
+If the server or link handler is in use, setup exits with code **7** and logs the reason; close connected agents or end their sessions, then retry.
+
 For automated deployment, pass `/CLIENTS=detected` to the downloaded installer to connect all detected supported agents.
 Choose `/ACCESS=full` for editing or `/ACCESS=readonly` for read-only access; this choice applies to newly connected agents.
 See the [administrator parameter reference](GUIDE.ru.md#тихая-установка-для-администраторов) for silent installation options.

@@ -2,6 +2,9 @@
 #ifndef AppVersion
   #error AppVersion must be passed by packaging/build.py
 #endif
+#ifndef AppVersionNumeric
+  #error AppVersionNumeric must be passed by packaging/build.py
+#endif
 #ifndef SourceDir
   #error SourceDir must be passed by packaging/build.py
 #endif
@@ -11,6 +14,8 @@
 AppId={{47C3867B-C095-4C76-AACD-DA6A268CF854}
 AppName=Office Live MCP
 AppVersion={#AppVersion}
+VersionInfoVersion={#AppVersionNumeric}
+VersionInfoProductTextVersion={#AppVersion}
 AppPublisher=mikhalchankasm
 AppPublisherURL={#RepoURL}
 AppSupportURL={#RepoURL}
@@ -40,6 +45,10 @@ Name: "en"; MessagesFile: "compiler:Default.isl"
 Name: "ru"; MessagesFile: "compiler:Languages\Russian.isl"
 
 [CustomMessages]
+en.AppBusy=Office Live MCP is currently running in an agent. Close the connected agents (Claude, Cursor, Codex...) or end their sessions, then run setup again. File in use: %1
+ru.AppBusy=Office Live MCP сейчас запущен агентом. Закройте агентов, к которым он подключён (Claude, Cursor, Codex…), или завершите их сеансы и запустите установку снова. Занят файл: %1
+en.AppNoAccess=Cannot access %1 (Windows error %2). Check file permissions and run setup again.
+ru.AppNoAccess=Нет доступа к %1 (ошибка Windows %2). Проверьте права доступа к файлу и запустите установку снова.
 en.Connect=Connect to agents
 ru.Connect=Подключить к агентам
 en.Doctor=Diagnostics (doctor)
@@ -114,6 +123,37 @@ var
   Updating, ClientsLoaded, ClientsValid, FilesCopied, PostinstallDone: Boolean;
   PostinstallCode: Integer;
   ResultText, ClientProblem: String;
+
+function OpenExeExclusive(FileName: String; DesiredAccess, ShareMode: LongWord;
+  SecurityAttributes: INT_PTR; CreationDisposition, FlagsAndAttributes: LongWord;
+  TemplateFile: THandle): THandle;
+  external 'CreateFileW@kernel32.dll stdcall';
+function CloseExeHandle(Handle: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
+function CheckExeAvailable(const Name: String): String;
+var FileName: String; Handle: THandle; ErrorCode: LongWord;
+begin
+  Result := '';
+  FileName := ExpandConstant('{app}\app\') + Name;
+  if not FileExists(FileName) then Exit;
+  // GENERIC_READ | GENERIC_WRITE, share=0, OPEN_EXISTING: same probe as install._exe_available.
+  Handle := OpenExeExclusive(FileName, $C0000000, 0, 0, 3, $80, 0);
+  if Handle = THandle(-1) then begin  // INVALID_HANDLE_VALUE
+    ErrorCode := DLLGetLastError;
+    if ErrorCode = 32 then Result := FmtMessage(CustomMessage('AppBusy'), [FileName])
+    else Result := FmtMessage(CustomMessage('AppNoAccess'), [FileName, IntToStr(ErrorCode)]);
+    Log(Result);
+  end else CloseExeHandle(Handle);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  // Inno calls this before Restart Manager checks files in use (CloseApplications=yes).
+  // A non-empty result stops preparation, giving silent setup exit code 7, without closing agents.
+  Result := CheckExeAvailable('office-live-mcp.exe');
+  if Result = '' then Result := CheckExeAvailable('office-live-link.exe');
+end;
 
 function DefaultRoot(Param: String): String;
 var Data, Marker: AnsiString; Root: String;

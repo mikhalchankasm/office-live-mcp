@@ -20,6 +20,7 @@ from tests.live.office_cleanup import (excel_pids, hidden_idle_excel_pids, hung_
 # Быстрый набор (pytest tests/live -m smoke, ~3 мин): по одному-два ключевых сценария на группу плюс тесты, которые уже
 # ловили настоящие ошибки Office. Полный набор (~12 мин) — перед релизом.
 SMOKE = {
+    "test_live_save_old_format.py": ("test_xls_save_with_modern_formula_restores_compatibility",),
     "test_live.py": ("test_write_read_and_text_mode", "test_number_formats_roundtrip_in_any_locale", "test_formulas_fill_down_and_r1c1",
                      "test_sort_filter_find_replace_dedupe", "test_conditional_format_and_validation", "test_chart_table_profile_and_issues",
                      "test_pivot_filters_slicers_and_hiding", "test_render_range_image_is_a_real_png", "test_readonly_server_exposes_no_writing_tools",

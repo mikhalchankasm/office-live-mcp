@@ -7,6 +7,7 @@ import tempfile
 import time
 import zipfile
 from pathlib import Path
+from runpy import run_path
 
 import pytest
 
@@ -39,6 +40,34 @@ def test_exe_mcp_and_utf8_diagnostics_in_ansi_environment(packaged):
                             env={**os.environ, "OFFICE_LIVE_TOOLSETS": "unknown", "PYTHONIOENCODING": "cp1251"}, timeout=30)
     assert result.returncode == 2 and result.stdout == b""
     assert "Ошибка настройки" in result.stderr.decode("utf-8", "strict")
+
+
+@pytest.mark.parametrize("filename", ["office-live-mcp.exe", "office-live-link.exe"])
+def test_exe_version_info(packaged, filename):
+    import win32api
+
+    _, server = packaged
+    exe = str(server.with_name(filename))
+    translations = win32api.GetFileVersionInfo(exe, r"\VarFileInfo\Translation")
+    assert translations
+    for language, codepage in translations:
+        prefix = f"\\StringFileInfo\\{language:04X}{codepage:04X}\\"
+        for key in ("FileVersion", "ProductVersion"):
+            assert win32api.GetFileVersionInfo(exe, prefix + key) == __version__
+        assert win32api.GetFileVersionInfo(exe, prefix + "OriginalFilename") == filename
+        assert win32api.GetFileVersionInfo(exe, prefix + "ProductName") == "Office Live MCP"
+        assert win32api.GetFileVersionInfo(exe, prefix + "InternalName") == Path(filename).stem
+        assert win32api.GetFileVersionInfo(exe, prefix + "CompanyName") == "mikhalchankasm"
+        description = "Office Live MCP server" if filename == "office-live-mcp.exe" else "Office Live MCP link handler"
+        assert win32api.GetFileVersionInfo(exe, prefix + "FileDescription") == description
+        license_text = (Path(__file__).resolve().parents[1] / "LICENSE").read_text(encoding="utf-8")
+        copyright_text = next(line for line in license_text.splitlines() if line.startswith("Copyright"))
+        assert win32api.GetFileVersionInfo(exe, prefix + "LegalCopyright") == copyright_text
+    fixed = win32api.GetFileVersionInfo(exe, "\\")
+    numeric_version = run_path(str(Path(__file__).resolve().parents[1] / "packaging/versioninfo.py"))["numeric_version"]
+    for field in ("FileVersion", "ProductVersion"):
+        ms, ls = fixed[field + "MS"], fixed[field + "LS"]
+        assert (ms >> 16, ms & 0xFFFF, ls >> 16, ls & 0xFFFF) == numeric_version(__version__)
 
 
 def test_installed_exe_in_use_and_self_uninstall_report(packaged, monkeypatch):

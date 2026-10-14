@@ -10,7 +10,7 @@ import pywintypes
 EXCEL = {
     "_Application": "Hwnd ScreenUpdating ActiveWorkbook ActiveSheet Workbooks DisplayAlerts EnableEvents Calculation ActiveWindow CutCopyMode Calculate Selection Intersect International",
     "Workbooks": "Count Item Add",
-    "_Workbook": "Name FullName Path Names Worksheets Sheets Windows Saved Application Activate Close SlicerCaches Date1904 Protect Unprotect ProtectStructure ProtectWindows ReadOnly",
+    "_Workbook": "Name FullName Path Names Worksheets Sheets Windows Saved Application Activate Close SlicerCaches Date1904 Protect Unprotect ProtectStructure ProtectWindows ReadOnly CheckCompatibility FileFormat Save",
     "_Worksheet": "Names Name Parent Rows Columns Cells Range UsedRange Shapes ListObjects PivotTables Comments CommentsThreaded Index Visible Tab Activate Delete Copy Move StandardWidth ProtectContents",
     "Sheets": "Count Item Add",
     "Names": "Count Item Add",
@@ -187,7 +187,7 @@ CALLS.update({
 })
 SETTERS = {
     "_Application": "DisplayAlerts EnableEvents Calculation CutCopyMode",
-    "_Workbook": "Saved Date1904",
+    "_Workbook": "Saved Date1904 CheckCompatibility",
     "_Worksheet": "Name Visible EnableSelection",
     "Range": "Value Value2 Formula Formula2 ColumnWidth RowHeight Hidden NumberFormat HorizontalAlignment VerticalAlignment WrapText ShrinkToFit IndentLevel Orientation Style Locked",
     "Font": "Name Size Bold Italic Underline Color Strikethrough ThemeColor TintAndShade",

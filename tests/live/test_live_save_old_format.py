@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.live.mcpclient import Stdio
+from tests.live.office_cleanup import excel_pids, hidden_idle_excel_pids, quit_excel_if_idle
 from tests.live.test_live_stage1 import in_excel
 
 pytestmark = pytest.mark.live
@@ -12,11 +13,15 @@ pytestmark = pytest.mark.live
 
 @pytest.fixture
 def srv(tmp):
+    # Overrides the session srv, so it must repeat its cleanup: an Excel started by this test is quit when idle,
+    # the user's Excel (running before) never is.
+    excel_before = excel_pids() - hidden_idle_excel_pids()
     client = Stdio(env={"OFFICE_LIVE_MODE": "full", "OFFICE_LIVE_ALLOWED_DIRS": tmp,
                         "OFFICE_LIVE_JOURNAL_DIR": str(Path(tmp) / "journal"),
                         "OFFICE_LIVE_AUDIT_LOG": str(Path(tmp) / "audit.jsonl")}, timeout=30)
     yield client
     client.close()
+    quit_excel_if_idle(excel_before)
 
 
 def test_xls_save_with_modern_formula_restores_compatibility(srv, wb, tmp):

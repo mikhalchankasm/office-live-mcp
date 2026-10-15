@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Table import:** `excel_import_table` reads allowed CSV/TSV/TXT/JSON files with encoding/delimiter detection,
+  literal text columns, default `Data` sheet, bounded widths and bold/wrapped headers; one block write and one undo entry.
+  Occupied targets refuse before changes. New books have an explicit undo barrier; inactive sheets report skipped freeze.
+
 ## 0.4.6 — 2026-10-15
 
 Old-format Excel files save without hanging on modal dialogs; the exe shows its version; silent setup explains

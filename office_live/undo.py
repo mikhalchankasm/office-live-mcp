@@ -614,7 +614,7 @@ def excel_fingerprint(app, wb, entry):
         modes = {op.get("restore", "all") for op in ops} or {"all"}
         state.append([area, _formula_state(rng) if modes & {"all", "contents"} else None,
                       _format_state(rng) if modes & {"all", "formats"} else None])
-        if entry.tool in {"excel_clean_text", "excel_split_column", "excel_goal_seek"}:
+        if entry.tool in {"excel_import_table", "excel_clean_text", "excel_split_column", "excel_goal_seek"}:
             state.append([_property_state(rng, p) for p in ("NumberFormat", "PrefixCharacter")])
         for mode in modes & {"all", "formats", "comments", "validation", "rules"}:
             state.append(_metadata_state(rng, "formats" if mode == "rules" else mode))
@@ -642,6 +642,8 @@ def excel_fingerprint(app, wb, entry):
             state.append([ws.Name, int(ws.Index), int(ws.Visible), ws.Tab.ColorIndex, ws.Tab.Color])
         elif what == "calculation":
             state.append(app.Calculation)
+        elif what == "import_view":
+            state.append(_import_view(app, wb, op["sheet"]))
         elif what == "view":
             state.append(_view(app, wb, op["sheet"]))
         elif what == "protection":
@@ -701,6 +703,34 @@ def _simple_range(app, wb, entry, args):
         _snapshots(app, wb, entry, [rng], restore="formats")
     else:
         _snapshots(app, wb, entry, [rng])
+
+
+IMPORT_BOOK_BARRIER = "Import created a new workbook; office_undo cannot close it. Close it explicitly with discard=true if unwanted."
+
+
+def _import_view(app, wb, sheet, value=None):
+    # Never activate a sheet just to inspect/fingerprint an import.
+    if app.ActiveWorkbook.FullName != wb.FullName or app.ActiveSheet.Name != sheet:
+        raise ToolError("Activate the imported sheet before undoing its frozen view.")
+    win = app.ActiveWindow
+    props = ("SplitRow", "SplitColumn", "FreezePanes", "ScrollRow", "ScrollColumn")
+    if value is None:
+        return {p: getattr(win, p) for p in props}
+    win.FreezePanes = False
+    for prop in props:
+        setattr(win, prop, value[prop])
+
+
+def _import_table(app, wb, entry, args):
+    if not args.get("workbook"):
+        entry.barrier(IMPORT_BOOK_BARRIER)
+    elif args.get("_import_created"):
+        _add_sheet(app, wb, entry, args)
+    else:
+        ws, rng = xl.get_range(wb, args["sheet"], args["cells"])
+        if args.get("layout", True) and args.get("header", True) and app.ActiveWorkbook.FullName == wb.FullName and app.ActiveSheet.Name == ws.Name:
+            entry.ops.append({"op": "import_view", "sheet": ws.Name, "before": _import_view(app, wb, ws.Name)})
+        _snapshots(app, wb, entry, [rng], columns=args.get("layout", True), properties=("NumberFormat",))
 
 
 def _write_range(app, wb, entry, args):
@@ -980,6 +1010,7 @@ RESOLVERS = dict.fromkeys((
     "excel_manage_comments", "excel_add_hyperlink", "excel_sort_range", "excel_remove_duplicates",
 ), _simple_range)
 RESOLVERS.update({
+    "excel_import_table": _import_table,
     "excel_goal_seek": _goal_seek, "excel_subtotals": _subtotals, "excel_sparklines": _sparklines,
     "excel_format_ranges": _format_ranges,
     "excel_clean_text": _clean_text,
@@ -1028,7 +1059,9 @@ def restore_excel(app, wb, entry):
     backup = _backup(app, entry.backup_token) if entry.backup_sheets else None
     for op in entry.ops:
         what = op["op"]
-        if what == "subtotal":
+        if what == "import_view":
+            _import_view(app, wb, op["sheet"], op["before"])
+        elif what == "subtotal":
             ws = wb.Worksheets(op["sheet"])
             current = ws.Range(op["current_address"])
             current_rows = int(current.Rows.Count)
@@ -1159,7 +1192,7 @@ def restore_excel(app, wb, entry):
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
             "excel_close_workbook", "word_close_document", "word_compare_documents"}
 
-DEFERRED = {"excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
+DEFERRED = {"excel_import_table", "excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
             "excel_goal_seek", "excel_subtotals", "excel_sparklines", "word_insert_document", "word_table_text", "word_restrict_editing", "word_edit_apply", "word_manage_comments"}
 
 
@@ -1439,6 +1472,10 @@ def record_call(fn, args, kwargs, tool, kind, arguments, supplied):
         result = fn(*args, **kwargs)
         if not isinstance(result, dict) or result.get("ok", True):
             recording.finish(result)
+            if tool == "excel_import_table":
+                from .excel_core import _compact_import_result
+
+                _compact_import_result(result)
             success = True
         return result
     except PartialChangeError as exc:

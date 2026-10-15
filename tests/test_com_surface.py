@@ -52,6 +52,7 @@ EXCEL = {
 }
 EXCEL["_Worksheet"] += " Protect Unprotect Protection ProtectDrawingObjects ProtectScenarios ProtectionMode EnableSelection"
 EXCEL["Range"] += " DirectPrecedents DirectDependents HasSpill"
+EXCEL["Range"] += " HasArray"
 EXCEL["Areas"] += " Item"
 EXCEL["Name"] += " RefersToRange"
 EXCEL["ListObject"] += " ListColumns"
@@ -171,6 +172,7 @@ CALLS = {
     "UndoRecord.StartCustomRecord": ("Name",),
 }
 CALLS.update({"Protection." + member: () for member in EXCEL["Protection"].split()})
+CALLS.update({"Range.HasArray": (), "Sheets.Item": ("Index",), "_Worksheet.Delete": ()})
 CALLS.update({"_Application.Ready": (), "_Application.Interactive": (), "Window.Hwnd": (), "_Document.ActiveWindow": (), "Windows.Item": ("Index",)})
 CALLS.update({
     "Range.GoalSeek": ("Goal", "ChangingCell"), "Range.Precedents": (),
@@ -294,7 +296,7 @@ def test_word_comparison_and_sort_enum_values():
 
 
 @pytest.mark.parametrize("library,expected", [
-    (EXCEL_LIB, {"xlSummaryAbove": 0, "xlSummaryBelow": 1, "xlRows": 1, "xlColumns": 2,
+    (EXCEL_LIB, {"xlWBATWorksheet": -4167, "xlSummaryAbove": 0, "xlSummaryBelow": 1, "xlRows": 1, "xlColumns": 2,
                  "xlSparkLine": 1, "xlSparkColumn": 2, "xlSparkColumnStacked100": 3,
                  "xlAverage": -4106, "xlCount": -4112, "xlCountNums": -4113, "xlMax": -4136, "xlMin": -4139,
                  "xlProduct": -4149, "xlStDev": -4155, "xlStDevP": -4156, "xlSum": -4157, "xlVar": -4164, "xlVarP": -4165}),

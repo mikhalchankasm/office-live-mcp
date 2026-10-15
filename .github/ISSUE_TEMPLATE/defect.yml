@@ -1,0 +1,23 @@
+name: Defect
+description: Something that works wrong. Include the version and what you saw.
+labels: [bug]
+body:
+  - type: input
+    id: version
+    attributes: {label: Version, description: "office-live-mcp version (doctor shows it), Office version, Windows language."}
+    validations: {required: true}
+  - type: textarea
+    id: steps
+    attributes: {label: Steps, description: Tool calls or actions that reproduce it.}
+    validations: {required: true}
+  - type: textarea
+    id: expected
+    attributes: {label: Expected vs actual}
+    validations: {required: true}
+  - type: textarea
+    id: evidence
+    attributes: {label: Evidence, description: "Error text, timing, screenshot of an Office dialog. No private file names or paths."}
+  - type: textarea
+    id: fixed-when
+    attributes: {label: Fixed when, description: One observable fact that proves the fix.}
+    validations: {required: true}

@@ -144,4 +144,9 @@ set OFFICE_LIVE_LIVE_TESTS=1 && .venv\Scripts\python -m pytest tests\live -q    
 ```
 
 Architecture, COM pitfalls and all settings: [GUIDE.ru.md](GUIDE.ru.md) (Russian). Changes: [CHANGELOG.md](../CHANGELOG.md).
+For unattended local live tests, use `python scripts/live_run.py --smoke` (omit `--smoke` for the full suite).
+Pass pytest selectors/options after the runner options; `--timeout-min 40` sets the total collection/run timeout.
+Logs, Office recovery events and per-node results are saved under `artifacts/live/<timestamp>/`.
+Use `python scripts/live_run.py --resume` to rerun only failed, errored and unfinished tests from the latest summary.
+The watchdog closes only verified test-owned Office processes; foreign Office problems stop the run without closing them.
 License: [MIT](../LICENSE).

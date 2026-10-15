@@ -123,7 +123,7 @@ are unchanged.
 | `word_edit_preview` | read | Preview an exact fragment edit in a main-story paragraph without changes, journal or undo. |
 | `word_edit_apply` | write | Apply an agreed exact fragment replacement as tracked changes; restores TrackRevisions even on failure. |
 
-### word_layout (16)
+### word_layout (17)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -134,6 +134,7 @@ are unchanged.
 | `word_update_fields` | write | Refresh every field of the document, including headers/footers, footnotes and text boxes: page numbers, total pages, table of contents, cross-references, dates. Reports fields that could not be updated. |
 | `word_captions` | write (readonly: list) | List SEQ captions and missing/orphan captions; add automatic captions and cross-references using built-in label IDs. |
 | `word_insert_image` | write | Insert a picture file (png/jpg/gif/bmp/emf) as its own paragraph. |
+| `word_sections` | write (readonly: list) | List section bounds, paper, margins, header links and numbering; insert section breaks or orient paragraph ranges with undo. |
 | `word_insert_break` | write | Insert a page, section or column break. |
 | `word_manage_comments` | write (readonly: list) | Review comments: list, add (on a paragraph or on found text), reply, resolve, delete. |
 | `word_track_changes` | write (readonly: status, list) | Control 'Track Changes' and review tracked revisions. |

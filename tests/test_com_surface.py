@@ -133,7 +133,19 @@ WORD["Field"] += " Type"
 WORD["InlineShapes"] += " Item"
 WORD["Bookmarks"] += " Add"
 WORD.update({"CaptionLabels": "Item", "CaptionLabel": "Name", "InlineShape": "Range Type"})
+WORD["Section"] += " Range PageSetup"
+WORD["_Document"] += " GoTo Repaginate ComputeStatistics"
+WORD["Range"] += " ParagraphFormat"
+WORD["_ParagraphFormat"] = "PageBreakBefore"
+WORD["Range"] += " InsertBreak"
+WORD["HeaderFooter"] += " LinkToPrevious PageNumbers"
+WORD["Shapes"] += " Item"
+WORD.update({"PageSetup": "Orientation PaperSize PageWidth PageHeight TopMargin BottomMargin LeftMargin RightMargin DifferentFirstPageHeaderFooter",
+             "PageNumbers": "RestartNumberingAtSection StartingNumber",
+             "Shape": "Anchor Name RelativeHorizontalPosition RelativeVerticalPosition"})
 CALLS = {
+    "_Document.GoTo": ("What", "Which", "Count"), "_Document.Repaginate": (), "_Document.ComputeStatistics": ("Statistic",),
+    "Range.InsertBreak": ("Type",), "Sections.Item": ("Index",), "HeadersFooters.Item": ("Index",), "Shapes.Item": ("Index",),
     "Range.InsertCaption": ("Label", "Title", "TitleAutoText", "Position", "ExcludeLabel"),
     "Range.InsertCrossReference": ("ReferenceType", "ReferenceKind", "ReferenceItem", "InsertAsHyperlink", "IncludePosition", "SeparateNumbers", "SeparatorString"),
     "_Document.GetCrossReferenceItems": ("ReferenceType",), "CaptionLabels.Item": ("Index",),
@@ -223,6 +235,8 @@ WORD_SETTERS.update({"Shape": "Name Rotation RelativeHorizontalPosition Relative
 CALLS.update({"Shapes.AddTextEffect": ("PresetTextEffect", "Text", "FontName", "FontSize", "FontBold", "FontItalic", "Left", "Top", "Anchor"),
               "Shapes.Item": ("Index",), "Shape.Delete": (), "FillFormat.Solid": (),
               "Sections.Item": ("Index",), "HeadersFooters.Item": ("Index",)})
+WORD_SETTERS.update({"PageSetup": "Orientation PageWidth PageHeight TopMargin BottomMargin LeftMargin RightMargin",
+                     "HeaderFooter": "LinkToPrevious", "PageNumbers": "RestartNumberingAtSection StartingNumber", "_ParagraphFormat": "PageBreakBefore"})
 SETTERS["_Application"] += " MaxIterations MaxChange"
 SETTERS.update({"SparklineGroup": "DateRange DisplayBlanksAs DisplayHidden LineWeight PlotBy", "SparkColor": "Visible",
                 "FormatColor": "Color ThemeColor TintAndShade", "SparkHorizontalAxis": "RightToLeftPlotOrder",
@@ -324,7 +338,10 @@ def test_word_comparison_and_sort_enum_values():
                  "xlSparkLine": 1, "xlSparkColumn": 2, "xlSparkColumnStacked100": 3,
                  "xlAverage": -4106, "xlCount": -4112, "xlCountNums": -4113, "xlMax": -4136, "xlMin": -4139,
                  "xlProduct": -4149, "xlStDev": -4155, "xlStDevP": -4156, "xlSum": -4157, "xlVar": -4164, "xlVarP": -4165}),
-    (WORD_LIB, {"wdNoProtection": -1, "wdAllowOnlyRevisions": 0, "wdAllowOnlyComments": 1, "wdAllowOnlyFormFields": 2,
+    (WORD_LIB, {"wdSectionBreakNextPage": 2, "wdSectionBreakContinuous": 3, "wdSectionBreakEvenPage": 4, "wdSectionBreakOddPage": 5,
+                "wdOrientPortrait": 0, "wdOrientLandscape": 1, "wdMainTextStory": 1,
+                "wdRelativeHorizontalPositionPage": 1, "wdRelativeVerticalPositionPage": 1,
+                "wdNoProtection": -1, "wdAllowOnlyRevisions": 0, "wdAllowOnlyComments": 1, "wdAllowOnlyFormFields": 2,
                 "wdAllowOnlyReading": 3, "wdSeparateByParagraphs": 0, "wdSeparateByTabs": 1, "wdSeparateByCommas": 2, "wdStyleTypeTable": 3}),
 ])
 def test_operation_enum_values(library, expected):

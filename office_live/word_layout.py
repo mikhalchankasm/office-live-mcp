@@ -36,6 +36,171 @@ MISSING = pythoncom.Missing
 PAPER = {"a4": 7, "a3": 6, "a5": 9, "letter": 2, "legal": 5}
 HF_TYPES = {"primary": 1, "first_page": 2, "even": 3}
 
+# wdSectionBreakNextPage / Continuous / EvenPage / OddPage
+SECTION_BREAKS = {"next_page": 2, "continuous": 3, "even_page": 4, "odd_page": 5}
+_W = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+_PAGE_DIMS = ("PageWidth", "PageHeight", "TopMargin", "BottomMargin", "LeftMargin", "RightMargin")
+
+
+def _section_xml(doc):
+    """Только XML: даже проверка HeaderFooter.Exists меняет документ."""
+    root = ET.fromstring(doc.Content.WordOpenXML)
+    pkg = "{http://schemas.microsoft.com/office/2006/xmlPackage}"
+    rel = "{http://schemas.openxmlformats.org/package/2006/relationships}"
+    rid = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id"
+    parts = {p.get(pkg + "name"): p for p in root.iter(pkg + "part")}
+    relationships = parts.get("/word/_rels/document.xml.rels")
+    targets = {} if relationships is None else {r.get("Id"): posixpath.normpath(posixpath.join("/word", r.get("Target", "")))
+                                               for r in relationships.iter(rel + "Relationship")}
+    anchored = {path for path, part in parts.items() if any(
+        (n.tag.rsplit("}", 1)[-1] in {"positionH", "positionV"} and n.get("relativeFrom") == "page")
+        or re.search(r"mso-position-(?:horizontal|vertical)-relative\s*:\s*page", n.get("style", "")) for n in part.iter())}
+    body = next(root.iter(_W + "body"), None)
+    if body is None:
+        raise ToolError("Cannot read section properties from WordOpenXML.")
+    def walk(node):
+        if node.tag in {_W + "txbxContent", _W + "sectPrChange"}:
+            return
+        if node.tag == _W + "sectPr":
+            yield node
+        else:
+            for child in node:
+                yield from walk(child)
+    properties = list(walk(body))
+    if len(properties) != int(doc.Sections.Count):
+        raise ToolError("XML and Word section counts disagree; no changes made.")
+    result, inherited = [], {}
+    for index, prop in enumerate(properties, 1):
+        refs = {(k, {"default": 1, "first": 2, "even": 3}[r.get(_W + "type")]): r.get(rid)
+                for k in ("header", "footer") for r in prop.findall(_W + k + "Reference")}
+        inherited |= refs
+        number = prop.find(_W + "pgNumType")
+        start = number.get(_W + "start") if number is not None else None
+        result.append({"linked_to_previous": {f"{k}_{n}": index > 1 and (k, t) not in refs
+                                              for k in ("header", "footer") for n, t in HF_TYPES.items()},
+                       "restart_numbering_at_section": start is not None,
+                       "starting_number": int(start) if start is not None else None,
+                       "_existing": sorted(inherited),
+                       "_header_page_shapes": any(targets.get(r) in anchored for r in inherited.values())})
+    return result
+
+
+def _section_list(doc):
+    result = []
+    for index, meta in enumerate(_section_xml(doc), 1):
+        sec = doc.Sections(index)
+        ps, rng = sec.PageSetup, sec.Range
+        result.append({"section": index, "start_paragraph": paragraph_index_at(doc, int(rng.Start)),
+                       "end_paragraph": paragraph_index_at(doc, int(rng.End) - 1),
+                       "orientation": "landscape" if int(ps.Orientation) == 1 else "portrait",  # wdOrientLandscape
+                       "paper_size_id": int(ps.PaperSize),
+                       "page_cm": [round(float(getattr(ps, n)) * 2.54 / 72, 3) for n in _PAGE_DIMS[:2]],
+                       "margins_cm": {n: round(float(getattr(ps, n)) * 2.54 / 72, 3) for n in _PAGE_DIMS[2:]},
+                       "different_first_page": bool(ps.DifferentFirstPageHeaderFooter),
+                       **{k: v for k, v in meta.items() if not k.startswith("_")}})
+    return result
+
+
+@office_tool("word_layout", "write", title="Sections and landscape fragments", read_actions=("list",))
+def word_sections(document: str, action: str = "list", paragraph: int = 0, kind: str = "next_page",
+                  start_paragraph: int = 0, end_paragraph: int = 0, orientation: str = "landscape") -> dict:
+    """List sections, insert a section break before a paragraph, or orient an inclusive paragraph range.
+
+    action: list (readonly), insert_break, orientation. kind: next_page, continuous, even_page, odd_page.
+    orientation: landscape or portrait; inserts only missing next-page boundaries. Whole tables may be enclosed,
+    but boundaries inside tables are refused. Rotates paper and margin pairs; preserves existing section links
+    and restarts, while newly split continuations inherit headers/footers and continue numbering.
+    List uses XML without touching headers; starting_number is null when numbering continues.
+    Returns inserted breaks (original paragraph positions), resulting sections and page-anchored shape warnings.
+    """
+    action, kind, orientation = action.lower(), kind.lower(), orientation.lower()
+    if action not in {"list", "insert_break", "orientation"}:
+        raise ToolError("action must be list, insert_break or orientation.")
+    app, doc = wd.pick_document(document)
+    if action == "list":
+        return {"document": doc.Name, "sections": _section_list(doc)}
+    if kind not in SECTION_BREAKS or orientation not in {"landscape", "portrait"}:
+        raise ToolError("Invalid section break kind or orientation.")
+    if action == "orientation" and start_paragraph > end_paragraph:
+        raise ToolError("start_paragraph must not exceed end_paragraph.")
+    rng = paragraphs_range(doc, paragraph if action == "insert_break" else start_paragraph,
+                           paragraph if action == "insert_break" else end_paragraph)
+    start, end = int(rng.Start), int(rng.End)
+    meta = _section_xml(doc)
+    sections = [(i, int(s.Range.Start), int(s.Range.End), s.PageSetup)
+                for i, s in enumerate(_items(doc.Sections), 1)]
+    boundaries = {s for _, s, _, _ in sections} | {int(doc.Content.End)}
+    breaks = [(start, paragraph, kind)] if action == "insert_break" else [
+        (p, n, "next_page") for p, n in ((start, start_paragraph), (end, end_paragraph + 1)) if p not in boundaries]
+    for table in _items(doc.Tables):
+        a, b = int(table.Range.Start), int(table.Range.End)
+        if a <= start < b or (action == "orientation" and a < end < b):
+            raise ToolError("Section boundaries inside or partially covering a table are unsupported.")
+    target = 1 if orientation == "landscape" else 0  # wdOrientLandscape / wdOrientPortrait
+    pages = {i: tuple(float(getattr(ps, n)) for n in _PAGE_DIMS)
+             for i, a, b, ps in sections if a < end and b > start and int(ps.Orientation) != target}
+    warnings = [f"Page-anchored floating shape in header/footer of section {i} may move."
+                for i, a, b, _ in sections if a < end and b > start and meta[i - 1]["_header_page_shapes"]]
+    for shape in _items(doc.Shapes):
+        anchor = shape.Anchor
+        if int(anchor.StoryType) == 1 and any(a <= int(anchor.Start) < b for _, a, b, _ in sections if a < end and b > start):  # wdMainTextStory
+            if int(shape.RelativeHorizontalPosition) == 1 or int(shape.RelativeVerticalPosition) == 1:  # wdRelativeHorizontal/VerticalPositionPage
+                warnings.append("Page-anchored floating shape may move: " + str(shape.Name))
+    name, inserted, changed, shifts = str(doc.Name), [], [], {}
+    if action == "orientation" and not breaks and not pages:
+        return {"document": name, "inserted_breaks": [], "sections": _section_list(doc), "warnings": warnings,
+                "range_sections": [i for i, a, b, _ in sections if a < end and b > start]}
+    undo.require_undo("document", app, doc)
+    stage = "section break insertion attempted; completion unknown"
+    try:
+        # С конца: исходные позиции ещё не сдвинуты. Word сам копирует свойства раздела.
+        for pos, para, typ in sorted(breaks, reverse=True):
+            before_end = int(doc.Content.End)
+            doc.Range(pos, pos).InsertBreak(SECTION_BREAKS[typ])
+            inserted.append({"before_paragraph": para, "kind": typ})
+            stage = f"inserted breaks={inserted}; next operation attempted"
+            shifts[pos] = int(doc.Content.End) - before_end
+        moved = {p: p + sum(delta for q, delta in shifts.items() if q <= p) for p in shifts}
+        # Новые разделы справа от разрыва должны продолжать нумерацию исходного раздела.
+        for pos, _, _ in breaks:
+            shifted = moved[pos]
+            index = next(i for i in range(1, int(doc.Sections.Count) + 1) if int(doc.Sections(i).Range.Start) == shifted)
+            source = next(i for i, a, b, _ in sections if a <= pos < b)
+            sec = doc.Sections(index)
+            existing = meta[source - 1]["_existing"]
+            # Если номеров ещё нет в колонтитулах, сбрасываем restart через основной footer.
+            if not existing and meta[source - 1]["restart_numbering_at_section"]:
+                existing = [("footer", 1)]  # wdHeaderFooterPrimary; только изменяющее действие
+            for k, typ in existing:
+                hf = _hf(sec, k, typ)
+                hf.LinkToPrevious = True
+                hf.PageNumbers.RestartNumberingAtSection = False
+        if action == "orientation":
+            lo = start + sum(delta for p, delta in shifts.items() if p <= start)
+            hi = end + sum(delta for p, delta in shifts.items() if p < end)
+            for i in range(1, int(doc.Sections.Count) + 1):
+                sec = doc.Sections(i)
+                a, b = int(sec.Range.Start), int(sec.Range.End)
+                if a >= hi or b <= lo:
+                    continue
+                original = a - sum(shifts[p] for p, shifted in moved.items() if shifted <= a)
+                source = next(j for j, x, y, _ in sections if x <= original < y)
+                if source in pages:
+                    width, height, top, bottom, left, right = pages[source]
+                    stage = f"inserted breaks={inserted}; changed sections={changed}; setting section {i} attempted"
+                    sec.PageSetup.Orientation = target
+                    for key, value in zip(_PAGE_DIMS, (height, width, left, right, top, bottom), strict=True):
+                        setattr(sec.PageSetup, key, value)
+                    changed.append(i)
+        doc.Repaginate()  # расчёт страниц до итогового отпечатка отмены
+        result = _section_list(doc)
+        return {"ok": True, "document": name, "inserted_breaks": sorted(inserted, key=lambda b: b["before_paragraph"]),
+                "sections": result, "range_sections": [r["section"] for r in result if action == "orientation"
+                    and int(doc.Sections(r["section"]).Range.Start) < hi and int(doc.Sections(r["section"]).Range.End) > lo],
+                "warnings": warnings}
+    except Exception as exc:
+        raise PartialChangeError(f"Section operation interrupted: {stage}. Use office_undo to undo this call. {exc}") from None
+
 
 def _sections(doc, section: int):
     n = int(doc.Sections.Count)

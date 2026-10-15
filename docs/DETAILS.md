@@ -65,12 +65,12 @@ For installations managed by setup.exe, prefer setup.exe for future updates.
 
 ## What it can do
 
-127 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — catalog in [TOOLS.md](TOOLS.md).
+128 tools in groups you can switch on and off (`OFFICE_LIVE_TOOLSETS`, including the optional Python tool) — catalog in [TOOLS.md](TOOLS.md).
 
 | Group | Highlights |
 |---|---|
 | Excel | **CSV/JSON table import with text columns and layout**, read/write ranges, **compare ranges by position or key**, **clean text, parse explicit dates and split columns with preview/undo**, **trace formula inputs/consumers with completeness reporting**, **sheet/workbook protection, goal seek, subtotals and sparklines**, formulas (A1, R1C1, dynamic arrays), formatting, conditional formatting, validation, sort/filter, hide/group rows, names, tables, **pivot tables with filters, slicers and timelines**, charts, data profile, issue finder, sheet blueprint, range snapshot as PNG |
-| Word | **automatic captions and cross-references, orphan/missing-caption audit**, **text watermarks (status/add/remove)**, **fragment preview/apply as tracked changes and threaded comment metadata**, **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, **insert saved documents, restrict editing and convert tables ↔ text**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
+| Word | **sections and landscape fragments with continuous page numbering**, **automatic captions and cross-references, orphan/missing-caption audit**, **text watermarks (status/add/remove)**, **fragment preview/apply as tracked changes and threaded comment metadata**, **compare documents into a new revision document**, **sort table rows by up to three keys with undo**, **insert saved documents, restrict editing and convert tables ↔ text**, structure, reading by pages, exact find/replace, inserting at a bookmark or next to a table, styles, lists, tables, headers/footers, TOC, comments, track changes, footnotes, page snapshot as PNG, `{{placeholder}}` templates |
 | Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF with a read-only plan, inspect a file without opening it |
 | History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes |
 

@@ -13,9 +13,11 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "packaging"))
 sys.path.insert(0, str(ROOT))
 
 from office_live import __version__  # noqa: E402
+from versioninfo import numeric_version  # noqa: E402
 
 
 def smoke(exe: Path) -> int:
@@ -62,6 +64,7 @@ def find_iscc() -> Path:
 
 
 def build(dist: Path, work: Path, *, no_setup: bool = False) -> int:
+    version_numeric = ".".join(map(str, numeric_version(__version__)))
     iscc = None if no_setup else find_iscc()  # До подмены LOCALAPPDATA и долгой сборки PyInstaller.
     pyi_out = work / "dist"
     dist.mkdir(parents=True, exist_ok=True)
@@ -90,7 +93,7 @@ def build(dist: Path, work: Path, *, no_setup: bool = False) -> int:
                 z.write(f, f"{name}/app/{f.relative_to(app).as_posix()}")
     print(f"{archive}  ({archive.stat().st_size / 1_048_576:.1f} MB)")
     if iscc:
-        subprocess.run([str(iscc), f"/DAppVersion={__version__}", f"/DSourceDir={app}", f"/O{dist}",
+        subprocess.run([str(iscc), f"/DAppVersion={__version__}", f"/DAppVersionNumeric={version_numeric}", f"/DSourceDir={app}", f"/O{dist}",
                         str(ROOT / "packaging/office-live-mcp.iss")], check=True)
         setup = dist / f"office-live-mcp-{__version__}-setup.exe"
         print(f"{setup}  ({setup.stat().st_size / 1_048_576:.1f} MB)")

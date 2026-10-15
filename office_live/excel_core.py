@@ -62,6 +62,67 @@ GRID_HINT = "2-D array: a list of rows, each row a list of cell values (a flat l
 # коды форматов SaveAs
 _SAVE_FORMATS = {"xlsx": 51, "xlsm": 52, "xlsb": 50, "xls": 56, "csv": 62, "txt": 42, "html": 44, "htm": 44, "ods": 60, "xltx": 54, "xltm": 53}
 
+_LEGACY_FORMATS = {
+    56,  # xlExcel8
+    43,  # xlExcel9795
+    39,  # xlExcel7 / xlExcel5
+    33,  # xlExcel4
+    29,  # xlExcel3
+    16,  # xlExcel2
+    17,  # xlTemplate8
+    18,  # xlAddIn8
+    -4143,  # xlWorkbookNormal
+}
+_LEGACY_EXTENSIONS = {".xls", ".xlt", ".xla"}
+_COMPATIBILITY_NOTE = (
+    "The compatibility check was skipped when saving to Excel 97-2003 format; "
+    "features unsupported by this format may have been lost. "
+    "To keep them, ask the user before saving a copy in a modern format with excel_save_as: "
+    ".xlsx for a workbook without macros, .xlsm to keep VBA macros. "
+    "Other questions Excel asks while saving this format (such as 'recalculate all formulas when the file is opened') "
+    "got Excel's default answer. "
+    "The saved file stores compatibility checking as disabled, so after reopening it Excel will not run the check "
+    "on save until the user turns it back on."
+)
+
+
+def _save_workbook(app, wb) -> bool:
+    """Save legacy binary books without modal prompts; leave other formats alone.
+
+    Workbook.CheckCompatibility=False stops the Compatibility Checker, but live probes (0.4.6) showed a second modal
+    question during the same Save - "recalculate all formulas when the file is opened?" - that only
+    Application.DisplayAlerts=False answers (with Excel's default, "yes"). So both are off for this Save only, and the
+    reply says that the save's questions got default answers."""
+    try:
+        legacy = wb.FileFormat in _LEGACY_FORMATS
+    except (pywintypes.com_error, AttributeError):
+        legacy = os.path.splitext(wb.FullName)[1].lower() in _LEGACY_EXTENSIONS
+    if not legacy:
+        wb.Save()
+        return False
+    if wb.ReadOnly:
+        raise ToolError(f"{wb.Name} is open read-only; use excel_save_as to write a copy.")
+
+    alerts, compatibility = app.DisplayAlerts, wb.CheckCompatibility
+    saved_after = False
+    try:
+        app.DisplayAlerts = False
+        wb.CheckCompatibility = False
+        wb.Save()
+        saved_after = bool(wb.Saved)
+    finally:
+        try:
+            wb.CheckCompatibility = compatibility
+            if saved_after and not wb.Saved:
+                # The file on disk keeps CheckCompatibility=False; restoring the in-memory flag can mark the book
+                # dirty although the content is saved. Clear only that case: never after a failed Save() or a book
+                # that was already dirty right after Save().
+                wb.Saved = True
+        except Exception:
+            pass  # Restoration must not replace a Save() exception.
+        _restore_alerts(app, alerts)  # independent of the CheckCompatibility restore above
+    return True
+
 
 def _autosave(wb) -> bool | None:
     try:
@@ -257,7 +318,7 @@ def excel_new_workbook(sheets: list[str] | None = None) -> dict:
 
 @office_tool("excel_core", "destructive", title="Close workbook")
 def excel_close_workbook(workbook: str, save: bool = False, discard: bool = False) -> dict:
-    """Close an open workbook. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true (throws the changes away). Never quits Excel itself.
+    """Close an open workbook. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true (throws the changes away). Never quits Excel itself. Saving .xls skips compatibility prompts and reports possible loss of unsupported features.
 
     Args:
         workbook: exact workbook name or full path (required).
@@ -269,23 +330,29 @@ def excel_close_workbook(workbook: str, save: bool = False, discard: bool = Fals
     app, wb = pick_workbook(workbook, allow_autosave=True)
     name = wb.Name
     saved_first = False
+    compatibility_skipped = False
     if not wb.Saved:
         if save:
             if not wb.Path:
                 raise ToolError(f"{name} has never been saved; use excel_save_as first or pass discard=true.")
             check_path(wb.FullName, "write")  # зона доступа и запретные каталоги — и для сохранения уже открытой книги
-            wb.Save()
+            compatibility_skipped = _save_workbook(app, wb)
+            if compatibility_skipped and not wb.Saved:
+                raise ToolError(f"{name} still has unsaved changes after Save(); the workbook was left open. Use excel_save_as to write a copy.")
             saved_first = True
         elif not discard:
             raise ToolError(f"{name} has unsaved changes. Pass save=true to save them or discard=true to drop them.")
     wb.Close(False)
     remaining = [w.Name for a, w in all_workbooks()] if _excel_running() else []
-    return {"ok": True, "closed": name, "saved_before_close": saved_first, "open_workbooks": remaining}
+    result = {"ok": True, "closed": name, "saved_before_close": saved_first, "open_workbooks": remaining}
+    if compatibility_skipped:
+        result.update(compatibility_check_skipped=True, note=_COMPATIBILITY_NOTE)
+    return result
 
 
 @office_tool("excel_core", "save", title="Save workbook")
 def excel_save(workbook: str = "") -> dict:
-    """Save a workbook to its current file (Ctrl+S). A workbook that was never saved needs excel_save_as instead.
+    """Save a workbook to its current file (Ctrl+S). A workbook that was never saved needs excel_save_as instead. Saving .xls skips compatibility prompts and reports possible loss of unsupported features.
 
     Args:
         workbook: exact name or '' for the active workbook.
@@ -296,8 +363,11 @@ def excel_save(workbook: str = "") -> dict:
     if wb.ReadOnly:
         raise ToolError(f"{wb.Name} is open read-only; use excel_save_as to write a copy.")
     check_path(wb.FullName, "write")  # зона доступа и запретные каталоги
-    wb.Save()
-    return {"ok": True, "workbook": wb.Name, "path": wb.FullName, "saved": bool(wb.Saved)}
+    compatibility_skipped = _save_workbook(app, wb)
+    result = {"ok": True, "workbook": wb.Name, "path": wb.FullName, "saved": bool(wb.Saved)}
+    if compatibility_skipped:
+        result.update(compatibility_check_skipped=True, note=_COMPATIBILITY_NOTE)
+    return result
 
 
 @office_tool("excel_core", "save", title="Save workbook as")

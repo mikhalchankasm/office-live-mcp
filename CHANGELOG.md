@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **Legacy Excel saves:** saving .xls could hang on the Compatibility Checker dialog; `excel_save` and saving before close
+  now switch off the workbook's compatibility check and, for that save only, Excel's prompts (live probes found a
+  second question, "recalculate all formulas when opened?", that nothing narrower answers), restore both, report
+  possible loss of unsupported features, and leave the book open if saving before close cannot complete. The saved file keeps compatibility checking disabled after it is reopened.
+- **Executable versions:** the server and link handler had no Windows version resource; both now show the package version
+  and product details, and setup uses the same numeric release version.
+- **Busy upgrades:** silent setup could fail with code 5 while an agent held the server open; preparation now refuses
+  with code 7 and an English/Russian message telling the owner to close connected agents or end their sessions and retry.
+
 ## 0.4.5 — 2026-10-12
 
 Fewer and smaller calls for agents that build and lay out sheets — measured on a real 336-row report.

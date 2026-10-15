@@ -4,6 +4,7 @@ Environment variables isolate our CLI configs, NOT HKCU or Windows known folders
 The two opt-ins below must stay in place; never run this test on a workstation.
 """
 
+import hashlib
 import json
 import os
 import subprocess
@@ -14,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from office_live import __version__
-from office_live.probe import smoke
+from office_live.probe import StdioClient, smoke
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("CI", "").lower() != "true" or os.environ.get("OFFICE_LIVE_SETUP_EXE_TEST") != "1",
@@ -64,6 +65,31 @@ def test_silent_install_upgrade_uninstall():
             assert Path(uninstall_location()) == root
             assert json.loads(state.read_text(encoding="utf-8"))["registrations"] == []
             assert smoke([str(exe)], env) > 0
+            # Preparation must refuse before Restart Manager can close the agent's stdio server.
+            busy_log = test_root / "busy-upgrade.log"
+            internal = next(p for p in sorted((root / "app/_internal").rglob("*")) if p.is_file())
+            guarded = [exe, internal, state, root / "office-live-mcp.install", root / "app/office-live-mcp.files.json"]
+
+            def snapshot():
+                return {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in guarded}
+
+            client = StdioClient([str(exe), "serve"], env=env, cwd=test_root)
+            try:
+                assert client.list_tools()
+                before_busy = snapshot()
+                refused = subprocess.run([str(setup), *base, "/LANG=en", f"/LOG={busy_log}"],
+                                         env=env, cwd=test_root, capture_output=True, timeout=240)
+                assert refused.returncode == 7, (refused.returncode, refused.stdout, refused.stderr)
+                raw = busy_log.read_bytes()
+                log = raw.decode("utf-16" if raw.startswith((b"\xff\xfe", b"\xfe\xff")) else "utf-8-sig")
+                assert "Office Live MCP is currently running in an agent" in log
+                assert "Close the connected agents" in log
+                # Refused before [InstallDelete]/[Files]: program files, marker, manifest and state are byte-identical.
+                assert snapshot() == before_busy and (root / "app/_internal").is_dir()
+                assert exe.is_file() and client.list_tools()
+            finally:
+                client.close()
+            run(setup, *base, f"/LOG={test_root / 'after-busy-upgrade.log'}")
             # An omitted /CLIENTS on upgrade must keep both the entry and its access mode.
             run(exe, "setup", "--yes", "--clients", "codex", "--readonly")
             config = Path(env["CODEX_HOME"]) / "config.toml"

@@ -55,4 +55,22 @@ def test_build_artifacts_and_compiler_arguments(tmp_path, monkeypatch, no_setup)
         assert any(n.endswith("/app/office-live-mcp.exe") for n in z.namelist())
         assert any(n.endswith("/LICENSE.txt") for n in z.namelist())
     if not no_setup:
-        assert calls[-1][:4] == [str(compiler), f"/DAppVersion={build.__version__}", f"/DSourceDir={work / 'dist/office-live-mcp'}", f"/O{dist}"]
+        numeric = ".".join(map(str, build.numeric_version(build.__version__)))
+        assert calls[-1][:5] == [str(compiler), f"/DAppVersion={build.__version__}", f"/DAppVersionNumeric={numeric}",
+                               f"/DSourceDir={work / 'dist/office-live-mcp'}", f"/O{dist}"]
+
+
+@pytest.mark.parametrize("version,expected", [
+    ("0.4.6", (0, 4, 6, 0)), ("0.5.0rc1", (0, 5, 0, 0)), ("0.5.0.dev2", (0, 5, 0, 0)),
+    ("1", (1, 0, 0, 0)), ("1.2.3.4", (1, 2, 3, 4)), ("1.2.3.4.5", (1, 2, 3, 4)),
+    ("0.5.0rc1.dev2", (0, 5, 0, 0)), ("0.5.0dev2", (0, 5, 0, 0)),
+    ("0.5.0.post1+build.2", (0, 5, 0, 0)),
+])
+def test_numeric_version(version, expected):
+    assert build.numeric_version(version) == expected
+
+
+@pytest.mark.parametrize("version", ["", "garbage", "v0.4.6", "-1.2.3", "65536.0", "1..2", "1.", "1.garbage"])
+def test_numeric_version_rejects_unparseable_or_overflow(version):
+    with pytest.raises(ValueError):
+        build.numeric_version(version)

@@ -9,6 +9,7 @@ Excel — так же, но по процессам: закрывается то
 import ctypes
 import gc
 import subprocess
+import threading
 
 import pythoncom
 import win32com.client
@@ -74,6 +75,58 @@ def hung_office_windows() -> list[tuple[str, int, str]]:
 
     user32.EnumWindows(visit, 0)
     return hung
+
+
+def office_dialogs() -> list[tuple[int, str, str]]:
+    """Видимые модальные окна Excel/Word (классы NUIDialog и #32770): (pid, класс, заголовок). Только чтение.
+
+    Нужен пробам «без диалогов»: проба, которую человек спас нажатием кнопки, иначе выглядит пройденной."""
+    from ctypes import wintypes
+
+    pids = set()
+    for image in ("EXCEL.EXE", "WINWORD.EXE"):
+        out = subprocess.run(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"], capture_output=True, text=True, errors="replace").stdout
+        pids.update(int(line.split('","')[1]) for line in out.splitlines() if line.startswith(f'"{image}"'))
+    user32, found = ctypes.windll.user32, []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value in pids and user32.IsWindowVisible(hwnd):
+            cls, title = ctypes.create_unicode_buffer(64), ctypes.create_unicode_buffer(200)
+            user32.GetClassNameW(hwnd, cls, 64)
+            if cls.value in ("NUIDialog", "#32770"):
+                user32.GetWindowTextW(hwnd, title, 200)
+                found.append((pid.value, cls.value, title.value))
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found
+
+
+class DialogWatch:
+    """Опрашивает office_dialogs() в фоне, пока открыт блок with; увиденные окна — в .seen."""
+
+    def __init__(self, every: float = 0.2):
+        self.every, self.seen = every, []
+        self._stop = threading.Event()
+
+    def _run(self):
+        while not self._stop.wait(self.every):
+            for item in office_dialogs():
+                if item not in self.seen:
+                    self.seen.append(item)
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._run, daemon=True, name="dialog-watch")
+        self._thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._stop.set()
+        self._thread.join(timeout=5)
+        return False
 
 
 def hidden_idle_excel_pids() -> set[int]:

@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## 0.4.6 — 2026-10-15
+
+Old-format Excel files save without hanging on modal dialogs; the exe shows its version; silent setup explains
+why it stops while an agent holds the server.
 
 - **Legacy Excel saves:** saving .xls could hang on the Compatibility Checker dialog; `excel_save` and saving before close
   now switch off the workbook's compatibility check and, for that save only, Excel's prompts (live probes found a

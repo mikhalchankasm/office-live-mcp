@@ -40,7 +40,7 @@ are unchanged.
 |---|---|---|
 | `excel_list_workbooks` | read | List every open Excel workbook across ALL running Excel instances: name, path, saved flag, sheets, visibility, and which one is active. Call this first. Returns an empty list (not an error) when Excel has no workbooks. |
 | `excel_workbook_info` | read | Detailed overview of one workbook: every sheet with its used range, visibility, tables, charts, pivot tables, shapes, protection and filters, plus defined names and calculation mode. |
-| `excel_open_workbook` | open | Open an existing workbook file in Excel (starts Excel if needed). Macros are disabled during opening. If the file is already open, returns it instead of opening twice. |
+| `excel_open_workbook` | open | Open an existing workbook file in Excel (starts Excel if needed). Macros are disabled during opening. If the file is already open, returns it instead of opening twice. For .xls/.xlt/.xla, prompts during opening (e.g. recalculate formulas) get Excel's default answers. |
 | `excel_new_workbook` | write | Create a new empty workbook in Excel (starts Excel if needed). The workbook is unsaved until excel_save_as. |
 | `excel_close_workbook` | destructive | Close an open workbook. Refuses when it has unsaved changes unless you choose: save=true (saves first, needs an existing path) or discard=true (throws the changes away). Never quits Excel itself. Saving .xls skips compatibility prompts and reports possible loss of unsupported features. |
 | `excel_save` | save | Save a workbook to its current file (Ctrl+S). A workbook that was never saved needs excel_save_as instead. Saving .xls skips compatibility prompts and reports possible loss of unsupported features. |

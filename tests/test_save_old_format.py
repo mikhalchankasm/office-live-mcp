@@ -177,3 +177,57 @@ def test_close_modern_book_preserves_response_and_prompt_flags(book):
         "ok": True, "closed": book.wb.Name, "saved_before_close": True, "open_workbooks": [],
     }
     assert book.events == [("Save", True, True), ("Saved", True), ("Close", False)]
+
+
+class OpenApp:
+    def __init__(self, error=None):
+        self.DisplayAlerts, self.seen, self.error = True, [], error
+        self.Workbooks = SimpleNamespace(Open=self._open)
+
+    def _open(self, full, *args):
+        self.seen.append(self.DisplayAlerts)
+        if self.error:
+            raise self.error
+        name = full.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
+        return SimpleNamespace(Name=name, FullName=full, ReadOnly=False)
+
+
+@pytest.fixture
+def opener(tmp_path, monkeypatch):
+    import contextlib
+
+    def make(extension, error=None):
+        path = tmp_path / f"book.{extension}"
+        path.write_bytes(b"x")
+        app = OpenApp(error)
+        monkeypatch.setattr(core, "check_path", lambda p, *a, **kw: str(p))
+        monkeypatch.setattr(core, "_excel_running", lambda: False)
+        monkeypatch.setattr(core.com, "primary_app", lambda *a, **kw: app)
+        monkeypatch.setattr(core.com, "macros_disabled", lambda app: contextlib.nullcontext())
+        monkeypatch.setattr(core, "_sheet_list", lambda wb: ["Data"])
+        return app, str(path)
+
+    return make
+
+
+@pytest.mark.parametrize("extension", ["xls", "XLT", "xla"])
+def test_legacy_open_answers_prompts_with_defaults_and_restores_alerts(opener, extension):
+    # Live finding: an .xls with new functions opens with a modal "recalculate all formulas?" prompt.
+    app, path = opener(extension)
+    result = core.excel_open_workbook(path)
+    assert app.seen == [False] and app.DisplayAlerts is True
+    assert "recalculated" in result["note"]
+
+
+def test_legacy_open_failure_still_restores_alerts(opener):
+    app, path = opener("xls", pywintypes.com_error(-2147352567, "open failure", None, None))
+    with pytest.raises(ToolError):
+        core.excel_open_workbook(path)
+    assert app.seen == [False] and app.DisplayAlerts is True
+
+
+@pytest.mark.parametrize("extension", ["xlsx", "xlsm", "csv"])
+def test_modern_open_keeps_prompts(opener, extension):
+    app, path = opener(extension)
+    result = core.excel_open_workbook(path)
+    assert app.seen == [True] and "note" not in result

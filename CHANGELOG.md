@@ -6,6 +6,9 @@
   now switch off only the workbook's compatibility check for legacy binary formats (other Excel prompts are not
   silenced), restore it in the open workbook, report possible loss of unsupported features, and leave the book open if
   saving before close cannot complete. The saved file keeps compatibility checking disabled after it is reopened.
+- **Opening legacy Excel files:** `excel_open_workbook` on an .xls with newer functions hung on Excel's "recalculate all
+  formulas on open?" prompt (found by the new live probe); for .xls/.xlt/.xla, prompts while opening now take Excel's
+  default answers and the reply says formulas may have been recalculated.
 - **Executable versions:** the server and link handler had no Windows version resource; both now show the package version
   and product details, and setup uses the same numeric release version.
 - **Busy upgrades:** silent setup could fail with code 5 while an agent held the server open; preparation now refuses

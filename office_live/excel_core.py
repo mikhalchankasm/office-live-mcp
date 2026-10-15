@@ -73,6 +73,7 @@ _LEGACY_FORMATS = {
     18,  # xlAddIn8
     -4143,  # xlWorkbookNormal
 }
+_LEGACY_EXTENSIONS = {".xls", ".xlt", ".xla"}
 _COMPATIBILITY_NOTE = (
     "The compatibility check was skipped when saving to Excel 97-2003 format; "
     "features unsupported by this format may have been lost. "
@@ -91,7 +92,7 @@ def _save_workbook(app, wb) -> bool:
     try:
         legacy = wb.FileFormat in _LEGACY_FORMATS
     except (pywintypes.com_error, AttributeError):
-        legacy = os.path.splitext(wb.FullName)[1].lower() in {".xls", ".xlt", ".xla"}
+        legacy = os.path.splitext(wb.FullName)[1].lower() in _LEGACY_EXTENSIONS
     if not legacy:
         wb.Save()
         return False
@@ -254,7 +255,7 @@ def excel_workbook_info(workbook: str = "") -> dict:
 
 @office_tool("excel_core", "open", title="Open workbook")
 def excel_open_workbook(path: str, read_only: bool = False) -> dict:
-    """Open an existing workbook file in Excel (starts Excel if needed). Macros are disabled during opening. If the file is already open, returns it instead of opening twice.
+    """Open an existing workbook file in Excel (starts Excel if needed). Macros are disabled during opening. If the file is already open, returns it instead of opening twice. For .xls/.xlt/.xla, prompts during opening (e.g. recalculate formulas) get Excel's default answers.
 
     Args:
         path: full path to .xlsx/.xlsm/.xlsb/.xls/.csv file.
@@ -270,13 +271,26 @@ def excel_open_workbook(path: str, read_only: bool = False) -> dict:
             return {"ok": True, "already_open": True, "workbook": wb.Name, "path": wb.FullName, "sheets": _sheet_list(wb)}
     app = com.primary_app("excel", launch=True)
     force_ro = bool(read_only or config.SETTINGS.readonly)
+    # Живая находка 0.4.6: .xls с новыми функциями открывается с модальным «Пересчитать все формулы при открытии?» —
+    # вызов COM висит до ответа человека. Для старых форматов ответы при открытии — по умолчанию (пересчитать).
+    legacy = os.path.splitext(full)[1].lower() in _LEGACY_EXTENSIONS
+    alerts = app.DisplayAlerts if legacy else None
     try:
+        if legacy:
+            app.DisplayAlerts = False
         with com.macros_disabled(app):
             # Open(Filename, UpdateLinks, ReadOnly, Format, Password): пароль-пустышка — зашифрованный файл не зависнет на диалоге
             wb = app.Workbooks.Open(full, 0, force_ro, None, "__office_live_no_password__")
     except pywintypes.com_error as exc:
         raise ToolError(f"Excel could not open {full}: {com.com_error_text(exc)} (password-protected or corrupt file?)") from None
-    return {"ok": True, "already_open": False, "workbook": wb.Name, "path": wb.FullName, "read_only": bool(wb.ReadOnly), "sheets": _sheet_list(wb)}
+    finally:
+        if legacy:
+            _restore_alerts(app, alerts)
+    result = {"ok": True, "already_open": False, "workbook": wb.Name, "path": wb.FullName, "read_only": bool(wb.ReadOnly), "sheets": _sheet_list(wb)}
+    if legacy:
+        result["note"] = ("Excel 97-2003 file: prompts shown while opening (such as 'recalculate all formulas') were answered "
+                          "with Excel's defaults, so formulas may have been recalculated.")
+    return result
 
 
 def _excel_running() -> bool:

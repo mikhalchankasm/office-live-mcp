@@ -359,7 +359,7 @@ def test_instruction_tool_count_matches_catalog(catalog):
     cat, _ = catalog
     count = re.search(r"The catalog contains (\d+) tools", INSTRUCTIONS)
     assert count is not None
-    assert int(count.group(1)) == len(cat) == 126
+    assert int(count.group(1)) == len(cat) == 127
 
 
 def test_every_registered_tool_publishes_a_valid_schema(catalog):

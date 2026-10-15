@@ -3,8 +3,10 @@
 import io
 import json
 import os
+import posixpath
 import re
 import uuid
+from xml.etree import ElementTree as ET
 
 import pythoncom
 import pywintypes
@@ -16,7 +18,7 @@ from .errors import PartialChangeError, ToolError
 from .excel_format import PASSWORD_BARRIER
 from .registry import office_tool
 from .safety import IMAGE_EXTS, check_path
-from .util import clean_word_text, cm_to_points, truncate
+from .util import clean_word_text, cm_to_points, parse_color, truncate
 from .wd_common import (
     ALIGNMENTS,
     active_document,
@@ -114,6 +116,169 @@ def word_page_setup(
 
 
 # ================================================================== колонтитулы
+
+WATERMARK_PREFIX = "PowerPlusWaterMarkObject"
+HEADER_STORIES = {1: 7, 2: 10, 3: 6}  # WdHeaderFooterIndex -> wdPrimary/FirstPage/EvenPagesHeaderStory
+
+
+def _in_header(shape, owner, typ):
+    """HeaderFooter.Shapes returns the shapes of ALL headers and footers of the document (Word quirk): keep only the
+    ones anchored in this section's header of this type. Unreadable anchor -> not ours (never delete blindly)."""
+    try:
+        anchor = shape.Anchor
+        return int(anchor.StoryType) == HEADER_STORIES[typ] and int(anchor.Sections(1).Index) == owner
+    except Exception:  # noqa: BLE001
+        return False
+_WM_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main",
+          "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+          "pkg": "http://schemas.microsoft.com/office/2006/xmlPackage",
+          "v": "urn:schemas-microsoft-com:vml",
+          "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing"}
+
+
+def _watermark_headers(doc):
+    """Resolve existing and inherited headers from Flat OPC, without touching HeaderFooter COM objects."""
+    def attr(node, name):
+        prefix, local = name.split(":")
+        return node.get("{" + _WM_NS[prefix] + "}" + local)
+
+    def on(node):
+        return node is not None and attr(node, "w:val") not in {"0", "false", "off"}
+
+    root = ET.fromstring(doc.Content.WordOpenXML)
+    parts = {attr(p, "pkg:name"): p for p in root.findall("pkg:part", _WM_NS)}
+    main = parts.get("/word/document.xml")
+    if main is None:
+        raise ToolError("Cannot resolve document headers from WordOpenXML; no changes made.")
+    rel_part = parts.get("/word/_rels/document.xml.rels")
+    rels = {r.get("Id"): posixpath.normpath(posixpath.join("/word", r.get("Target", "")))
+            for r in rel_part.iter() if r.tag.endswith("}Relationship") and r.get("TargetMode") != "External"} if rel_part is not None else {}
+    settings = parts.get("/word/settings.xml")
+    even = settings is not None and on(settings.find(".//w:evenAndOddHeaders", _WM_NS))
+    body = main.find(".//w:body", _WM_NS)
+    specs = body.findall("w:p/w:pPr/w:sectPr", _WM_NS) + body.findall("w:sectPr", _WM_NS) if body is not None else []
+    if len(specs) != int(doc.Sections.Count):
+        raise ToolError("Cannot resolve all sections from WordOpenXML; no changes made.")
+    current, groups = {}, {}
+    for index, spec in enumerate(specs, 1):
+        refs = {attr(r, "w:type"): attr(r, "r:id") for r in spec.findall("w:headerReference", _WM_NS)}
+        for kind, typ in (("default", 1), ("first", 2), ("even", 3)):  # WdHeaderFooterIndex
+            if kind in refs:
+                path = rels.get(refs[kind])
+                if path not in parts:
+                    raise ToolError("Cannot resolve a header relationship; no changes made.")
+                current[kind] = (path, index)
+            path, owner = current.get(kind, (None, 1))
+            key = (path or owner, typ)
+            if key not in groups:
+                marks = {}
+                if path:
+                    header = parts[path]
+                    for node in header.findall(".//v:shape", _WM_NS) + header.findall(".//wp:anchor", _WM_NS):
+                        prop = node.find("wp:docPr", _WM_NS)
+                        name = node.get("id", "") if prop is None else prop.get("name", "")
+                        if name.startswith(WATERMARK_PREFIX):
+                            textpath = node.find("v:textpath", _WM_NS)
+                            text = textpath.get("string", "") if textpath is not None else "".join(n.text or "" for n in node.iter() if n.tag.endswith("}t"))
+                            marks[name] = {"name": name, "text": text}
+                groups[key] = {"owner": owner, "type": typ, "header": kind, "sections": [], "enabled": [], "marks": list(marks.values())}
+            group = groups[key]
+            group["sections"].append(index)
+            if kind == "default" or (kind == "first" and on(spec.find("w:titlePg", _WM_NS))) or (kind == "even" and even):
+                group["enabled"].append(index)
+    return list(groups.values()), len(specs)
+
+
+@office_tool("word_layout", "write", title="Text watermark", read_actions=("status",), destructive=True)
+def word_watermark(document: str, action: str = "status", text: str = "", font: str = "Calibri",
+                   color: str = "gray", transparency: float = 0.5, layout: str = "diagonal",
+                   sections: list[int] | None = None) -> dict:
+    """Inspect, add or remove Word-recognised text watermarks in section headers.
+
+    Args:
+        document: exact document name/path.
+        action: status (readonly, XML only), add, remove. Remove deletes only PowerPlusWaterMarkObject* shapes.
+        text: 1–50 printable characters for add; existing watermarks must be removed first.
+        font: WordArt font (default Calibri).
+        color: #RRGGBB or named colour (default gray).
+        transparency: 0 (opaque) to 1 (invisible), default 0.5.
+        layout: diagonal or horizontal.
+        sections: 1-based numbers, omitted for all. Include the entire linked header chain; links are never broken.
+    """
+    action = action.lower()
+    if action not in {"status", "add", "remove"}:
+        raise ToolError("action must be status, add or remove.")
+    rgb = None
+    if action == "add":
+        if not text.strip() or len(text) > 50 or not text.isprintable():
+            raise ToolError("text must contain 1–50 printable characters.")
+        if not font.strip() or not font.isprintable():
+            raise ToolError("font must be a non-empty printable font name.")
+        if layout not in {"diagonal", "horizontal"} or not 0 <= transparency <= 1:
+            raise ToolError("layout must be diagonal/horizontal; transparency must be 0–1.")
+        rgb = parse_color(color)
+    app, doc = wd.pick_document(document)
+    groups, count = _watermark_headers(doc)
+    if sections is not None and (not sections or any(type(i) is not int or not 1 <= i <= count for i in sections)):
+        raise ToolError(f"sections must be a non-empty list of section numbers 1–{count}.")
+    chosen = set(range(1, count + 1) if sections is None else sections)
+    marks = [{**m, "sections": sorted(chosen.intersection(g["sections"])), "header": g["header"]}
+             for g in groups if chosen.intersection(g["sections"]) for m in g["marks"]]
+    if action == "status":
+        return {"document": doc.Name, "present": bool(marks), "watermarks": marks}
+    if int(doc.ProtectionType) != -1:  # wdNoProtection; tracked-only protection cannot edit header shapes
+        raise ToolError("Document is protected; unprotect it before changing watermarks.")
+    if bool(doc.ReadOnly):
+        raise ToolError("Document is read-only; no changes made.")
+    if action == "add" and marks:
+        raise ToolError("A watermark already exists in the selected sections; remove it first.")
+    targets = [g for g in groups if chosen.intersection(g["enabled"] if action == "add" else g["sections"])
+               and (action == "add" or g["marks"])]
+    for g in targets:
+        if not set(g["sections"]) <= chosen:
+            raise ToolError(f"Linked header affects sections {g['sections']}; include the whole chain in sections.")
+        if action == "add":
+            pages = [doc.Sections(i).PageSetup for i in g["enabled"]]
+            g["max_width"] = .8 * min(min(float(p.PageWidth), float(p.PageHeight)) for p in pages)
+    if not targets:
+        return {"ok": True, "document": doc.Name, "action": action, "changed": []}
+    name = doc.Name
+    undo.require_undo("document", app, doc)
+    changed, pending = [], None
+    try:
+        for g in targets:
+            pending = {"sections": g["sections"], "header": g["header"]}
+            # Even obtaining a missing header may create it: everything below is inside the mutation boundary.
+            hf = doc.Sections(g["owner"]).Headers(g["type"])
+            if action == "add":
+                shape = hf.Shapes.AddTextEffect(0, text, font, 36, 0, 0, 0, 0, hf.Range)  # msoTextEffect1, msoFalse
+                pending["name"] = str(shape.Name)
+                shape.Name = WATERMARK_PREFIX + str(g["owner"] * 10 + g["type"])
+                pending["name"] = str(shape.Name)
+                shape.Fill.Solid()
+                shape.Fill.ForeColor.RGB = rgb
+                shape.Fill.Transparency = transparency
+                shape.Line.Visible = 0  # msoFalse
+                shape.LockAspectRatio = -1  # msoTrue
+                if float(shape.Width) > g["max_width"]:
+                    shape.Width = g["max_width"]
+                shape.Rotation = 315 if layout == "diagonal" else 0
+                shape.WrapFormat.Type = 5  # wdWrapBehind
+                shape.RelativeHorizontalPosition = 1  # wdRelativeHorizontalPositionPage
+                shape.RelativeVerticalPosition = 1  # wdRelativeVerticalPositionPage
+                shape.Left = shape.Top = -999995  # wdShapeCenter
+                changed.append(dict(pending))
+            else:
+                for i in range(int(hf.Shapes.Count), 0, -1):
+                    shape = hf.Shapes(i)
+                    if str(shape.Name).startswith(WATERMARK_PREFIX) and _in_header(shape, g["owner"], g["type"]):
+                        pending["name"] = str(shape.Name)
+                        shape.Delete()
+                        changed.append(dict(pending))
+        return {"ok": True, "document": name, "action": action, "changed": changed}
+    except Exception as exc:
+        raise PartialChangeError(f"Watermark {action} interrupted; completed={changed}; possibly changed={pending}. "
+                                 f"Use office_undo. {com.translate(exc)}") from None
 
 
 def _hf(sec, kind: str, typ: int):

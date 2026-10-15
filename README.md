@@ -60,7 +60,7 @@ https://github.com/user-attachments/assets/b5911b0d-fa66-4d23-a888-ed7adeeeea07
 | *“Compare these two registers by code and show what changed.”* | [Differences matched by key](docs/examples/compare-registers.md). |
 | *“Read the comments in Word and propose edits. Apply them after I approve.”* | [Targeted edits recorded as tracked revisions](docs/examples/comments-to-tracked-edits.md). |
 
-**126 tools** for Excel, Word and document workflows - formulas, data cleanup, goal seek, pivots, charts, templates,
+**127 tools** for Excel, Word and document workflows - formulas, data cleanup, goal seek, pivots, charts, templates,
 comment threads and more. [Full catalog →](docs/TOOLS.md)
 
 For compact responses, searches, comparisons, issue reports, formula traces and Word outlines return at most one

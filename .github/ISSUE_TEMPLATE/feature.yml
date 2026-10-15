@@ -1,0 +1,28 @@
+name: Feature
+description: A new tool or capability. The body becomes the task brief (docs/TASK_BRIEF.md, at most 2 KB).
+labels: [enhancement]
+body:
+  - type: textarea
+    id: outcome
+    attributes: {label: Outcome, description: "One sentence: what exists after this task that does not exist now."}
+    validations: {required: true}
+  - type: textarea
+    id: boundaries
+    attributes: {label: Boundaries, value: "- In scope:\n- Out of scope:"}
+    validations: {required: true}
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance
+      description: One observable fact the owner can check in under a minute; say whether live Office is needed.
+      value: "\n**Measured on the unchanged tree:**"
+    validations: {required: true}
+  - type: textarea
+    id: files
+    attributes: {label: Files}
+  - type: textarea
+    id: verify
+    attributes: {label: Verify, description: The exact L0 command., render: shell}
+  - type: textarea
+    id: links
+    attributes: {label: Links, description: At most three.}

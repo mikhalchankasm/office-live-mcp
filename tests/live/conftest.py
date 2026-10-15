@@ -20,6 +20,7 @@ from tests.live import office_cleanup as cleanup
 # ловили настоящие ошибки Office. Полный набор (~12 мин) — перед релизом.
 SMOKE = {
     "test_live_word_sections.py": ("test_sections_landscape_numbering_footer_and_undo", "test_sections_list_no_headers_and_table_refusal"),
+    "test_live_what_if.py": ("test_probe_data_table_loan_values_array_undo", "test_probe_scenario_show_delete_summary_undo"),
     "test_live_word_captions.py": ("test_caption_table_reference_selection_and_undo", "test_caption_picture_equation_duplicate_and_number"),
     "test_live_word_watermark.py": ("test_probe_watermark_status_leaves_empty_headers_untouched",
                                     "test_probe_watermark_linked_headers_shapes_and_undo"),

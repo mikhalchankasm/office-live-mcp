@@ -70,6 +70,9 @@ EXCEL.update({"AutoFilter": "Range Filters", "Filters": "Count Item", "Filter": 
               "FormatColor": "Color ThemeColor TintAndShade", "SparkAxes": "Horizontal Vertical",
               "SparkHorizontalAxis": "Axis RightToLeftPlotOrder", "SparkVerticalAxis": "MinScaleType MaxScaleType CustomMinScaleValue CustomMaxScaleValue"})
 EXCEL["Window"] += " Hwnd"
+EXCEL["Range"] += " Table ClearContents"
+EXCEL["_Worksheet"] += " Scenarios"
+EXCEL.update({"Scenarios": "Count Item Add CreateSummary", "Scenario": "Name ChangingCells Values Comment Locked Hidden Show Delete"})
 WORD = {
     "_Application": "UndoRecord Documents ActiveDocument CompareDocuments AutomationSecurity",
     "_Document": "Name FullName Path Content Paragraphs Tables InlineShapes Sections Comments Footnotes Endnotes Shapes Undo Close Revisions Saved TrackRevisions ProtectionType",
@@ -146,6 +149,10 @@ WORD.update({"PageSetup": "Orientation PaperSize PageWidth PageHeight TopMargin 
 CALLS = {
     "_Document.GoTo": ("What", "Which", "Count"), "_Document.Repaginate": (), "_Document.ComputeStatistics": ("Statistic",),
     "Range.InsertBreak": ("Type",), "Sections.Item": ("Index",), "HeadersFooters.Item": ("Index",), "Shapes.Item": ("Index",),
+    "Range.Table": ("RowInput", "ColumnInput"), "Range.ClearContents": (), "_Worksheet.Scenarios": ("Index",),
+    "Scenarios.Item": ("Index",), "Scenarios.Add": ("Name", "ChangingCells", "Values", "Comment", "Locked", "Hidden"),
+    "Scenarios.CreateSummary": ("ReportType", "ResultCells"), "Scenario.Values": ("Index",),
+    "Scenario.Show": (), "Scenario.Delete": (),
     "Range.InsertCaption": ("Label", "Title", "TitleAutoText", "Position", "ExcludeLabel"),
     "Range.InsertCrossReference": ("ReferenceType", "ReferenceKind", "ReferenceItem", "InsertAsHyperlink", "IncludePosition", "SeparateNumbers", "SeparatorString"),
     "_Document.GetCrossReferenceItems": ("ReferenceType",), "CaptionLabels.Item": ("Index",),
@@ -334,7 +341,8 @@ def test_word_comparison_and_sort_enum_values():
 
 
 @pytest.mark.parametrize("library,expected", [
-    (EXCEL_LIB, {"xlWBATWorksheet": -4167, "xlSummaryAbove": 0, "xlSummaryBelow": 1, "xlRows": 1, "xlColumns": 2,
+    (EXCEL_LIB, {"xlStandardSummary": 1, "xlCalculationManual": -4135, "xlCalculationSemiautomatic": 2,
+                 "xlWBATWorksheet": -4167, "xlSummaryAbove": 0, "xlSummaryBelow": 1, "xlRows": 1, "xlColumns": 2,
                  "xlSparkLine": 1, "xlSparkColumn": 2, "xlSparkColumnStacked100": 3,
                  "xlAverage": -4106, "xlCount": -4112, "xlCountNums": -4113, "xlMax": -4136, "xlMin": -4139,
                  "xlProduct": -4149, "xlStDev": -4155, "xlStDevP": -4156, "xlSum": -4157, "xlVar": -4164, "xlVarP": -4165}),

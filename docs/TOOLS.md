@@ -34,7 +34,7 @@ are unchanged.
 | `office_journal` | write (readonly: read, status) | Read a document's on-disk change journal or enable/disable the optional Excel 'Лог' sheet. Pass exactly one workbook or document name/path. Read and status are available in read-only mode. |
 | `office_undo` | destructive (readonly: history) | Undo recent agent changes to an open workbook/document, or read the session's undo history. Stops at unsupported operations (barriers). Later user edits block undo unless force=true. In Word, force also undoes the user's later edits to reach the state before the agent change, up to 20 native steps per entry; reports native_steps and stops at a barrier if that state cannot be reached. Excel is tried first, then Word. |
 
-### excel_core (36)
+### excel_core (37)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -177,7 +177,7 @@ are unchanged.
 |---|---|---|
 | `office_run_python` | destructive | ADVANCED / DANGEROUS: run Python code with live COM objects when no dedicated tool covers a need. Predefined names: `excel` (Excel.Application or None), `wb` (workbook or None), `ws` (its active sheet), `word` (Word.Application or None), `doc` (document or None), `pythoncom`, `win32com`. Set `result = ...` to return a value; print() output is returned too. COM rules: pass arguments POSITIONALLY (no name=value), use None for skipped optional arguments, and avoid Range.Resize/Offset (they misbehave in late binding). Only available when the server was started with OFFICE_LIVE_ALLOW_EVAL=1. |
 
-### excel_analysis (16)
+### excel_analysis (17)
 
 | Tool | Kind | What it does |
 |---|---|---|
@@ -191,6 +191,7 @@ are unchanged.
 | `excel_profile_range` | read | Statistical profile of a data block, column by column: types, empty/unique counts, min/max/mean/median/sum for numbers, date range, most frequent values, duplicates, formula counts. Use it to understand unfamiliar data before analysing or cleaning it. |
 | `excel_find_issues` | read | Audit a sheet/range for problems: error values, numbers stored as text, inconsistent formulas down a column, hard-coded numbers among formulas, stray spaces, blank rows/headers, duplicate headers, mixed types in a column, merged cells. |
 | `excel_goal_seek` | write | Find a numeric constant making a formula reach target_value. Snapshots only changing_cell for office_undo. |
+| `excel_what_if` | write (`list_scenarios`: read) | One/two-variable data tables; list/add/show/delete scenarios and create a standard summary sheet, with undo. |
 | `excel_pivot_info` | read | Describe a pivot table in detail: every field with its role (row/column/filter/data/unused), the items of each field and whether they are visible (hidden = filtered out), data fields with their function, and applied filters. Use it before filtering or restructuring. |
 | `excel_pivot_filter` | write (readonly: list) | Filter a pivot table - hide/show rows (items) of a field, apply label/value/top-N filters, or clear filters. This is what the field's filter dropdown does in Excel. |
 | `excel_pivot_fields` | write | Restructure a pivot table: add/move/remove fields, change how a value is aggregated, sort, group dates or numbers, add calculated fields, expand/collapse. |

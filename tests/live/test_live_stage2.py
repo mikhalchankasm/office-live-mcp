@@ -4,11 +4,12 @@ Only the fixture's own marked temporary workbook is touched. Journals/audit are 
 """
 
 import json
+import uuid
 from pathlib import Path
 
 import pytest
 
-from tests.live.conftest import read
+from tests.live.conftest import RUN_TAG, close_own_workbooks, read
 from tests.live.mcpclient import Stdio, ToolFailed
 from tests.live.test_live_stage1 import in_excel
 
@@ -28,6 +29,39 @@ def stage_book(srv, wb, tmp):
     path = str(Path(tmp) / "stage2.xlsx")
     srv.call("excel_save_as", workbook=wb, path=path)
     return path
+
+
+def test_live_import_cp1251_new_book(srv, tmp):
+    path = Path(tmp) / "import.csv"
+    path.write_text("Код;Название\n" + "007;Пример\n" * 336, encoding="cp1251")
+    result = srv.call("excel_import_table", path=str(path), text_columns=["Код"])
+    name, marker = result["workbook"], f"{RUN_TAG}_{uuid.uuid4().hex[:8]}"
+    srv.call("excel_manage_names", workbook=name, action="add", name=marker, formula="=1")
+    try:
+        assert result["rows"] == 337 and result["sheet"] == "Data" and result["encoding"] == "cp1251"
+        assert len(json.dumps(result).encode()) <= 2048 and "new workbook" in result["undo"]
+        book = str(Path(tmp) / "import.xlsx")
+        srv.call("excel_save_as", workbook=name, path=book)
+        assert read(srv, book, "A337:B337") == [["007", "Пример"]]
+        assert in_excel(book, lambda app, ws: bool(ws.Range("A1:B1").Font.Bold) and bool(ws.Range("A1:B1").WrapText))
+        assert in_excel(book, lambda app, ws: bool(app.ActiveWindow.FreezePanes) and app.ActiveWindow.SplitRow == 1)
+    finally:
+        close_own_workbooks(srv, name, marker)
+
+
+def test_live_import_occupied_and_undo(srv, stage_book, tmp):
+    path = Path(tmp) / "import.csv"
+    path.write_text("code;date\n007;2026-10-04", encoding="utf-8-sig")
+    srv.call("excel_write_range", workbook=stage_book, sheet="Data", cells="A1", values=[["keep"]])
+    with pytest.raises(ToolFailed, match="Occupied"):
+        srv.call("excel_import_table", path=str(path), workbook=stage_book)
+    assert read(srv, stage_book, "A1") == [["keep"]]
+    srv.call("excel_write_range", workbook=stage_book, sheet="Data", cells="D2", values=[["2026-10-04"]])
+    result = srv.call("excel_import_table", path=str(path), workbook=stage_book, overwrite=True, text_columns=[1])
+    assert result["undo"] == "available" and read(srv, stage_book, "A2") == [["007"]]
+    assert read(srv, stage_book, "B2") == read(srv, stage_book, "D2")
+    srv.call("office_undo", file=stage_book)
+    assert read(srv, stage_book, "A1:B2") == [["keep", None], [None, None]]
 
 
 def test_live_split_preview_literal_types_full_undo_and_conflict(srv, stage_book):

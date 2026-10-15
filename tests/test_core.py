@@ -10,8 +10,186 @@ import pywintypes
 
 from office_live import com, config, safety, vba
 from office_live.errors import AppBusyError, ToolError
+from tests.history_fakes import fake_office  # noqa: F401
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+@pytest.fixture
+def import_office(office, monkeypatch):
+    from tests.history_fakes import Range
+
+    monkeypatch.setattr(Range, "HasArray", False, raising=False)
+    return office
+
+
+def test_import_acceptance(import_office):
+    import json
+    from office_live import undo
+
+    o = import_office
+    path = o.tmp / "table.csv"
+    path.write_text("Код;Название\n" + "007;Пример\n" * 336, encoding="cp1251")
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name, text_columns=["Код"])
+    assert (result["rows"], result["columns"], result["sheet"]) == (337, 2, "Data")
+    assert (result["delimiter"], result["encoding"]) == (";", "cp1251")
+    assert o.ws.Range("A2").Value2 == "007" and o.ws.Range("A2").NumberFormat == "@"
+    assert o.ws.Range("A1:B1").Font.Bold and o.ws.Range("A1:B1").WrapText
+    assert o.ws.view.FreezePanes and o.ws.view.SplitRow == 1
+    assert len(json.dumps(result).encode()) <= 2048
+    stack = undo.STACKS[undo.stack_key("workbook", o.excel, o.wb)]
+    assert len(stack) == 1 and len(stack[0].backup_sheets) == 1
+    o.call("office_undo", file=o.wb.Name)
+    assert o.ws.Range("A1:B337").Value2 == ((None, None),) * 337
+    assert not o.ws.view.FreezePanes
+
+
+@pytest.mark.parametrize("ext,encoding,content,expected", [
+    ("csv", "utf-8-sig", "code,name\n007,тест", [["code", "name"], ["007", "тест"]]),
+    ("tsv", "utf-16", "code\tname\n007\tтест", [["code", "name"], ["007", "тест"]]),
+    ("json", "utf-8", '[{"a":"007"},{"b":2,"a":"008"}]', [["a", "b"], ["007", None], ["008", 2]]),
+    ("json", "utf-8", '[["a","b"],["007"]]', [["a", "b"], ["007", None]]),
+])
+def test_import_formats(import_office, ext, encoding, content, expected):
+    o = import_office
+    path = o.tmp / ("table." + ext)
+    path.write_text(content, encoding=encoding)
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name, text_columns=[1], layout=False)
+    assert result["sample"] == expected and result["encoding"] == encoding
+    assert o.ws.Range("A2").Value2 == "007"
+
+
+@pytest.mark.parametrize("problem", ["occupied", "protected", "merge", "array", "spill", "autosave", "nested", "limit", "header", "snapshot", "structure"])
+def test_import_refuses_before_changes(import_office, monkeypatch, problem):
+    import copy
+    from office_live import undo
+    from tests.history_fakes import Range
+
+    o = import_office
+    path = o.tmp / "table.json"
+    path.write_text('[["code"],["007"]]', encoding="utf-8")
+    args = {"path": str(path), "workbook": o.wb.Name}
+    if problem == "occupied":
+        o.ws.Range("A2").Formula = '=""'
+    elif problem == "protected":
+        o.ws.ProtectContents = True
+    elif problem == "merge":
+        o.ws.Range("A1").MergeCells = True
+    elif problem == "array":
+        monkeypatch.setattr(Range, "HasArray", True)
+    elif problem == "spill":
+        o.ws.spills = {(2, 1)}
+    elif problem == "autosave":
+        o.wb.AutoSaveOn = True
+    elif problem == "nested":
+        path.write_text('[{"code":{"x":1}}]', encoding="utf-8")
+    elif problem == "limit":
+        args["max_rows"] = 1
+    elif problem == "header":
+        args["text_columns"] = ["missing"]
+    elif problem == "snapshot":
+        monkeypatch.setattr(undo, "_snapshots", lambda *a, **k: (_ for _ in ()).throw(ValueError("snapshot failed")))
+    else:
+        o.wb.ProtectStructure = True
+        args["sheet"] = "New"
+    before = copy.deepcopy((o.ws.data, o.ws.formats))
+    with pytest.raises(ToolError) as error:
+        o.call("excel_import_table", **args)
+    if problem == "nested":
+        assert '$[0]["code"]' in str(error.value)
+    if problem == "occupied":
+        assert "A2" in str(error.value)
+    assert (o.ws.data, o.ws.formats) == before and not undo.STACKS and o.wb.Sheets.Count == 1
+
+
+def test_import_created_sheet_and_book(import_office):
+    o = import_office
+    path = o.tmp / "arbitrary.csv"
+    path.write_text("code\n007", encoding="utf-8")
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name, sheet="Imported", value_mode="text")
+    assert result["undo"] == "available" and o.wb.Sheets.Count == 2
+    o.call("office_undo", file=o.wb.Name)
+    assert o.wb.Sheets.Count == 1
+    result = o.call("excel_import_table", path=str(path), value_mode="text")
+    assert result["workbook"] != o.wb.Name and result["sheet"] == "Data"
+    assert "new workbook" in result["undo"] and "not available" in result["undo"]
+
+
+def test_import_inactive_and_partial_undo(import_office, monkeypatch):
+    from office_live import excel_core
+
+    o = import_office
+    other = o.wb.Worksheets.Add()
+    other.Name = "Other"
+    o.ws.Activate()
+    monkeypatch.setattr(other, "Activate", lambda: pytest.fail("must not activate import target"))
+    path = o.tmp / "table.csv"
+    path.write_text("code\n007", encoding="utf-8")
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name, sheet="Other")
+    assert "Freeze skipped" in " ".join(result["warnings"]) and o.excel.ActiveSheet is o.ws
+    o.call("office_undo", file=o.wb.Name)
+    original = excel_core._write_values
+    def fail(*args, **kwargs):
+        original(*args, **kwargs)
+        raise ValueError("interrupted after write")
+    monkeypatch.setattr(excel_core, "_write_values", fail)
+    with pytest.raises(ToolError, match="office_undo will restore"):
+        o.call("excel_import_table", path=str(path), workbook=o.wb.Name, text_columns=[1])
+    o.call("office_undo", file=o.wb.Name)
+    assert o.ws.Range("A1:A2").Value2 == ((None,), (None,)) and o.ws.Range("A1").NumberFormat == "General"
+
+
+def test_import_compact_overwrite_and_single_write(import_office, monkeypatch):
+    import json
+    from tests.history_fakes import Range
+
+    o = import_office
+    path = o.tmp / "table.json"
+    path.write_text(json.dumps([["x" * 1000] * 20] * 4), encoding="utf-8")
+    o.ws.Range("B3").Value2 = "before"
+    writes = []
+    original = Range.Value  # the import writes through write_range's path (Range.Value)
+    def write(rng, value):
+        writes.append(rng.Address)
+        original.fset(rng, value)
+    monkeypatch.setattr(Range, "Value", property(original.fget, write))
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name, start_cell="B3", overwrite=True)
+    assert writes == ["B3:U6"] and len(json.dumps(result).encode()) <= 2048
+    assert len(result["sample"]) == 3 and any("truncated" in warning for warning in result["warnings"])
+    o.call("office_undo", file=o.wb.Name)
+    assert o.ws.Range("B3").Value2 == "before"
+
+
+@pytest.mark.parametrize("content,options", [
+    ('[[1]]', {"start_cell": "XFD1048577"}), ('[[1,2]]', {"start_cell": "XFD1"}),
+    ('[[1]]', {"text_columns": [True]}), ('[[1]]', {"max_rows": 200001}),
+    ('[[NaN]]', {}), ('[{"a":[]}]', {}), ('[]', {}),
+    ('[[' + ','.join(['1'] * 201) + ']]', {}), ('[["' + 'x' * 32768 + '"]]', {}),
+], ids=["start-out-of-sheet", "start-too-wide", "bad-text-columns", "too-many-rows", "nan", "nested-json",
+        "empty", "too-many-columns", "cell-over-32767"])  # short ids: a 32 KB id overflows PYTEST_CURRENT_TEST
+def test_import_invalid_file_never_creates_book(import_office, monkeypatch, content, options):
+    from office_live import excel_core
+
+    path = import_office.tmp / "bad.json"
+    path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(com, "primary_app", lambda *a, **k: pytest.fail("must validate before Office"))
+    with pytest.raises(ToolError):
+        excel_core.excel_import_table(str(path), **options)
+
+
+def test_import_headerless_json_and_allowed_path(import_office, monkeypatch):
+    from dataclasses import replace
+    from office_live import excel_core
+
+    o = import_office
+    path = o.tmp / "table.json"
+    path.write_text('[{"code":"007"},{"value":2}]', encoding="utf-8")
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name, header=False, text_columns=["code"])
+    assert result["sample"] == [["007", None], [None, 2]] and not o.ws.view.FreezePanes
+    monkeypatch.setattr(config, "SETTINGS", replace(config.SETTINGS, allowed_dirs=(o.tmp / "allowed",)))
+    monkeypatch.setattr(com, "primary_app", lambda *a, **k: pytest.fail("must reject outside allowed dirs first"))
+    with pytest.raises(ToolError, match="outside"):
+        excel_core.excel_import_table(str(path))
 
 
 # ------------------------------------------------------------------ config
@@ -181,7 +359,7 @@ def test_instruction_tool_count_matches_catalog(catalog):
     cat, _ = catalog
     count = re.search(r"The catalog contains (\d+) tools", INSTRUCTIONS)
     assert count is not None
-    assert int(count.group(1)) == len(cat) == 124
+    assert int(count.group(1)) == len(cat) == 125
 
 
 def test_every_registered_tool_publishes_a_valid_schema(catalog):

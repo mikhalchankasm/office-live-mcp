@@ -969,11 +969,7 @@ def excel_sheet_view(
             win.FreezePanes = False
             if freeze_at.strip().lower() not in ("", "none"):
                 r, c, _, _ = parse_a1(freeze_at)
-                win.ScrollRow = 1
-                win.ScrollColumn = 1
-                win.SplitColumn = c - 1
-                win.SplitRow = r - 1
-                win.FreezePanes = True
+                _freeze_panes(win, r, c)
             applied.append(f"freeze_at={freeze_at or 'none'}")
         if zoom is not None:
             win.Zoom = max(10, min(400, int(zoom)))
@@ -989,6 +985,13 @@ def excel_sheet_view(
     if not applied:
         raise ToolError("Nothing to change: pass freeze_at, zoom, gridlines or headings.")
     return {"ok": True, "workbook": wb.Name, "sheet": ws.Name, "applied": applied}
+
+
+def _freeze_panes(win, row, column):
+    win.FreezePanes = False
+    win.ScrollRow = win.ScrollColumn = 1
+    win.SplitColumn, win.SplitRow = column - 1, row - 1
+    win.FreezePanes = True
 
 
 @office_tool("excel_format", "write", title="Page setup")

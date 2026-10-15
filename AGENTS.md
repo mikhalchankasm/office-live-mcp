@@ -11,8 +11,9 @@ Never weakened, never worked around. Any doubt stops the task and goes to the ow
   own temporary folders. Never close, quit or kill an Excel/Word the owner started, never close their documents.
 - A process may be stopped only when it is provably ours: started by this run (`/automation -Embedding`, created
   after the run began, PID and creation time recorded at launch) and hung. Never select a process by image name.
-- Live Office tests (`tests/live`, L3) run only in a window the owner opened ("Office is free"), in the background
-  with a progress watcher (`scripts/live_run.py` once #25 lands). No stress or repeat loops against the owner's desktop.
+- Live Office tests (`tests/live`, L3) run only after the owner's separate OK for that run (owner decision
+  2026-10-15: windows flash and the clipboard is used, so the owner stops working and waits). Ask with what runs and
+  how long; batch probes so the owner is interrupted rarely. Run through `scripts/live_run.py`. No stress loops.
 - Never write the owner's e-mail, sample-file names or local paths into the repository.
 - Push, merge, tag and release follow §2; accepting licences/CLAs, signing and store submissions (winget) are the
   owner's. Repository settings are the owner's.
@@ -63,7 +64,7 @@ brief means the task is not ready.
 | L0 | `python -m ruff check .` and `python -m pytest --ignore=tests/live -q` | before any result is reported |
 | L1 | CI (`.github/workflows/checks.yml`): unit, packaging, silent setup lifecycle | every PR head |
 | L2 | `python packaging/build.py` + packaged tests on the release candidate | release |
-| L3 | live Office: targeted probes for the change, full `tests/live` on the release candidate | owner's window |
+| L3 | live Office: probes of the batch, full `tests/live` on the release candidate | after the owner's OK, batched |
 
 Reruns only for a named uncertainty, never to obtain a green. A PR says which levels ran on which SHA and what did
 not run.

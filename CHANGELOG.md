@@ -5,6 +5,7 @@
 - **Word watermarks:** `word_watermark` adds centred text WordArt, reports existing watermarks through XML in readonly,
   and removes only recognised watermark shapes. Linked headers are handled once; partial section chains refuse.
   Uses Word UndoRecord; written live undo probes and Word UI removal acceptance await the owner’s live window.
+- **Word sections:** `word_sections` reads section layout and numbering without creating headers, inserts four section break kinds, and orients paragraph ranges with only missing boundaries, linked continuations and one undo record. Table boundary refusals precede edits; page-anchored shapes produce warnings. The catalog has 127 tools.
 
 - **Table import:** `excel_import_table` reads allowed CSV/TSV/TXT/JSON files with encoding/delimiter detection,
   literal text columns, default `Data` sheet, bounded widths and bold/wrapped headers; one block write and one undo entry.

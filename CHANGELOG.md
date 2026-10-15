@@ -12,6 +12,8 @@
 - **Table import:** `excel_import_table` reads allowed CSV/TSV/TXT/JSON files with encoding/delimiter detection,
   literal text columns, default `Data` sheet, bounded widths and bold/wrapped headers; one block write and one undo entry.
   Occupied targets refuse before changes. New books have an explicit undo barrier; inactive sheets report skipped freeze.
+  File text is untrusted: by default strings that Excel would read as formulas (`=`, `@`, and `+`/`-` text that is
+  not a number) are stored as text; `formulas=true` keeps them for a trusted file.
 - **Word captions:** `word_captions` lists SEQ fields, orphan captions and objects without captions, adds numbered table/picture/equation captions using built-in IDs, and inserts clickable cross-references. Writes use one undo record and update only inserted fields. The catalog has 125 tools.
 
 ## 0.4.6 — 2026-10-15

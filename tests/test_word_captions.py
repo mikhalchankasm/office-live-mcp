@@ -94,7 +94,8 @@ def test_add_native_arguments_local_update_and_one_undo(o, local):
     result = call(o, action="add", target="table", table_index=1, text=" — Title")
     assert result["undo"] == "available" and result["label_id"] == -2
     assert result["label"] == local
-    assert o.doc.calls[0] == ("caption", -2, " — Title", c.MISSING, 0, False)
+    # TitleAutoText "" not Missing: Missing mid-list nulls Position in Word (review finding)
+    assert o.doc.calls[0] == ("caption", -2, " — Title", "", 0, False)
     assert o.doc.calls[1] == ("update", 23, 27) and len(o.word.starts) == o.word.ends == 1
     o.call("office_undo", file=o.doc.Name)
     assert o.doc.Content.Text == before

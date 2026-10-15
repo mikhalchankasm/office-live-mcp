@@ -89,3 +89,21 @@ def test_section_break_kind_undo(srv, sections_doc, kind):
     assert len(srv.call('word_sections', document=path)['sections']) == 2
     srv.call('office_undo', file=path)
     assert word_state(path)[0] == before
+
+
+def test_sections_break_before_page_break_heading_adds_no_blank_page(srv, sections_doc):
+    # Review finding (0.5): paragraphs 21 and 25 have "page break before"; the empty paragraph that holds each inserted
+    # section break must not inherit it, or every boundary adds a blank page. The page count must stay 10.
+    path = sections_doc
+    with DialogWatch() as watch:
+        result = srv.call('word_sections', document=path, action='orientation', start_paragraph=21, end_paragraph=24)
+    assert watch.seen == [] and len(result['inserted_breaks']) == 2
+
+    def check(d):
+        d.Repaginate()
+        holders = [p for p in (d.Paragraphs(i) for i in range(1, int(d.Paragraphs.Count) + 1)) if str(p.Range.Text) == '\x0c']
+        return int(d.ComputeStatistics(2)), [bool(p.Range.ParagraphFormat.PageBreakBefore) for p in holders]
+
+    pages, page_breaks = in_word(path, check)
+    assert page_breaks == [False, False]
+    assert pages == 10

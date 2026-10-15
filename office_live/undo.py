@@ -1192,7 +1192,7 @@ def restore_excel(app, wb, entry):
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
             "excel_close_workbook", "word_close_document", "word_compare_documents"}
 
-DEFERRED = {"excel_import_table", "excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
+DEFERRED = {"word_watermark", "excel_import_table", "excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
             "excel_goal_seek", "excel_subtotals", "excel_sparklines", "word_insert_document", "word_table_text", "word_restrict_editing", "word_edit_apply", "word_manage_comments", "word_captions"}
 
 

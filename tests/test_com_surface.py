@@ -97,8 +97,15 @@ WORD = {
     "Shapes": "Count",
 }
 WORD["_Document"] += " Activate Range Bookmarks ActiveWindow"
+WORD["_Document"] += " ReadOnly"
+WORD["HeaderFooter"] += " Shapes"
+WORD["Section"] += " PageSetup"
+WORD["PageSetup"] = "PageWidth PageHeight"
+WORD["Shapes"] += " Item AddTextEffect"
+WORD.update({"Shape": "Name Fill Line Rotation WrapFormat RelativeHorizontalPosition RelativeVerticalPosition Left Top Delete Width LockAspectRatio Anchor",
+             "FillFormat": "Solid ForeColor Transparency", "ColorFormat": "RGB", "LineFormat": "Visible", "WrapFormat": "Type"})
 WORD["_Application"] += " ActiveWindow"
-WORD["Range"] += " Select Start End"
+WORD["Range"] += " Select Start End StoryType Sections"
 WORD["Paragraphs"] += " Item"
 WORD["Paragraph"] = "Range"
 WORD["Window"] = "Hwnd ScrollIntoView"
@@ -211,6 +218,11 @@ SETTERS = {
     "Tab": "Color ColorIndex",
 }
 WORD_SETTERS = {"_Application": "AutomationSecurity"}
+WORD_SETTERS.update({"Shape": "Name Rotation RelativeHorizontalPosition RelativeVerticalPosition Left Top Width LockAspectRatio",
+                     "FillFormat": "Transparency", "ColorFormat": "RGB", "LineFormat": "Visible", "WrapFormat": "Type"})
+CALLS.update({"Shapes.AddTextEffect": ("PresetTextEffect", "Text", "FontName", "FontSize", "FontBold", "FontItalic", "Left", "Top", "Anchor"),
+              "Shapes.Item": ("Index",), "Shape.Delete": (), "FillFormat.Solid": (),
+              "Sections.Item": ("Index",), "HeadersFooters.Item": ("Index",)})
 SETTERS["_Application"] += " MaxIterations MaxChange"
 SETTERS.update({"SparklineGroup": "DateRange DisplayBlanksAs DisplayHidden LineWeight PlotBy", "SparkColor": "Visible",
                 "FormatColor": "Color ThemeColor TintAndShade", "SparkHorizontalAxis": "RightToLeftPlotOrder",

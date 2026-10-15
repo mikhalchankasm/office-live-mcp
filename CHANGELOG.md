@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- **Word watermarks:** `word_watermark` adds centred text WordArt, reports existing watermarks through XML in readonly,
+  and removes only recognised watermark shapes. Linked headers are handled once; partial section chains refuse.
+  Uses Word UndoRecord; written live undo probes and Word UI removal acceptance await the owner’s live window.
+
 - **Table import:** `excel_import_table` reads allowed CSV/TSV/TXT/JSON files with encoding/delimiter detection,
   literal text columns, default `Data` sheet, bounded widths and bold/wrapped headers; one block write and one undo entry.
   Occupied targets refuse before changes. New books have an explicit undo barrier; inactive sheets report skipped freeze.

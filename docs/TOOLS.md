@@ -123,11 +123,12 @@ are unchanged.
 | `word_edit_preview` | read | Preview an exact fragment edit in a main-story paragraph without changes, journal or undo. |
 | `word_edit_apply` | write | Apply an agreed exact fragment replacement as tracked changes; restores TrackRevisions even on failure. |
 
-### word_layout (15)
+### word_layout (16)
 
 | Tool | Kind | What it does |
 |---|---|---|
 | `word_page_setup` | write | Page layout: orientation, paper size, margins, text columns. |
+| `word_watermark` | write (readonly: status) | Inspect, add or remove text watermarks in section headers; linked headers once, native Word undo. |
 | `word_headers_footers` | write (readonly: get) | Read or set page headers/footers: text and automatic page numbers. |
 | `word_manage_toc` | write (readonly: list) | Insert, refresh or remove a table of contents built from the Heading styles. |
 | `word_update_fields` | write | Refresh every field of the document, including headers/footers, footnotes and text boxes: page numbers, total pages, table of contents, cross-references, dates. Reports fields that could not be updated. |

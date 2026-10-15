@@ -9,6 +9,7 @@ import re
 import shutil
 import statistics
 import tempfile
+import time
 from collections import Counter
 
 import pythoncom
@@ -839,6 +840,25 @@ def excel_create_chart(
     return out
 
 
+_PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+
+def _export_chart_png(chart, png: str, name: str) -> bytes:
+    """Chart.Export sometimes writes an empty file (live finding #32: long-lived test Excel). Retry once after
+    Chart.Refresh; never report success for a file that is not a PNG."""
+    for attempt in range(2):
+        if attempt:
+            chart.Refresh()
+            time.sleep(0.3)
+        chart.Export(png, "PNG")
+        with open(png, "rb") as f:
+            data = f.read()
+        if data.startswith(_PNG_SIGNATURE):
+            return data
+    raise ToolError(f"Excel returned an empty image for chart '{name}' twice. Make sure the workbook window is not "
+                    "minimized or hidden (office_window) and try again; nothing was saved.")
+
+
 @office_tool("excel_analysis", "write", title="Manage charts", unstructured=True, read_actions=("list", "export_image"), destructive=True, file_args=("export_path",))
 def excel_manage_charts(
     workbook: str,
@@ -911,9 +931,7 @@ def excel_manage_charts(
         tmpdir = tempfile.mkdtemp(prefix="office_live_")
         png = os.path.join(tmpdir, "chart.png")
         try:
-            ch.Export(png, "PNG")
-            with open(png, "rb") as f:
-                data = f.read()
+            data = _export_chart_png(ch, png, co.Name)
             if dest:
                 os.makedirs(os.path.dirname(dest), exist_ok=True)
                 shutil.copyfile(png, dest)

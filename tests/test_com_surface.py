@@ -40,7 +40,7 @@ EXCEL = {
     "ListObject": "Unlist Name Range TableStyle ShowTotals ShowHeaders",
     "TableStyle": "Name",
     "Shape": "Delete Name Type Left Top Width Height Rotation Chart",
-    "_Chart": "ChartType",
+    "_Chart": "ChartType Export Refresh",
     "SlicerCaches": "Item",
     "SlicerCache": "Delete",
     "Tab": "Color ColorIndex",

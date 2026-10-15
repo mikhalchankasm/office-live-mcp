@@ -19,6 +19,7 @@ from tests.live import office_cleanup as cleanup
 # Быстрый набор (pytest tests/live -m smoke, ~3 мин): по одному-два ключевых сценария на группу плюс тесты, которые уже
 # ловили настоящие ошибки Office. Полный набор (~12 мин) — перед релизом.
 SMOKE = {
+    "test_live_word_captions.py": ("test_caption_table_reference_selection_and_undo", "test_caption_picture_equation_duplicate_and_number"),
     "test_live_save_old_format.py": ("test_xls_save_with_modern_formula_restores_compatibility",),
     "test_live.py": ("test_write_read_and_text_mode", "test_number_formats_roundtrip_in_any_locale", "test_formulas_fill_down_and_r1c1",
                      "test_sort_filter_find_replace_dedupe", "test_conditional_format_and_validation", "test_chart_table_profile_and_issues",

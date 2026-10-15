@@ -13,8 +13,7 @@ import uuid
 import pytest
 
 from tests.live.mcpclient import LIVE_CLIENTS, Stdio, ToolFailed
-from tests.live.office_cleanup import (excel_pids, hidden_idle_excel_pids, hung_office_windows, quit_excel_if_idle,
-                                      quit_word_if_idle, word_running)
+from tests.live import office_cleanup as cleanup
 
 
 # Быстрый набор (pytest tests/live -m smoke, ~3 мин): по одному-два ключевых сценария на группу плюс тесты, которые уже
@@ -51,83 +50,133 @@ def pytest_collection_modifyitems(config, items):
             found.add((item.path.name, item.originalname))
     collected = {item.path.name for item in items}
     missing = [f"{f}::{n}" for f, names in SMOKE.items() if f in collected for n in names if (f, n) not in found]
-    if missing and "smoke" in (config.option.markexpr or ""):
+    # Explicit nodeids (especially --resume) intentionally collect only part of a file.
+    if missing and "smoke" in (config.option.markexpr or "") and not any('::' in arg for arg in config.args):
         raise pytest.UsageError(f"SMOKE names not found (renamed tests?): {missing}")
 
 
-EXCEL_BEFORE: set[int] = set()  # процессы Excel до прогона (их не закрываем никогда)
-SESSION = {"started": False}
+SESSION = {"watch": None}
+WATCH_EVERY, HUNG_FOR, DIALOG_FOR = 5, 45, 20
 
 
-HUNG = {"reason": ""}
-WATCH_EVERY, HUNG_FOR = 15, 45  # секунды: как часто смотреть и сколько окно Office должно не отвечать
+def _kill_test_servers():
+    for client in list(LIVE_CLIENTS):
+        try:
+            if client.proc.poll() is None:
+                client.proc.kill()
+        except OSError:
+            pass
 
 
-def _watch_office(stop: threading.Event) -> None:
-    """Сторож: зависший Excel/Word иначе превращает прогон в полчаса тайм-аутов по 180 с на каждый вызов.
-
-    Окно не отвечает дольше HUNG_FOR → запоминаем причину и обрываем серверы тестов (свои процессы python): вызов,
-    застрявший в COM, сразу завершается ошибкой, а следующий тест останавливает прогон. Office сторож не трогает."""
-    since = {}
+def _watch_office(stop, watch):
     while not stop.wait(WATCH_EVERY):
         try:
-            hung = hung_office_windows()
-        except Exception:  # noqa: BLE001 — сторож не должен ронять прогон
-            continue
-        now = time.monotonic()
-        since = {key: since.get(key, now) for key in hung}
-        stuck = [key for key, start in since.items() if now - start >= HUNG_FOR]
-        if stuck:
-            image, pid, title = stuck[0]
-            HUNG["reason"] = (f"{image} (PID {pid}, «{title}») не отвечает дольше {HUNG_FOR} с — прогон остановлен. "
-                              "Завершите этот процесс в диспетчере задач и запустите тесты снова.")
-            print(f"\n[office-watchdog] {HUNG['reason']}", flush=True)
-            for client in list(LIVE_CLIENTS):
-                try:
-                    client.proc.kill()
-                except Exception:  # noqa: BLE001
-                    pass
+            watch.tick(time.monotonic(), cleanup.office_processes(),
+                       cleanup.hung_office_windows(), cleanup.office_dialogs())
+        except Exception as exc:
+            # Monitoring failure cannot silently disable ownership protection for the rest of the run.
+            watch.fatal = f"Сторож Office не может продолжить безопасно: {exc}"
+            cleanup.live_event('watchdog_error', reason=watch.fatal)
+            _kill_test_servers()
+        if watch.fatal:
+            print(f"\n[office-watchdog] {watch.fatal}", flush=True)
             return
 
 
 @pytest.fixture(scope="session", autouse=True)
 def _office_watchdog():
+    if os.environ.get('OFFICE_LIVE_LIVE_TESTS') != '1':
+        yield
+        return
+    started = time.time_ns() // 1000
+    try:
+        before = cleanup.office_processes()
+        ownership = cleanup.Ownership(started, before)
+        cleanup.OWNERSHIP = ownership
+        cleanup.live_event('session_start', started=started, before=[cleanup.asdict(p) for p in before])
+        cleanup.clean_leftovers(before, ownership)
+    except Exception as exc:
+        cleanup.live_event('startup_failed', reason=str(exc))
+        cleanup.OWNERSHIP = None
+        pytest.exit(f'Остатки Office: {exc}', returncode=3)
+    watch = cleanup.OfficeWatch(ownership, _kill_test_servers, HUNG_FOR, DIALOG_FOR)
+    SESSION['watch'] = watch
     stop = threading.Event()
-    thread = threading.Thread(target=_watch_office, args=(stop,), daemon=True, name="office-watchdog")
+    thread = threading.Thread(target=_watch_office, args=(stop, watch), daemon=True, name="office-watchdog")
     thread.start()
-    yield
-    stop.set()
+    try:
+        yield
+        # Keep the watchdog running through final COM Quit, too.
+        if not watch.fatal:
+            cleanup.quit_word_if_idle()
+            cleanup.quit_excel_if_idle()
+        if watch.fatal:
+            pytest.exit(watch.fatal, returncode=3)
+    finally:
+        stop.set()
+        thread.join(timeout=WATCH_EVERY + 1)
+        cleanup.OWNERSHIP = None
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # Retain recovery evidence through the last test's teardown report (which follows session fixtures).
+    SESSION['watch'] = None
 
 
 @pytest.fixture(autouse=True)
-def _stop_when_office_hung():
-    if HUNG["reason"]:
-        pytest.exit(HUNG["reason"], returncode=3)
+def _stop_when_office_hung(request, _office_watchdog):
+    watch = SESSION['watch']
+    fatal, recoveries = watch.checkpoint() if watch else ('', [])
+    if fatal:
+        pytest.exit(fatal, returncode=3)
+    request.node._office_recoveries = len(recoveries)
     yield
-    if HUNG["reason"]:
-        pytest.exit(HUNG["reason"], returncode=3)
+    fatal, _ = watch.checkpoint() if watch else ('', [])
+    if fatal:
+        pytest.exit(fatal, returncode=3)
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item, call):
+    outcome = yield
+    report = outcome.get_result()
+    watch = SESSION['watch']
+    _, recoveries = watch.checkpoint() if watch else ('', [])
+    start = getattr(item, '_office_recoveries', 0)
+    if len(recoveries) > start and report.outcome == 'passed':
+        report.outcome = 'failed'
+        report.longrepr = 'Office восстановлен во время теста: ' + '; '.join(recoveries[start:])
 
 
 @pytest.fixture(autouse=True)
-def _fresh_excel_when_bloated():
-    # после КАЖДОГО теста: тестовый Excel, разбухший от создания/закрытия книг, закрывается штатно, следующий тест
-    # запускает свежий — пользователю не приходится снимать его в диспетчере задач
+def _fresh_excel_when_bloated(_stop_when_office_hung):
     yield
-    if SESSION["started"]:  # до запуска сервера список «чужих» процессов ещё не снят
-        quit_excel_if_idle(EXCEL_BEFORE, gdi_over=6000, mem_over_mb=900)  # свежий Excel 365 ~250–450 МБ; лимит GDI Windows 10 000
+    watch = SESSION['watch']
+    if watch and not watch.fatal:
+        cleanup.quit_excel_if_idle(gdi_over=6000, mem_over_mb=900)
 
 
-@pytest.fixture(scope="session")
-def srv():
-    word_was_running = word_running()  # Word пользователя не закрываем, даже пустой
-    excel_before = excel_pids() - hidden_idle_excel_pids()  # и Excel пользователя тоже (скрытый пустой — остаток тестов)
-    EXCEL_BEFORE.update(excel_before)
-    SESSION["started"] = True
-    c = Stdio()
-    yield c
-    c.close()
-    quit_word_if_idle(started_by_tests=not word_was_running)
-    quit_excel_if_idle(excel_before)
+_SERVER = {"client": None}
+
+
+@pytest.fixture
+def srv(_office_watchdog):
+    # One MCP server per session (startup costs ~1–2 s × ~150 tests); a fresh one only after the watchdog killed it.
+    client = _SERVER["client"]
+    if client is None or client.proc.poll() is not None:
+        if client is not None:
+            client.close()
+        client = _SERVER["client"] = Stdio()
+    return client
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _close_session_server(_office_watchdog):
+    # Depends on the watchdog: torn down first, so the server lets go of Office before the final idle Quit.
+    yield
+    if _SERVER["client"] is not None:
+        _SERVER["client"].close()
+        _SERVER["client"] = None
 
 
 # уникальна для этого запуска: файлы других запусков и пользователя не совпадут. Через окружение — потому что модуль

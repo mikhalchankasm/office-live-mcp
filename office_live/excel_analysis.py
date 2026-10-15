@@ -1211,6 +1211,160 @@ def _finite(value, name):
         raise ToolError(f"{name} must be a finite number.")
 
 
+def scenario_state(item):
+    values = item.Values  # optional-index PROPERTYGET, not a method
+    return {"name": item.Name, "changing_cells": xl.addr_of(item.ChangingCells),
+            "values": list(values) if isinstance(values, (tuple, list)) else [values], "comment": item.Comment,
+            "locked": bool(item.Locked), "hidden": bool(item.Hidden)}
+
+
+def scenario_items(ws):
+    collection = ws.Scenarios()
+    return [collection.Item(i) for i in range(1, int(collection.Count) + 1)]
+
+
+def _what_if_ranges(rng, ws, wb, limit):
+    if int(rng.Count) > limit:
+        raise ToolError(f"Select at most {limit} cells.")
+    areas = [rng.Areas.Item(i) for i in range(1, int(rng.Areas.Count) + 1)]
+    for area in areas:
+        xl.validate_rectangle(area, ws, wb)
+    return areas
+
+
+def _what_if_writable(app, ws, rng):
+    if rng.MergeCells is not False or rng.HasArray is not False or rng.HasSpill is not False:
+        raise ToolError("Merged cells, arrays and spills are not supported.")
+    xl.reject_pivots(app, ws, rng)
+    for table in ws.ListObjects:
+        if app.Intersect(rng, table.Range) is not None:
+            raise ToolError("Range intersects an Excel table.")
+
+
+@office_tool("excel_analysis", "write", title="What-if analysis", read_actions=("list_scenarios",), destructive=True)
+def excel_what_if(workbook: str, sheet: str, action: str = "list_scenarios", cells: str = "",
+                  row_input: str = "", column_input: str = "", name: str = "", changing_cells: str = "",
+                  values: list | None = None, comment: str = "", result_cells: str = "") -> dict:
+    """Build one/two-variable data tables or add/show/delete/list scenarios and create a standard summary sheet.
+
+    cells: entire data-table rectangle including headers; inputs must be outside it on the same sheet.
+    One-variable tables have formulas down the first column (row_input) or across the first row (column_input).
+    Two-variable tables have a formula in the upper-left corner. Results must be empty; office_undo clears the array.
+    Scenarios accept up to 32 changing_cells (including unions), one finite number or text value per cell.
+    result_cells: required formula cells for scenario_summary. Only list_scenarios is available in readonly.
+    """
+    if action not in {"data_table", "list_scenarios", "add_scenario", "show_scenario", "delete_scenario", "scenario_summary"}:
+        raise ToolError("Unknown what-if action.")
+    app, wb = xl.pick_workbook(workbook)
+    ws = xl.pick_sheet(wb, sheet)
+    base = {"workbook": wb.Name, "sheet": ws.Name, "action": action}
+    if action == "list_scenarios":
+        return {**base, "scenarios": [scenario_state(s) for s in scenario_items(ws)]}
+    if bool(ws.ProtectContents) or bool(ws.ProtectScenarios):
+        raise ToolError("Unprotect the sheet before changing what-if analysis.")
+    plan = {"_what_sheet": ws.Name}
+    if action == "data_table":
+        from .formula_trace import same_sheet_dependency
+
+        _, block = xl.get_range(wb, ws.Name, cells, empty_means_used=False)
+        xl.validate_rectangle(block, ws, wb)
+        _what_if_ranges(block, ws, wb, 20000)
+        _what_if_writable(app, ws, block)
+        r, c, end, right = xl.bounds(block)
+        if r == end or c == right or not (row_input or column_input):
+            raise ToolError("A data table needs headers, results and at least one input cell.")
+        inputs = []
+        for address in (row_input, column_input):
+            if not address:
+                inputs.append(MISSING)
+                continue
+            _, cell = xl.get_range(wb, ws.Name, address, empty_means_used=False)
+            xl.validate_rectangle(cell, ws, wb)
+            if int(cell.Count) != 1 or app.Intersect(block, cell) is not None:
+                raise ToolError("Each input must be one cell outside the data table on the same sheet.")
+            _what_if_writable(app, ws, cell)
+            inputs.append(cell)
+        if row_input and column_input and xl.addr_of(inputs[0]) == xl.addr_of(inputs[1]):
+            raise ToolError("Row and column inputs must differ.")
+        formulas = ([ws.Cells(r, c)] if row_input and column_input else
+                    [ws.Cells(i, c) for i in range(r + 1, end + 1)] if row_input else
+                    [ws.Cells(r, j) for j in range(c + 1, right + 1)])
+        verified, reasons = True, set()
+        for formula in formulas:
+            if not bool(formula.HasFormula):
+                raise ToolError("Every result header must contain a formula.")
+            for input_cell in [inputs[i] for i, a in enumerate((row_input, column_input)) if a]:
+                depends, complete, why = same_sheet_dependency(app, wb, formula, input_cell)
+                if complete and not depends:
+                    raise ToolError("Result formula does not depend on an input cell.")
+                verified = verified and complete and depends
+                reasons.update(why)
+        result = xl.sub_range(ws, r + 1, c + 1, end, right)
+        if any(v is not None for row in to_grid(result.Value2) for v in row) or result.HasFormula is not False:
+            raise ToolError("The result area must be empty.")
+        mode = int(app.Calculation)
+        note = ("Use F9 or excel_calculate to recalculate data tables." if mode in {-4135, 2} else "")  # xlCalculationManual, xlCalculationSemiautomatic
+        plan.update(_what_results=xl.addr_of(result))
+        base.update(rows=end - r, columns=right - c, results=xl.addr_of(result), dependency_verified=bool(verified),
+                    dependency_reasons=sorted(reasons), calculation_mode=mode, calculation_note=note)
+    else:
+        scenarios = scenario_items(ws)
+        existing = next((s for s in scenarios if s.Name.casefold() == name.casefold()), None)
+        if action == "add_scenario":
+            if not name.strip() or len(name) > 255 or existing is not None:
+                raise ToolError("Scenario name must be nonempty, unique and at most 255 characters.")
+            _, changing = xl.get_range(wb, ws.Name, changing_cells, empty_means_used=False)
+            _what_if_ranges(changing, ws, wb, 32)
+            if values is None or len(values) != int(changing.Count):
+                raise ToolError("Supply one value per changing cell (at most 32).")
+            for value in values:
+                if not isinstance(value, str):
+                    _finite(value, "scenario value")
+                elif len(value) > 255:
+                    raise ToolError("Scenario text values must be at most 255 characters.")
+            plan.update(_what_name=name, _what_before=None)
+        elif action in {"show_scenario", "delete_scenario"}:
+            if existing is None:
+                raise ToolError("Scenario not found.")
+            before = scenario_state(existing)
+            changing = existing.ChangingCells
+            areas = _what_if_ranges(changing, ws, wb, 32)
+            if action == "show_scenario":
+                for area in areas:
+                    _what_if_writable(app, ws, area)
+                plan.update(_what_cells=[xl.addr_of(a) for a in areas])
+            else:
+                plan.update(_what_name=existing.Name, _what_before=before)
+        else:
+            if not scenarios or bool(wb.ProtectStructure):
+                raise ToolError("Summary needs scenarios and an unprotected workbook structure.")
+            _, result = xl.get_range(wb, ws.Name, result_cells, empty_means_used=False)
+            areas = _what_if_ranges(result, ws, wb, 32)
+            if any(a.HasFormula is not True for a in areas):
+                raise ToolError("result_cells must contain formulas.")
+            sheets_before = xl.sheet_names(wb, any_type=True)
+        if action != "scenario_summary":
+            base["name"] = name
+    undo.require_undo("workbook", app, wb, plan=plan)
+    try:
+        if action == "data_table":
+            block.Table(*inputs)
+            base["preview"] = xl.preview(result, 20)
+        elif action == "add_scenario":
+            ws.Scenarios().Add(name, changing, values, comment, False, False)
+        elif action == "show_scenario":
+            existing.Show()
+        elif action == "delete_scenario":
+            existing.Delete()
+        else:
+            ws.Scenarios().CreateSummary(1, result)  # xlStandardSummary
+            base["created_sheets"] = [n for n in xl.sheet_names(wb, any_type=True) if n not in sheets_before]
+        return base
+    except (pywintypes.com_error, ToolError) as exc:
+        location = plan.get("_what_results") or name or "new summary sheet"
+        raise PartialChangeError(f"{action} interrupted; {base['sheet']}: {location} may have changed. Use office_undo. {com.translate(exc)}") from None
+
+
 @office_tool("excel_analysis", "write", title="Goal seek")
 def excel_goal_seek(workbook: str, sheet: str, set_cell: str, target_value: float, changing_cell: str,
                     max_iterations: int | None = None, max_change: float | None = None,

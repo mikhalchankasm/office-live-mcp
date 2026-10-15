@@ -614,7 +614,7 @@ def excel_fingerprint(app, wb, entry):
         modes = {op.get("restore", "all") for op in ops} or {"all"}
         state.append([area, _formula_state(rng) if modes & {"all", "contents"} else None,
                       _format_state(rng) if modes & {"all", "formats"} else None])
-        if entry.tool in {"excel_import_table", "excel_clean_text", "excel_split_column", "excel_goal_seek"}:
+        if entry.tool in {"excel_import_table", "excel_clean_text", "excel_split_column", "excel_goal_seek", "excel_what_if"}:
             state.append([_property_state(rng, p) for p in ("NumberFormat", "PrefixCharacter")])
         for mode in modes & {"all", "formats", "comments", "validation", "rules"}:
             state.append(_metadata_state(rng, "formats" if mode == "rules" else mode))
@@ -637,6 +637,11 @@ def excel_fingerprint(app, wb, entry):
             state.append([bool(coll(i).Hidden) for i, _ in op["values"]])
         elif what == "name":
             state.append(_name_state(wb, op["name"]))
+        elif what == "scenario":
+            from .excel_analysis import scenario_items, scenario_state
+
+            state.append([scenario_state(s) for s in scenario_items(wb.Worksheets(op["sheet"]))
+                          if s.Name.casefold() == op["name"].casefold()])
         elif what == "sheet_property":
             ws = wb.Sheets(op["current"])
             state.append([ws.Name, int(ws.Index), int(ws.Visible), ws.Tab.ColorIndex, ws.Tab.Color])
@@ -769,6 +774,24 @@ def _protection(app, wb, entry, args):
         return
     entry.ops.append({"op": "protection", "scope": scope, "sheet": args["_protection_sheet"],
                       "state": _protection_state(target, scope), "locked": {a: _property_state(target.Range(a), "Locked") for a in ranges}})
+
+
+def _what_if(app, wb, entry, args):
+    ws = wb.Worksheets(args["_what_sheet"])
+    action = args["action"]
+    if action == "data_table":
+        if _size(ws.Range(args["_what_results"])) > config.SETTINGS.undo_max_cells or journal.owns_sheet(ws):
+            entry.barrier("Data table exceeds the undo cell limit or targets the service log sheet.")
+            return
+        area = {"sheet": ws.Name, "address": args["_what_results"]}
+        entry.areas.append(area)
+        entry.ops.append({"op": "clear_data_table", **area})  # preflight proves every result is empty
+    elif action == "show_scenario":
+        _snapshots(app, wb, entry, [ws.Range(a) for a in args["_what_cells"]], restore="contents", properties=("NumberFormat",))
+    elif action == "scenario_summary":
+        _add_sheet(app, wb, entry, args)
+    else:
+        entry.ops.append({"op": "scenario", "sheet": ws.Name, "name": args["_what_name"], "before": args["_what_before"]})
 
 
 def _goal_seek(app, wb, entry, args):
@@ -1010,6 +1033,7 @@ RESOLVERS = dict.fromkeys((
     "excel_manage_comments", "excel_add_hyperlink", "excel_sort_range", "excel_remove_duplicates",
 ), _simple_range)
 RESOLVERS.update({
+    "excel_what_if": _what_if,
     "excel_import_table": _import_table,
     "excel_goal_seek": _goal_seek, "excel_subtotals": _subtotals, "excel_sparklines": _sparklines,
     "excel_format_ranges": _format_ranges,
@@ -1030,7 +1054,7 @@ def _finish_excel(wb, entry, result):
         what = op["op"]
         if what == "range":
             rng = _range(wb, op)
-            if entry.tool not in {"excel_goal_seek", "excel_subtotals"}:
+            if entry.tool not in {"excel_goal_seek", "excel_subtotals", "excel_what_if"}:
                 op["properties"] = {p: before for p, before in op.get("properties", {}).items() if before != _property_state(rng, p)}
         elif what == "delete_created_sheet":
             before = op.pop("before")
@@ -1059,7 +1083,20 @@ def restore_excel(app, wb, entry):
     backup = _backup(app, entry.backup_token) if entry.backup_sheets else None
     for op in entry.ops:
         what = op["op"]
-        if what == "import_view":
+        if what == "clear_data_table":
+            _range(wb, op).ClearContents()  # clear the entire TABLE array in one call
+        elif what == "scenario":
+            from .excel_analysis import scenario_items
+
+            ws = wb.Worksheets(op["sheet"])
+            for item in scenario_items(ws):
+                if item.Name.casefold() == op["name"].casefold():
+                    item.Delete()
+            before = op["before"]
+            if before is not None:
+                ws.Scenarios().Add(before["name"], ws.Range(before["changing_cells"]), before["values"],
+                                   before["comment"], before["locked"], before["hidden"])
+        elif what == "import_view":
             _import_view(app, wb, op["sheet"], op["before"])
         elif what == "subtotal":
             ws = wb.Worksheets(op["sheet"])
@@ -1192,7 +1229,7 @@ def restore_excel(app, wb, entry):
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
             "excel_close_workbook", "word_close_document", "word_compare_documents"}
 
-DEFERRED = {"word_sections", "word_watermark", "excel_import_table", "excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
+DEFERRED = {"excel_what_if", "word_sections", "word_watermark", "excel_import_table", "excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
             "excel_goal_seek", "excel_subtotals", "excel_sparklines", "word_insert_document", "word_table_text", "word_restrict_editing", "word_edit_apply", "word_manage_comments", "word_captions"}
 
 

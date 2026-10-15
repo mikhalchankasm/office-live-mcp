@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **Excel what-if analysis:** `excel_what_if` builds one/two-variable data tables and lists/adds/shows/deletes scenarios or creates a standard summary sheet. Preflight refuses occupied results and protected sheets; unknown dependencies and delayed calculation are reported. Undo clears the whole data-table array, restores scenario inputs/definitions or removes the summary sheet. Live probes are written, not yet run.
+
 - **Word watermarks:** `word_watermark` adds centred text WordArt, reports existing watermarks through XML in readonly,
   and removes only recognised watermark shapes. Linked headers are handled once; partial section chains refuse.
   Uses Word UndoRecord; written live undo probes and Word UI removal acceptance await the owner’s live window.

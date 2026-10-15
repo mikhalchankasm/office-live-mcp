@@ -713,6 +713,17 @@ def _simple_range(app, wb, entry, args):
 IMPORT_BOOK_BARRIER = "Import created a new workbook; office_undo cannot close it. Close it explicitly with discard=true if unwanted."
 
 
+def _union_range(app, ws, address):
+    """Range() refuses addresses over 255 characters (a union of up to 32 far cells): build it area by area."""
+    if len(str(address)) <= 255:
+        return ws.Range(address)
+    result = None
+    for part in str(address).split(","):
+        area = ws.Range(part)
+        result = area if result is None else app.Union(result, area)
+    return result
+
+
 def _import_view(app, wb, sheet, value=None):
     # Never activate a sheet just to inspect/fingerprint an import.
     if app.ActiveWorkbook.FullName != wb.FullName or app.ActiveSheet.Name != sheet:
@@ -1094,7 +1105,7 @@ def restore_excel(app, wb, entry):
                     item.Delete()
             before = op["before"]
             if before is not None:
-                ws.Scenarios().Add(before["name"], ws.Range(before["changing_cells"]), before["values"],
+                ws.Scenarios().Add(before["name"], _union_range(app, ws, before["changing_cells"]), before["values"],
                                    before["comment"], before["locked"], before["hidden"])
         elif what == "import_view":
             _import_view(app, wb, op["sheet"], op["before"])

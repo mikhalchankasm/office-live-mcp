@@ -4,7 +4,6 @@ import copy
 from dataclasses import replace
 from types import SimpleNamespace as NS
 
-import pythoncom
 import pytest
 
 from office_live import config, undo, xl_common as xl
@@ -20,8 +19,7 @@ class WhatRange(AnalysisRange):
 
     def Table(self, row, column, /):
         ws = self.Worksheet
-        ws.calls.append((row if row is pythoncom.Missing else row.Address,
-                         column if column is pythoncom.Missing else column.Address))
+        ws.calls.append((row if row is None else row.Address, column if column is None else column.Address))
         target = xl.sub_range(ws, self.Row + 1, self.Column + 1, self.r2, self.c2)
         ws.array = set(target.positions())
         target.Formula = "=TABLE()"
@@ -109,7 +107,8 @@ def test_table_position_dependency_modes_and_whole_array_undo(o, mode, direction
     result = call(o, **kw)
     assert result["dependency_verified"] and result["results"] == "C4:D5"
     assert bool(result["calculation_note"]) == (mode != -4105)
-    assert o.ws.calls == [(pythoncom.Missing if direction == "column" else "A1", pythoncom.Missing if direction == "row" else "A2")]
+    # None, not Missing: Missing in the first position drops the next argument (com.py rule 1, review finding)
+    assert o.ws.calls == [(None if direction == "column" else "A1", None if direction == "row" else "A2")]
     o.call("office_undo", file=o.wb.Name)
     assert not o.ws.array and all(o.ws.data.get(k) == v for k, v in before.items())
     assert o.ws.Range("C4:D5").Value2 == ((None, None), (None, None))
@@ -215,3 +214,16 @@ def test_scenario_and_undo_preflight_refusals(o, monkeypatch, problem):
     with pytest.raises(ToolError):
         call(o, action, name="Case", result_cells="A1" if problem == "result" else "B3")
     assert o.ws.data == before and o.ws.Scenarios().Count == 1
+
+
+def test_scenario_undo_rebuilds_long_union_addresses():
+    # Review finding: Range() refuses addresses over 255 characters; a 32-cell union is rebuilt area by area.
+    from office_live import undo
+
+    address = ",".join(f"$AAA${10000 + i}" for i in range(32))
+    assert len(address) > 255
+    calls = []
+    ws = NS(Range=lambda a: (calls.append(a), NS(addr=a))[1])
+    app = NS(Union=lambda x, y: NS(addr=x.addr + "," + y.addr))
+    assert undo._union_range(app, ws, address).addr == address and len(calls) == 32
+    assert undo._union_range(app, ws, "$A$1,$B$2") is not None and calls[-1] == "$A$1,$B$2"

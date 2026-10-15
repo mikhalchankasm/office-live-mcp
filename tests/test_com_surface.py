@@ -118,7 +118,19 @@ WORD["Bookmarks"] += " Count"
 WORD.update({"Fields": "Count Item", "Field": "Code Result", "Hyperlinks": "Count Item", "Hyperlink": "Range",
              "ContentControls": "Count Item", "ContentControl": "Range", "_Font": "Name Size Bold Italic Underline Color Duplicate",
              "ListFormat": "ListString"})
+WORD["_Application"] += " CaptionLabels"
+WORD["_Document"] += " GetCrossReferenceItems"
+WORD["Range"] += " InsertCaption InsertCrossReference"
+WORD["Fields"] += " Update"
+WORD["Field"] += " Type"
+WORD["InlineShapes"] += " Item"
+WORD["Bookmarks"] += " Add"
+WORD.update({"CaptionLabels": "Item", "CaptionLabel": "Name", "InlineShape": "Range Type"})
 CALLS = {
+    "Range.InsertCaption": ("Label", "Title", "TitleAutoText", "Position", "ExcludeLabel"),
+    "Range.InsertCrossReference": ("ReferenceType", "ReferenceKind", "ReferenceItem", "InsertAsHyperlink", "IncludePosition", "SeparateNumbers", "SeparatorString"),
+    "_Document.GetCrossReferenceItems": ("ReferenceType",), "CaptionLabels.Item": ("Index",),
+    "InlineShapes.Item": ("Index",), "Fields.Update": (), "Bookmarks.Add": ("Name", "Range"),
     "Hyperlinks.Add": ("Anchor", "Address", "SubAddress", "ScreenTip", "TextToDisplay"),
     "_Application.Goto": ("Reference", "Scroll"),
     "Window.ScrollIntoView": ("obj", "Start"),

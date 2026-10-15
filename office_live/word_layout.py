@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+import uuid
 
 import pythoncom
 import pywintypes
@@ -802,3 +803,200 @@ def word_restrict_editing(document: str = "", action: str = "status", mode: str 
             raise ToolError("Неверный пароль или Word отклонил операцию защиты.") from None
         raise PartialChangeError("Word protection interrupted: applied=1 document; password omitted.") from None
     return {"document": doc.Name, "changed": True, **restriction_state(doc)}
+
+
+# ================================================================== подписи и перекрёстные ссылки
+
+LABELS = {"table": -2, "figure": -1, "equation": -3}  # wdCaptionTable/Figure/Equation
+KINDS = {"label_and_number": 3, "text": 2, "page": 7}  # wdOnlyLabelAndNumber, wdEntireCaption, wdPageNumber
+
+
+def _items(collection):
+    return [collection(i) for i in range(1, int(collection.Count) + 1)]
+
+
+def _text(text):
+    return clean_word_text(str(text)).strip()
+
+
+def _inventory(app, doc):
+    labels = {str(app.CaptionLabels(v).Name).casefold(): v for v in LABELS.values()}
+    objects = []
+    for kind, collection in (("table", doc.Tables), ("picture", doc.InlineShapes)):
+        for i, obj in enumerate(_items(collection), 1):
+            r = obj.Range
+            if kind == "picture":
+                if int(obj.Type) not in (3, 4):  # wdInlineShapePicture, wdInlineShapeLinkedPicture
+                    continue
+                r = r.Paragraphs(1).Range
+            objects.append({"target": kind, "index": i, "start": int(r.Start), "end": int(r.End)})
+    captions, counts = [], {}
+    for field in _items(doc.Content.Fields):
+        if int(field.Type) != 12:  # wdFieldSequence
+            continue
+        match = re.match(r'\s*SEQ\s+(?:"([^"]+)"|([^\s\\]+))', str(field.Code.Text), re.I)
+        if not match:
+            raise ToolError("Cannot parse a SEQ label; caption inventory is incomplete.")
+        label = match[1] or match[2]
+        key = label.casefold()
+        counts[key] = counts.get(key, 0) + 1
+        r = field.Result.Paragraphs(1).Range
+        near = [{"target": o["target"], "index": o["index"]} for o in objects
+                if o["end"] == int(r.Start) or o["start"] == int(r.End)]
+        paragraph = wd.paragraph_index_at(doc, int(r.Start))
+        captions.append({"caption": counts[key], "label_id": labels.get(key), "label": label,
+                         "number": _text(field.Result.Text), "text": _text(r.Text), "paragraph": paragraph,
+                         "objects": near, "orphan": not near, "link": wd.range_link(doc, paragraph, r),
+                         "_field": field})
+    missing = {kind: [o["index"] for o in objects if o["target"] == kind and not any(
+        {"target": kind, "index": o["index"]} in c["objects"] for c in captions)] for kind in ("table", "picture")}
+    return captions, missing
+
+
+def _indexed(collection, index, what):
+    if not 1 <= index <= int(collection.Count):
+        raise ToolError(f"{what} index must be between 1 and {collection.Count}.")
+    return collection(index)
+
+
+def _reference(doc, captions, label_name, caption, heading, bookmark, reference):
+    number_field = None
+    if caption in ("heading", "bookmark"):
+        typ = 1 if caption == "heading" else 2  # wdRefTypeHeading, wdRefTypeBookmark
+        items = list(doc.GetCrossReferenceItems(typ) or ())
+        if typ == 1:
+            if not 1 <= heading <= len(items):
+                raise ToolError("heading must be an index in GetCrossReferenceItems(heading).")
+            item = heading
+        else:
+            matches = [s for s in items if str(s).casefold() == bookmark.casefold()]
+            if len(matches) != 1:
+                raise ToolError("Bookmark is missing or ambiguous.")
+            item = matches[0]  # Word requires a bookmark name, not an index.
+        kind = 7 if reference == "page" else -3 if reference == "number" else -1  # wdPageNumber/NumberNoContext/ContentText
+    else:
+        chosen = [c for c in captions if c["label"].casefold() == label_name.casefold() and str(c["caption"]) == str(caption)]
+        if len(chosen) != 1:
+            raise ToolError("caption must be the per-label index returned by list.")
+        selected = chosen[0]
+        typ = label_name
+        items = list(doc.GetCrossReferenceItems(typ) or ())
+        matches = [i for i, s in enumerate(items, 1) if _text(s) == selected["text"]]
+        if len(matches) != 1 or sum(c["text"] == selected["text"] for c in captions if c["label"] == selected["label"]) != 1:
+            raise ToolError("Cross-reference caption text is missing or ambiguous.")
+        item, kind = matches[0], KINDS.get(reference, 3)  # wdOnlyLabelAndNumber
+        if reference == "number":
+            number_field = selected["_field"]
+    return typ, kind, item, number_field
+
+
+@office_tool("word_layout", "write", title="Captions and cross-references", read_actions=("list",))
+def word_captions(document: str, action: str = "list", target: str = "", table_index: int = 0,
+                  picture_index: int = 0, paragraph: int = 0, label: str = "", text: str = "",
+                  position: str = "", caption: int | str = 0, heading: int = 0, bookmark: str = "",
+                  reference: str = "label_and_number", at: str = "paragraph_end", find_text: str = "",
+                  occurrence: int = 1, hyperlink: bool = True) -> dict:
+    """List SEQ captions, add an automatic caption or insert a cross-reference without selecting anything.
+
+    action: list (readonly), add, cross_reference. Main story only; list includes orphan captions and uncaptioned objects.
+    add: target=table/picture/paragraph with table_index/picture_index/paragraph (1-based). Pictures must be inline.
+    label: table/figure/equation (built-in IDs); defaults to table for tables/references, figure for pictures;
+        required for paragraph targets. text is passed unchanged as InsertCaption's Title (no invented separator).
+    position: above/below; defaults to above for tables, below otherwise.
+    cross_reference: caption is a per-label list index, or 'heading' with heading index, or 'bookmark' with bookmark name.
+    reference: label_and_number, number (SEQ result only), text (entire caption), page.
+        For headings/bookmarks, label_and_number and text both mean content text; number means paragraph number.
+    at: after_text with literal find_text and occurrence, or paragraph_end with paragraph. hyperlink defaults to true.
+    Each write uses one UndoRecord; other captions are renumbered by word_update_fields, not by this tool.
+    """
+    if action not in ("list", "add", "cross_reference"):
+        raise ToolError("action must be list, add or cross_reference.")
+    app, doc = wd.pick_document(document)
+    captions, missing = _inventory(app, doc)
+    if action == "list":
+        public = [{k: v for k, v in c.items() if k != "_field"} for c in captions]
+        return {"document": doc.Name, "captions": public, "orphans": [c for c in public if c["orphan"]],
+                "tables_without_caption": missing["table"], "pictures_without_caption": missing["picture"]}
+    label = label or ("figure" if target == "picture" else "table" if target != "paragraph" else "")
+    if label not in LABELS:
+        raise ToolError("label must be table, figure or equation; paragraph targets require an explicit label.")
+    label_id, label_name = LABELS[label], str(app.CaptionLabels(LABELS[label]).Name)
+    number_range = None
+    if action == "add":
+        if target not in ("table", "picture", "paragraph") or position not in ("", "above", "below"):
+            raise ToolError("target must be table/picture/paragraph; position must be above/below.")
+        if any(c in text for c in "\r\n\x07"):
+            raise ToolError("Caption text must be a single paragraph.")
+        if target == "table":
+            obj = _indexed(doc.Tables, table_index, "Table")
+            if int(obj.NestingLevel) != 1:
+                raise ToolError("Nested tables cannot receive captions.")
+            rng = obj.Range
+        elif target == "picture":
+            obj = _indexed(doc.InlineShapes, picture_index, "Inline picture (floating Shapes are unsupported; convert to inline)")
+            if int(obj.Type) not in (3, 4):  # wdInlineShapePicture, wdInlineShapeLinkedPicture
+                raise ToolError("Target is not an inline picture; floating Shapes are unsupported.")
+            rng = obj.Range
+            if int(rng.Paragraphs(1).Range.InlineShapes.Count) != 1:
+                raise ToolError("Multiple inline objects share the paragraph; caption placement is ambiguous.")
+        else:
+            rng = wd.paragraphs_range(doc, paragraph)
+        if target != "table" and bool(rng.Information(12)):  # wdWithInTable
+            raise ToolError("Picture/paragraph captions inside tables are unsupported; choose an outside paragraph.")
+        bounds = rng if target == "table" else rng.Paragraphs(1).Range
+        if any(c["label_id"] == label_id and (
+            int(c["_field"].Result.Paragraphs(1).Range.End) == int(bounds.Start) or
+            int(c["_field"].Result.Paragraphs(1).Range.Start) == int(bounds.End)) for c in captions):
+            raise ToolError("An adjacent caption already uses this label.")
+        position = position or ("above" if target == "table" else "below")
+        start = int(bounds.Start if position == "above" else bounds.End)
+    else:
+        if reference not in (*KINDS, "number"):
+            raise ToolError("reference must be label_and_number, number, text or page.")
+        typ, kind, item, number_field = _reference(doc, captions, label_name, caption, heading, bookmark, reference)
+        if caption in ("heading", "bookmark"):
+            label_id, label_name = None, None
+        if at == "after_text" and find_text and occurrence > 0:
+            hits = list(wd.find_all(doc.Content, wd.escape_find(find_text), False, False, False, limit=occurrence))
+            if len(hits) < occurrence:
+                raise ToolError("find_text occurrence was not found.")
+            start = int(hits[occurrence - 1].End)
+        elif at == "paragraph_end":
+            start = int(wd.paragraphs_range(doc, paragraph).End) - 1
+            if str(doc.Range(start, start + 1).Text) == "\x07":
+                start -= 1  # insert before the cell's paragraph marker
+        else:
+            raise ToolError("at must be paragraph_end, or after_text with find_text and positive occurrence.")
+        if any(int(f.Code.Start) - 1 < start < int(f.Result.End) + 1 for f in _items(doc.Content.Fields)):
+            raise ToolError("Cannot insert a cross-reference inside an existing field.")
+        rng = doc.Range(start, start)
+        if number_field is not None:
+            number_range = doc.Range(int(number_field.Code.Start) - 1, int(number_field.Result.End) + 1)
+            item = "_OfficeLiveCaption" + uuid.uuid4().hex[:20]
+            if doc.Bookmarks.Exists(item):
+                raise ToolError("Generated bookmark already exists; retry.")
+            typ, kind = 2, -1  # wdRefTypeBookmark, wdContentText: preserve any SEQ number format
+    before_end = int(doc.Content.End)
+    name = str(doc.Name)
+    undo.require_undo("document", app, doc)
+    stage = "insertion attempted; completion unknown"
+    try:
+        if action == "add":
+            rng.InsertCaption(label_id, text, pythoncom.Missing, 0 if position == "above" else 1, False)  # wdCaptionPositionAbove/Below
+        else:
+            if number_range is not None:
+                doc.Bookmarks.Add(item, number_range)
+                stage = "number bookmark created; reference insertion attempted"
+            rng.InsertCrossReference(typ, kind, item, bool(hyperlink), False, False, pythoncom.Missing)
+        stage = "caption inserted" if action == "add" else "cross-reference inserted"
+        delta = int(doc.Content.End) - before_end
+        if delta <= 0:
+            raise RuntimeError("Cannot identify the inserted range.")
+        touched = doc.Range(start, start + delta)
+        if int(touched.Fields.Update()):
+            raise RuntimeError("Inserted fields could not be updated.")
+        return {"ok": True, "document": name, "action": action, "label_id": label_id, "label": label_name,
+                "text": _text(touched.Text), "link": wd.range_link(doc, 0, touched),
+                "note": "Other captions are not renumbered here. After inserting in the middle, use word_update_fields."}
+    except Exception as exc:
+        raise PartialChangeError(f"Caption operation interrupted: {stage}. Use office_undo to undo this call. {exc}") from None

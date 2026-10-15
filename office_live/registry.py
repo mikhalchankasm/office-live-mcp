@@ -19,7 +19,7 @@ from .privacy import redact, safe_text
 INSTRUCTIONS = """\
 Office Live MCP drives Microsoft Excel and Word that are ALREADY OPEN on the user's desktop (live COM \
 automation). Every change shows up on screen immediately and the user keeps working next to you.
-The catalog contains 125 tools including optional Python; configured toolsets and readonly mode can reduce availability.
+The catalog contains 126 tools including optional Python; configured toolsets and readonly mode can reduce availability.
 
 Workflow: (1) excel_list_workbooks / word_list_documents - shows every open file and which is active; \
 (2) inspect: excel_workbook_info, excel_read_range, excel_profile_range, word_get_structure, word_read_document ...; \

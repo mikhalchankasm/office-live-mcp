@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from tests.live.mcpclient import Stdio
-from tests.live.office_cleanup import excel_pids, hidden_idle_excel_pids, quit_excel_if_idle
+from tests.live.office_cleanup import DialogWatch, excel_pids, hidden_idle_excel_pids, quit_excel_if_idle
 from tests.live.test_live_stage1 import in_excel
 
 pytestmark = pytest.mark.live
@@ -40,13 +40,18 @@ def test_xls_save_with_modern_formula_restores_compatibility(srv, wb, tmp):
     srv.call("excel_write_range", workbook=path, sheet="Data", cells="A1", values=[[42]])
     assert in_excel(path, lambda app, ws: bool(ws.Parent.CheckCompatibility)) is True
     assert in_excel(path, lambda app, ws: bool(ws.Parent.Saved)) is False
-    result = srv.call("excel_save", workbook=path)
+    # A human clicking the dialog away would make this pass; the watcher fails it on any modal Excel window.
+    with DialogWatch() as watch:
+        result = srv.call("excel_save", workbook=path)
+    assert watch.seen == [], f"modal Office dialog during excel_save: {watch.seen}"
     assert result["compatibility_check_skipped"] is True and result["saved"] is True
     assert "excel_save_as" in result["note"]
     assert in_excel(path, lambda app, ws: (bool(ws.Parent.CheckCompatibility), bool(ws.Parent.Saved), bool(app.DisplayAlerts))) == (True, True, alerts)
     books = srv.call("excel_list_workbooks")["workbooks"]  # same server remains responsive after Save
     assert any(book["name"] == "compatibility.xls" and book["saved"] for book in books)
     # Documented side effect: the file itself keeps the checker disabled; only the open book got its flag back.
-    srv.call("excel_close_workbook", workbook=path)
-    srv.call("excel_open_workbook", path=path)
+    with DialogWatch() as watch:
+        srv.call("excel_close_workbook", workbook=path)
+        srv.call("excel_open_workbook", path=path)
+    assert watch.seen == [], f"modal Office dialog during close/reopen: {watch.seen}"
     assert in_excel(path, lambda app, ws: bool(ws.Parent.CheckCompatibility)) is False

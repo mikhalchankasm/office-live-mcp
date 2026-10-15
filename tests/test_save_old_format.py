@@ -64,13 +64,14 @@ def book(tmp_path, monkeypatch):
 def test_legacy_save_suppresses_prompts_and_restores_flags(book, file_format):
     book.wb.FileFormat = file_format
     result = core.excel_save(book.wb.Name)
-    assert ("Save", True, False) in book.events
+    assert ("Save", False, False) in book.events
     assert book.app.DisplayAlerts is True and book.wb.CheckCompatibility is True
     assert result["saved"] is True and result["compatibility_check_skipped"] is True
     assert all(text in result["note"] for text in ("Excel 97-2003", "lost", "excel_save_as", ".xlsx", ".xlsm"))
     assert "without" not in result["note"].split(".xlsx")[0]  # no "lossless via .xlsx" promise
-    assert book.events[-1] == ("CheckCompatibility", True)
-    assert not any(event[0] == "DisplayAlerts" for event in book.events)  # only the targeted flag is touched
+    # CheckCompatibility alone left a second modal question during Save (live probe), so alerts are off too.
+    assert book.events[-2:] == [("CheckCompatibility", True), ("DisplayAlerts", True)]
+    assert "default answer" in result["note"]
 
 
 @pytest.mark.parametrize("restore_fails", [False, True])
@@ -89,10 +90,10 @@ def test_save_error_is_preserved_and_restoration_is_independent(book, restore_fa
     assert ("Saved", True) not in book.events
 
 
-def test_compatibility_restore_error_does_not_fail_a_completed_save(book):
+def test_compatibility_restore_error_does_not_prevent_alerts_restore(book):
     book.wb.restore_error = pywintypes.com_error(-2147352567, "restore failure", None, None)
     assert core.excel_save(book.wb.Name)["saved"] is True
-    assert book.app.DisplayAlerts is True and not any(event[0] == "DisplayAlerts" for event in book.events)
+    assert book.app.DisplayAlerts is True
 
 
 @pytest.mark.parametrize("saved_after", [True, False])
@@ -140,7 +141,7 @@ def test_original_false_flags_are_preserved(book, alerts, compatibility):
 def test_close_saves_under_same_flags_then_closes_without_save(book):
     book.wb.dirty_on_restore = True
     result = core.excel_close_workbook(book.wb.Name, save=True)
-    assert ("Save", True, False) in book.events
+    assert ("Save", False, False) in book.events
     assert book.events[-1] == ("Close", False)
     assert book.app.DisplayAlerts is True and book.wb.CheckCompatibility is True and book.wb.Saved is True
     assert result["saved_before_close"] is True and result["compatibility_check_skipped"] is True
@@ -166,7 +167,7 @@ def test_close_legacy_book_refuses_if_save_did_not_mark_it_saved(book):
     book.wb.saved_after_save = False
     with pytest.raises(ToolError, match="left open"):
         core.excel_close_workbook(book.wb.Name, save=True)
-    assert ("Save", True, False) in book.events
+    assert ("Save", False, False) in book.events
     assert not any(event[0] == "Close" for event in book.events)
     assert book.app.DisplayAlerts is True and book.wb.CheckCompatibility is True
 
@@ -178,56 +179,3 @@ def test_close_modern_book_preserves_response_and_prompt_flags(book):
     }
     assert book.events == [("Save", True, True), ("Saved", True), ("Close", False)]
 
-
-class OpenApp:
-    def __init__(self, error=None):
-        self.DisplayAlerts, self.seen, self.error = True, [], error
-        self.Workbooks = SimpleNamespace(Open=self._open)
-
-    def _open(self, full, *args):
-        self.seen.append(self.DisplayAlerts)
-        if self.error:
-            raise self.error
-        name = full.rsplit("\\", 1)[-1].rsplit("/", 1)[-1]
-        return SimpleNamespace(Name=name, FullName=full, ReadOnly=False)
-
-
-@pytest.fixture
-def opener(tmp_path, monkeypatch):
-    import contextlib
-
-    def make(extension, error=None):
-        path = tmp_path / f"book.{extension}"
-        path.write_bytes(b"x")
-        app = OpenApp(error)
-        monkeypatch.setattr(core, "check_path", lambda p, *a, **kw: str(p))
-        monkeypatch.setattr(core, "_excel_running", lambda: False)
-        monkeypatch.setattr(core.com, "primary_app", lambda *a, **kw: app)
-        monkeypatch.setattr(core.com, "macros_disabled", lambda app: contextlib.nullcontext())
-        monkeypatch.setattr(core, "_sheet_list", lambda wb: ["Data"])
-        return app, str(path)
-
-    return make
-
-
-@pytest.mark.parametrize("extension", ["xls", "XLT", "xla"])
-def test_legacy_open_answers_prompts_with_defaults_and_restores_alerts(opener, extension):
-    # Live finding: an .xls with new functions opens with a modal "recalculate all formulas?" prompt.
-    app, path = opener(extension)
-    result = core.excel_open_workbook(path)
-    assert app.seen == [False] and app.DisplayAlerts is True
-    assert "recalculated" in result["note"]
-
-
-def test_legacy_open_failure_still_restores_alerts(opener):
-    app, path = opener("xls", pywintypes.com_error(-2147352567, "open failure", None, None))
-    with pytest.raises(ToolError):
-        core.excel_open_workbook(path)
-    assert app.seen == [False] and app.DisplayAlerts is True
-
-
-@pytest.mark.parametrize("extension", ["xlsx", "xlsm", "csv"])
-def test_modern_open_keeps_prompts(opener, extension):
-    app, path = opener(extension)
-    result = core.excel_open_workbook(path)
-    assert app.seen == [True] and "note" not in result

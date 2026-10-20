@@ -1171,6 +1171,36 @@ def _import_rows(path, delimiter, encoding, header, max_rows):
     return rows, keys, delimiter, encoding, warnings
 
 
+_NUMBER_LIKE = re.compile(r"[+-]\s*\d[\d\s.,]*(?:[eE][+-]?\d+)?%?")
+
+
+def _formula_like(value) -> bool:
+    """A string Excel's typed-input parser would turn into a formula (or a broken one)."""
+    if not isinstance(value, str) or not value:
+        return False
+    if value[0] in "=@":
+        return True
+    return value[0] in "+-" and not _NUMBER_LIKE.fullmatch(value.strip())
+
+
+def _formula_like_cells(rows):
+    """{row_index: {col_index, ...}} of cells that must stay literal text."""
+    found = {}
+    for i, row in enumerate(rows):
+        cols = {j for j, value in enumerate(row) if _formula_like(value)}
+        if cols:
+            found[i] = cols
+    return found
+
+
+def _neutralize(rows, literal, text_columns):
+    """Prefix formula-like strings with Excel's literal-text apostrophe; text columns get it in _write_values."""
+    if not literal:
+        return rows
+    return [[("'" + v) if j in literal.get(i, ()) and j not in text_columns else v for j, v in enumerate(row)]
+            for i, row in enumerate(rows)]
+
+
 def _compact_import_result(result):
     """Лимит включает добавленные обёрткой undo и ссылки; данные на листе не обрезаются."""
     if "sample" not in result:
@@ -1199,9 +1229,13 @@ def excel_import_table(
     path: str, workbook: str = "", sheet: str = "Data", start_cell: str = "A1",
     delimiter: str = "auto", encoding: str = "auto", value_mode: str = "auto",
     text_columns: list[str | int] | None = None, header: bool = True, layout: bool = True,
-    overwrite: bool = False, max_rows: int = 200000,
+    overwrite: bool = False, max_rows: int = 200000, formulas: bool = False,
 ) -> dict:
     """Import CSV/TSV/TXT or flat JSON in one Value2 block, with optional layout and one undo entry.
+
+    File text is untrusted: with formulas=false (default) strings starting with = or @, and + or - strings that are
+    not numbers (phone numbers like +7 (999) ...), are stored as literal text, so a file cannot plant formulas
+    (WEBSERVICE, HYPERLINK, DDE). Pass formulas=true only for a file the user trusts to contain formulas.
 
     Empty workbook creates a new unsaved book (undo barrier); sheet defaults to Data and is created if absent.
     start_cell is one A1 cell. delimiter='auto' sniffs , ; tab | in the first 64 KiB; encoding='auto' uses BOM,
@@ -1283,7 +1317,11 @@ def excel_import_table(
         for index in sorted(selected):
             sub_range(ws, r, c + index, r + height - 1, c + index).NumberFormat = "@"
         completed.append("text formats applied")
-        _write_values(target, rows, value_mode, text_columns=selected)
+        literal = _formula_like_cells(rows) if value_mode == "auto" and not formulas else {}
+        _write_values(target, _neutralize(rows, literal, selected), value_mode, text_columns=selected)
+        if literal:
+            warnings.append(f"{sum(map(len, literal.values()))} cells starting with = @ + - stored as text "
+                            "(formulas=false protects against formulas in untrusted files).")
         completed.append("values written")
         if layout:
             if header:

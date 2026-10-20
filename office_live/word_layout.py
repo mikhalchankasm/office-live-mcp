@@ -134,7 +134,8 @@ def word_sections(document: str, action: str = "list", paragraph: int = 0, kind:
         (p, n, "next_page") for p, n in ((start, start_paragraph), (end, end_paragraph + 1)) if p not in boundaries]
     for table in _items(doc.Tables):
         a, b = int(table.Range.Start), int(table.Range.End)
-        if a <= start < b or (action == "orientation" and a < end < b):
+        # A break inserted at a table's first position lands in cell (1,1): refuse it like a boundary inside the table.
+        if a <= start < b or (action == "orientation" and a < end < b) or any(a <= p < b for p, _, _ in breaks):
             raise ToolError("Section boundaries inside or partially covering a table are unsupported.")
     target = 1 if orientation == "landscape" else 0  # wdOrientLandscape / wdOrientPortrait
     pages = {i: tuple(float(getattr(ps, n)) for n in _PAGE_DIMS)
@@ -157,6 +158,12 @@ def word_sections(document: str, action: str = "list", paragraph: int = 0, kind:
         for pos, para, typ in sorted(breaks, reverse=True):
             before_end = int(doc.Content.End)
             doc.Range(pos, pos).InsertBreak(SECTION_BREAKS[typ])
+            # The break ends a new empty paragraph that inherits the next paragraph's formatting; a heading with
+            # "page break before" or numbering would add a blank page and a phantom number/TOC entry.
+            holder = doc.Range(pos, pos).Paragraphs(1).Range
+            if str(holder.Text).strip("\x0c\r") == "":
+                holder.Style = -1  # wdStyleNormal
+                holder.ParagraphFormat.PageBreakBefore = False
             inserted.append({"before_paragraph": para, "kind": typ})
             stage = f"inserted breaks={inserted}; next operation attempted"
             shifts[pos] = int(doc.Content.End) - before_end
@@ -440,10 +447,16 @@ def word_watermark(document: str, action: str = "status", text: str = "", font: 
                         pending["name"] = str(shape.Name)
                         shape.Delete()
                         changed.append(dict(pending))
-        return {"ok": True, "document": name, "action": action, "changed": changed}
     except Exception as exc:
         raise PartialChangeError(f"Watermark {action} interrupted; completed={changed}; possibly changed={pending}. "
                                  f"Use office_undo. {com.translate(exc)}") from None
+    if action == "remove":
+        # Never report success while the XML still shows a watermark in the chosen sections (anchor filter missed it).
+        left = [m["name"] for g in _watermark_headers(doc)[0] if chosen.intersection(g["sections"]) for m in g["marks"]]
+        if left:
+            raise PartialChangeError(f"Watermark remove incomplete: still present {sorted(set(left))}; removed={changed}. "
+                                     "Use office_undo or remove them in Word (Design > Watermark > Remove).")
+    return {"ok": True, "document": name, "action": action, "changed": changed}
 
 
 def _hf(sec, kind: str, typ: int):
@@ -1312,7 +1325,8 @@ def word_captions(document: str, action: str = "list", target: str = "", table_i
     stage = "insertion attempted; completion unknown"
     try:
         if action == "add":
-            rng.InsertCaption(label_id, text, pythoncom.Missing, 0 if position == "above" else 1, False)  # wdCaptionPositionAbove/Below
+            # TitleAutoText "" not Missing: Missing in the middle of a Word argument list nulls the rest (Position).
+            rng.InsertCaption(label_id, text, "", 0 if position == "above" else 1, False)  # wdCaptionPositionAbove/Below
         else:
             if number_range is not None:
                 doc.Bookmarks.Add(item, number_range)

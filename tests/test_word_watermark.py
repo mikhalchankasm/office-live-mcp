@@ -22,6 +22,7 @@ class Shape:
     def __init__(self, collection, name, text, anchor=None):
         self.collection, self.Name, self.text = collection, name, text
         self.Anchor = anchor or collection.anchor
+        self.home = (self.Anchor.Sections(1).Index, self.Anchor.StoryType)  # where Word stores it in the package
         self.Width = len(text) * 25
         self.Fill = NS(Solid=lambda: None, ForeColor=NS(), Transparency=0)
         self.Line, self.WrapFormat = NS(), NS()
@@ -66,7 +67,9 @@ class XMLContent(Content):
                 key = str(i * 10 + typ)  # Word uses header<number>.xml; undo fingerprints these package parts.
                 refs.append(f'<w:headerReference w:type="{["default", "first", "even"][typ - 1]}" r:id="{key}"/>')
                 rels.append(f'<Relationship Id="{key}" Target="header{key}.xml"/>')
-                shapes = ''.join(f'<v:shape id={quoteattr(s.Name)}><v:textpath string={quoteattr(s.text)}/></v:shape>' for s in hf.Shapes)
+                # The package part holds only this header's shapes, even though Word's HeaderFooter.Shapes lists all.
+                own = [s for s in hf.Shapes if s.home == (i, STORIES[typ])]
+                shapes = ''.join(f'<v:shape id={quoteattr(s.Name)}><v:textpath string={quoteattr(s.text)}/></v:shape>' for s in own)
                 parts.append((f"/word/header{key}.xml", f"<w:hdr>{shapes}</w:hdr>"))
             specs.append("<w:sectPr>" + ''.join(refs) + ("<w:titlePg/>" if sec.first else "") + "</w:sectPr>")
         body = ''.join(f"<w:p><w:pPr>{s}</w:pPr></w:p>" for s in specs[:-1]) + specs[-1]
@@ -225,3 +228,15 @@ def test_remove_ignores_other_sections_shapes_in_the_document_wide_collection(o)
     changed = call(o, "remove", sections=[1])["changed"]
     assert all(c["sections"] == [1] for c in changed) and len(changed) == 3
     assert foreign in other.items and call(o, sections=[2])["present"]
+
+
+def test_remove_that_misses_a_shape_is_not_reported_as_success(o):
+    # Review finding: if the anchor filter cannot place a watermark, remove must fail loudly instead of returning ok.
+    for sec in (1, 2):
+        for hf in o.doc.Sections(sec).Headers:
+            hf.exists = True
+    call(o, "add", text="DRAFT", sections=[1])
+    stuck = o.doc.Sections(1).Headers(1).Shapes(1)
+    stuck.Anchor = NS(Text="", StoryType=STORIES[1], Sections=lambda i: (_ for _ in ()).throw(RuntimeError("COM")))
+    with pytest.raises(ToolError, match="remove incomplete"):
+        call(o, "remove", sections=[1])

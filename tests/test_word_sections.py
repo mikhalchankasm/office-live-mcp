@@ -42,6 +42,8 @@ class Range:
 
     @property
     def Paragraphs(self):
+        if self.Start == self.End:  # a collapsed range belongs to the paragraph that contains it (Word)
+            return Collection(p for p in self.doc.Paragraphs if p.Range.Start <= self.Start < p.Range.End)
         return Collection(p for p in self.doc.Paragraphs if p.Range.Start < self.End and p.Range.End > self.Start)
 
     def InsertBreak(self, kind, /):
@@ -57,16 +59,30 @@ class Range:
         source.Range.End = pos + 1
         d.Sections.items.insert(index + 1, new)
         d.Content.Text = d.Content.Text[:pos] + '\f' + d.Content.Text[pos:]
+        for p in d.Paragraphs:  # like Word: existing paragraphs keep their formatting and move right
+            if p.Range.Start >= pos:
+                p.Range.Start += 1
+                p.Range.End += 1
         refresh(d)
         if d.fail == 'insert':
             raise RuntimeError('RPC_E_DISCONNECTED')
 
 
+class ParaRange(NS):
+    @property
+    def Text(self):
+        return self.doc.Content.Text[self.Start:self.End]
+
+
 def refresh(d):
+    # Paragraph ranges carry text and formatting so the break-paragraph normalisation can be observed; new
+    # paragraphs start as a heading with "page break before" (the case the review found).
+    known = {(p.Range.Start, p.Range.End): p for p in getattr(d, 'Paragraphs', ()) if isinstance(getattr(p, 'Range', None), ParaRange)}
     paragraphs, start = [], 0
     for i, char in enumerate(d.Content.Text):
         if char in '\r\f':
-            paragraphs.append(NS(Range=NS(Start=start, End=i + 1)))
+            paragraphs.append(known.get((start, i + 1)) or NS(Range=ParaRange(
+                doc=d, Start=start, End=i + 1, Style='Heading 1', ParagraphFormat=NS(PageBreakBefore=True))))
             start = i + 1
     d.Paragraphs = Collection(paragraphs)
 
@@ -230,3 +246,21 @@ def test_xml_header_shape_warning_inherits_without_com():
     assert all(s['_header_page_shapes'] and s['_existing'] == [('header', 2)] for s in meta)
     assert not meta[0]['linked_to_previous']['header_first_page']
     assert meta[1]['linked_to_previous']['header_first_page']
+
+
+def test_break_right_before_a_table_is_refused(o):
+    # Review finding: paragraphs 2–3 end exactly where a table starts; the end break would land in cell (1,1).
+    o.doc.Tables = Collection([NS(Range=NS(Start=14, End=19))])
+    with pytest.raises(ToolError, match='inside or partially covering a table'):
+        call(o, action='orientation', start_paragraph=2, end_paragraph=3)
+    assert not o.doc.calls and o.doc.Sections.Count == 1
+
+
+def test_break_paragraph_does_not_inherit_heading_formatting(o):
+    # Review finding: the empty paragraph that holds the break takes the next paragraph's formatting; a heading with
+    # "page break before" would add a blank page and a phantom number. It is reset to Normal without page break.
+    call(o, action='orientation', start_paragraph=2, end_paragraph=3)
+    holders = [p.Range for p in o.doc.Paragraphs if p.Range.Text == '\f']
+    others = [p.Range for p in o.doc.Paragraphs if p.Range.Text != '\f']
+    assert len(holders) == 2 and all(r.Style == -1 and r.ParagraphFormat.PageBreakBefore is False for r in holders)
+    assert all(r.Style == 'Heading 1' for r in others)

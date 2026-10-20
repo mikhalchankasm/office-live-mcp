@@ -1276,7 +1276,7 @@ def excel_what_if(workbook: str, sheet: str, action: str = "list_scenarios", cel
         inputs = []
         for address in (row_input, column_input):
             if not address:
-                inputs.append(MISSING)
+                inputs.append(None)  # None, not Missing: Missing in the first position drops the next argument (com.py)
                 continue
             _, cell = xl.get_range(wb, ws.Name, address, empty_means_used=False)
             xl.validate_rectangle(cell, ws, wb)

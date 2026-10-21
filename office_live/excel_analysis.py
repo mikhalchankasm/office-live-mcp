@@ -1223,6 +1223,20 @@ def scenario_items(ws):
     return [collection.Item(i) for i in range(1, int(collection.Count) + 1)]
 
 
+def _what_if_union(app, wb, ws, address):
+    """changing_cells/result_cells: one range or a comma-separated union on this sheet (get_range takes one area)."""
+    parts = [part.strip() for part in str(address).split(",") if part.strip()]
+    if not parts:
+        raise ToolError("Cells are required.")
+    result = None
+    for part in parts:
+        _, rng = xl.get_range(wb, ws.Name, part, empty_means_used=False)
+        if rng.Worksheet.Name != ws.Name:
+            raise ToolError("All cells must be on the scenario sheet.")
+        result = rng if result is None else app.Union(result, rng)
+    return result
+
+
 def _what_if_ranges(rng, ws, wb, limit):
     if int(rng.Count) > limit:
         raise ToolError(f"Select at most {limit} cells.")
@@ -1313,7 +1327,7 @@ def excel_what_if(workbook: str, sheet: str, action: str = "list_scenarios", cel
         if action == "add_scenario":
             if not name.strip() or len(name) > 255 or existing is not None:
                 raise ToolError("Scenario name must be nonempty, unique and at most 255 characters.")
-            _, changing = xl.get_range(wb, ws.Name, changing_cells, empty_means_used=False)
+            changing = _what_if_union(app, wb, ws, changing_cells)
             _what_if_ranges(changing, ws, wb, 32)
             if values is None or len(values) != int(changing.Count):
                 raise ToolError("Supply one value per changing cell (at most 32).")
@@ -1338,7 +1352,7 @@ def excel_what_if(workbook: str, sheet: str, action: str = "list_scenarios", cel
         else:
             if not scenarios or bool(wb.ProtectStructure):
                 raise ToolError("Summary needs scenarios and an unprotected workbook structure.")
-            _, result = xl.get_range(wb, ws.Name, result_cells, empty_means_used=False)
+            result = _what_if_union(app, wb, ws, result_cells)
             areas = _what_if_ranges(result, ws, wb, 32)
             if any(a.HasFormula is not True for a in areas):
                 raise ToolError("result_cells must contain formulas.")

@@ -293,6 +293,17 @@ WATERMARK_PREFIX = "PowerPlusWaterMarkObject"
 HEADER_STORIES = {1: 7, 2: 10, 3: 6}  # WdHeaderFooterIndex -> wdPrimary/FirstPage/EvenPagesHeaderStory
 
 
+def _header_shape_names(doc):
+    """Names of all shapes in existing header/footer parts, from WordOpenXML (no HeaderFooter COM access)."""
+    names = set()
+    root = ET.fromstring(doc.Content.WordOpenXML)
+    for part in root.findall("pkg:part", _WM_NS):
+        if re.match(r"/word/(header|footer)\d*\.xml$", part.get("{" + _WM_NS["pkg"] + "}name", "")):
+            names.update(node.get("id", "") for node in part.iter("{" + _WM_NS["v"] + "}shape"))
+            names.update(node.get("name", "") for node in part.iter("{" + _WM_NS["wp"] + "}docPr"))
+    return names - {""}
+
+
 def _in_header(shape, owner, typ):
     """HeaderFooter.Shapes returns the shapes of ALL headers and footers of the document (Word quirk): keep only the
     ones anchored in this section's header of this type. Unreadable anchor -> not ours (never delete blindly)."""
@@ -415,7 +426,10 @@ def word_watermark(document: str, action: str = "status", text: str = "", font: 
     if not targets:
         return {"ok": True, "document": doc.Name, "action": action, "changed": []}
     name = doc.Name
-    undo.require_undo("document", app, doc)
+    plan = {"_watermark_add": [(g["owner"], g["type"], WATERMARK_PREFIX + str(g["owner"] * 10 + g["type"]))
+                               for g in targets],
+            "_header_shapes_before": sorted(_header_shape_names(doc))} if action == "add" else None
+    undo.require_undo("document", app, doc, plan=plan)
     changed, pending = [], None
     try:
         for g in targets:

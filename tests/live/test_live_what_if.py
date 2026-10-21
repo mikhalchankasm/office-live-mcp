@@ -19,9 +19,9 @@ def test_probe_data_table_loan_values_array_undo(srv, operations_book, direction
         ws.Range("C9:F9").Value2 = ((12, 24, 36, 48),)
         ws.Range("B10:B15").Value2 = tuple((rate,) for rate in (0.02, 0.04, 0.06, 0.08, 0.10, 0.12))
         if direction == "row":
-            ws.Range("B10:B15").Formula = "=-PMT(A1/12,A2,A3)"
+            ws.Range("B10:B15").Formula = "=-PMT($A$1/12,$A$2,$A$3)"  # absolute: a range assignment shifts relative refs
         if direction == "column":
-            ws.Range("C9:F9").Formula = "=-PMT(A1/12,A2,A3)"
+            ws.Range("C9:F9").Formula = "=-PMT($A$1/12,$A$2,$A$3)"
     in_excel(book, setup)
     result = srv.call("excel_what_if", workbook=book, sheet="Data", action="data_table", cells="B9:F15",
                       row_input="A2" if direction != "column" else "", column_input="A1" if direction != "row" else "")

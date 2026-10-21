@@ -46,23 +46,25 @@ def test_sections_landscape_numbering_footer_and_undo(srv, sections_doc):
         assert all(s['linked_to_previous']['footer_primary'] and not s['restart_numbering_at_section'] for s in result['sections'][1:])
         def verify(d):
             d.Repaginate()
-            texts = []
-            for s in d.Sections:
-                r = s.Footers(1).Range  # существующий footer, созданный fixture
-                texts.append(str(r.Text).replace(str(r.Fields(1).Result.Text), '{PAGE}', 1))
-            assert texts[0] == texts[1] == texts[2]
+            # Footers through WordOpenXML, not Sections(i).Footers(1): COM access creates own footers for linked
+            # sections (live finding 0.5), which would itself change the document the probe is checking.
+            from office_live import undo
+            footers = [part for _, part in undo._word_body_xml(d) if 'Section probe' in part and '<w:ftr' in part]
+            assert len(footers) == 1  # one footer part, shared by all linked sections
             ps = d.Sections(2).PageSetup
             assert [float(getattr(ps, n)) for n in ('TopMargin', 'BottomMargin', 'LeftMargin', 'RightMargin')] == [40, 50, 20, 30]
             assert float(ps.PageWidth) == float(d.Sections(1).PageSetup.PageHeight)
             count = int(d.ComputeStatistics(2))  # wdStatisticPages
             assert [int(d.GoTo(1, 1, n).Information(1)) for n in range(1, count + 1)] == list(range(1, count + 1))  # wdGoToPage, wdGoToAbsolute, wdActiveEndAdjustedPageNumber
+        after_call = word_state(path)[0]
         in_word(path, verify)
+        assert word_state(path)[0] == after_call, 'the read-only verification changed the document'
         middle = result['sections'][1]
         repeated = srv.call('word_sections', document=path, action='orientation',
                             start_paragraph=middle['start_paragraph'], end_paragraph=middle['end_paragraph'])
         assert not repeated['inserted_breaks']
         restored = srv.call('office_undo', file=path)
-        assert 1 <= restored['native_steps'] <= 3  # один основной шаг и до двух дополнительных
+        assert not restored.get('warnings'), restored
         print(f"Section breaks + PageSetup: {restored['native_steps']} native undo steps")
         assert word_state(path)[0] == before  # styles=False; native undo may collect extra steps
     assert not watch.seen
@@ -87,7 +89,8 @@ def test_section_break_kind_undo(srv, sections_doc, kind):
     path, before = sections_doc, word_state(sections_doc)[0]
     srv.call('word_sections', document=path, action='insert_break', paragraph=3, kind=kind)
     assert len(srv.call('word_sections', document=path)['sections']) == 2
-    srv.call('office_undo', file=path)
+    restored = srv.call('office_undo', file=path)
+    assert not restored.get('warnings'), restored
     assert word_state(path)[0] == before
 
 

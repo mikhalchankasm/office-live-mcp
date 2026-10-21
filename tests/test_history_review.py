@@ -467,3 +467,53 @@ def test_screen_updating_is_restored_even_if_hiding_the_backup_window_fails():
         with undo._shown(backup):
             assert app.ScreenUpdating is False
     assert app.ScreenUpdating is True
+
+
+@pytest.mark.parametrize("pieces", [3, 6])
+def test_word_change_split_into_many_native_steps_is_fully_undone(office, monkeypatch, pieces):
+    # Live probes 0.5: Word recorded section breaks, header/footer links and watermark shapes as several native steps
+    # outside the custom record (more than the old cap of two extra steps). Undo must still reach the exact state.
+    from office_live import registry, wd_common, word_core
+
+    o = office
+    original = undo.word_fingerprint(o.doc)
+
+    def word_split_tool(document):
+        _, target = wd_common.pick_document(document)
+        for i in range(pieces):
+            if i:
+                target.save_state()  # Word opens a new native undo step for this part
+            target.Content.Text = f"agent part {i}"
+        return {"ok": True}
+
+    registry.office_tool("word_core", "write")(word_split_tool)
+    monkeypatch.setattr(word_core, "word_split_tool", word_split_tool, raising=False)
+    o.call("word_split_tool", document=o.doc.Name)
+    result = o.call("office_undo", file=o.doc.Name)
+    assert undo.word_fingerprint(o.doc) == original and not result.get("warnings")
+    assert result["native_steps"] == pieces
+
+
+def test_fingerprint_ignores_empty_headers_and_their_references():
+    # Live probes 0.5: Word creates empty headers when one is touched, keeps them after undo, and WordOpenXML sometimes
+    # drops their references. Empty ones are invisible; a header with text or a shape still counts.
+    doc = '<w:sectPr><w:headerReference w:type="default" r:id="rId7"/><w:pgSz w:w="1"/></w:sectPr>'
+    empty = '<pkg:xmlData><w:hdr><w:p><w:pPr><w:pStyle w:val="ad"/></w:pPr></w:p></w:hdr></pkg:xmlData>'
+    texted = '<pkg:xmlData><w:hdr><w:p><w:r><w:t>Header</w:t></w:r></w:p></w:hdr></pkg:xmlData>'
+    shaped = '<pkg:xmlData><w:hdr><w:p><w:r><w:pict><v:shape id="Logo"/></w:pict></w:r></w:p></w:hdr></pkg:xmlData>'
+    plain = undo._without_empty_headers([("/word/document.xml", doc.replace('<w:headerReference w:type="default" r:id="rId7"/>', ""))])
+    assert undo._without_empty_headers([("/word/document.xml", doc), ("/word/header1.xml", empty)]) == plain
+    with_text = undo._without_empty_headers([("/word/document.xml", doc), ("/word/header2.xml", texted)])
+    assert with_text != plain and with_text == undo._without_empty_headers([("/word/document.xml", doc), ("/word/header7.xml", texted)])
+    assert undo._without_empty_headers([("/word/document.xml", doc), ("/word/header1.xml", shaped)]) != plain
+
+
+def test_fingerprint_ignores_separator_only_note_parts():
+    # Live probe 0.5: creating the first header also adds footnotes.xml/endnotes.xml with only separator notes.
+    doc = [("/word/document.xml", "<w:body/>")]
+    separators = ('<pkg:xmlData><w:footnotes><w:footnote w:type="separator" w:id="-1"><w:p/></w:footnote>'
+                  '<w:footnote w:type="continuationSeparator" w:id="0"><w:p/></w:footnote></w:footnotes></pkg:xmlData>')
+    real = separators.replace("</w:footnotes>", '<w:footnote w:id="1"><w:p><w:r><w:t>Note</w:t></w:r></w:p></w:footnote></w:footnotes>')
+    assert undo._without_empty_headers(doc + [("/word/footnotes.xml", separators)]) == undo._without_empty_headers(doc)
+    assert undo._without_empty_headers(doc + [("/word/footnotes.xml", real)]) != undo._without_empty_headers(doc)
+

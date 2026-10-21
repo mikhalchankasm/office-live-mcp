@@ -6,6 +6,8 @@
   document instead of counting from its start for every caption or section.
 - Undoing `excel_import_table` into an existing sheet now also restores the header row height that wrapped header
   text had grown.
+- `scripts/update.ps1` installs or updates to the latest release in one PowerShell command, with no clone needed:
+  it checks the setup.exe SHA-256 against the release digest and runs it silently.
 
 ## 0.5.0 — 2026-10-21
 

@@ -93,7 +93,9 @@ changes. A synchronous Excel COM call cannot be interrupted while it is running.
 2. **Run it:** Next → Next → Finish. On a fresh install, detected agents are preselected; choose **full** or **read-only** access.
 3. **Restart your agent** and ask: *“show me which workbooks are open in Excel”*.
 
-<sub>**Update:** run the new setup.exe over the old one. **Uninstall:** Settings → Apps → Office Live MCP.
+<sub>**Update:** run the new setup.exe over the old one, or in PowerShell (agents closed):
+`& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikhalchankasm/office-live-mcp/main/scripts/update.ps1)))`
+— [scripts/update.ps1](scripts/update.ps1) installs the latest release silently. **Uninstall:** Settings → Apps → Office Live MCP.
 **Data and costs:** the server runs locally, without an Office add-in; what your agent reads goes to its model provider,
 and the agent and model are billed under that provider's terms.</sub>
 

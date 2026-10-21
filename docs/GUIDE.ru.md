@@ -66,6 +66,14 @@
 | `/ACCESS=full` или `readonly` | Доступ только для добавляемых агентов; по умолчанию `full` |
 | `/LOG="D:\setup.log"` | Явный файл журнала; без параметра setup создаёт журнал в `%TEMP%` |
 
+Скрипт [scripts/update.ps1](../scripts/update.ps1) делает то же одной командой: берёт последний релиз из GitHub,
+сверяет SHA-256 скачанного setup.exe с digest релиза и запускает его тихо. Параметры `-Clients`, `-Access`, `-Log`
+передаются как `/CLIENTS`, `/ACCESS`, `/LOG`; `-DryRun` только показывает, что будет запущено. Без клона:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/mikhalchankasm/office-live-mcp/main/scripts/update.ps1))) -Clients detected
+```
+
 Идентификаторы агентов: `claude-code`, `claude-desktop`, `cursor`, `codex`, `zcode`. VS Code и другие не показанные в мастере
 клиенты сохраняются при любом выборе. `postinstall --clients keep` (внутренняя команда) ничего не добавляет и не снимает.
 Команда `clients --json` только читает обнаружение и учёт текущей установки. Для старых установок без ledger она также

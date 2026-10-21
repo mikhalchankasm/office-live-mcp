@@ -152,7 +152,9 @@ def _office_windows(dialog=False):
 
     def visit(hwnd, _):
         _, pid = win32process.GetWindowThreadProcessId(hwnd)
-        if pid not in names or (dialog and not win32gui.IsWindowVisible(hwnd)):
+        # Visible windows and the hidden MAIN window of an automation instance only: hidden helpers (e.g. Excel's
+        # HardwareMonitorWindow) report "hung" while Excel is merely busy — live run 0.5 closed a working test Excel.
+        if pid not in names or not (win32gui.IsWindowVisible(hwnd) or win32gui.GetClassName(hwnd) in ('XLMAIN', 'OpusApp')):
             return
         title = win32gui.GetWindowText(hwnd)
         if dialog:

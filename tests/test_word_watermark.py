@@ -6,7 +6,7 @@ from xml.sax.saxutils import escape, quoteattr
 
 import pytest
 
-from office_live import config, registry, undo, word_layout as layout
+from office_live import config, registry, undo, word_structure as layout
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, Content, fake_office  # noqa: F401
 

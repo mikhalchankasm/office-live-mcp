@@ -5,7 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from office_live import config, registry, undo, word_layout as c
+from office_live import config, registry, undo, word_structure as c
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, fake_office  # noqa: F401
 from tests.office_operations_fakes import WordRange, refresh_word, word

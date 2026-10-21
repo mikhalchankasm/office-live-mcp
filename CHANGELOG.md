@@ -2,19 +2,28 @@
 
 ## Unreleased
 
-- **Excel what-if analysis:** `excel_what_if` builds one/two-variable data tables and lists/adds/shows/deletes scenarios or creates a standard summary sheet. Preflight refuses occupied results and protected sheets; unknown dependencies and delayed calculation are reported. Undo clears the whole data-table array, restores scenario inputs/definitions or removes the summary sheet. Live probes are written, not yet run.
+Five new tools (129 in total): table import into Excel, captions, watermarks and sections in Word, data tables and
+scenarios in Excel — all checked live on Russian Office 365 with undo.
 
-- **Word watermarks:** `word_watermark` adds centred text WordArt, reports existing watermarks through XML in readonly,
-  and removes only recognised watermark shapes. Linked headers are handled once; partial section chains refuse.
-  Uses Word UndoRecord; written live undo probes and Word UI removal acceptance await the owner’s live window.
-- **Word sections:** `word_sections` reads section layout and numbering without creating headers, inserts four section break kinds, and orients paragraph ranges with only missing boundaries, linked continuations and one undo record. Table boundary refusals precede edits; page-anchored shapes produce warnings. The catalog has 127 tools.
-
-- **Table import:** `excel_import_table` reads allowed CSV/TSV/TXT/JSON files with encoding/delimiter detection,
-  literal text columns, default `Data` sheet, bounded widths and bold/wrapped headers; one block write and one undo entry.
-  Occupied targets refuse before changes. New books have an explicit undo barrier; inactive sheets report skipped freeze.
-  File text is untrusted: by default strings that Excel would read as formulas (`=`, `@`, and `+`/`-` text that is
-  not a number) are stored as text; `formulas=true` keeps them for a trusted file.
-- **Word captions:** `word_captions` lists SEQ fields, orphan captions and objects without captions, adds numbered table/picture/equation captions using built-in IDs, and inserts clickable cross-references. Writes use one undo record and update only inserted fields. The catalog has 125 tools.
+- **Table import:** `excel_import_table` reads an allowed CSV/TSV/TXT/JSON file (encoding and delimiter detected,
+  cp1251 included) into the default `Data` sheet in one block, keeps leading zeros in `text_columns`, applies a bold
+  wrapped header, widths and freeze, and refuses occupied cells before any change. File text is untrusted: strings
+  Excel would read as formulas (`=`, `@`, `+`/`-` text that is not a number) are stored as text unless `formulas=true`.
+- **Word captions:** `word_captions` lists captions (with orphans and objects without captions), adds numbered
+  table/figure/equation captions by built-in label IDs (any Word language) and inserts clickable cross-references.
+- **Word watermarks:** `word_watermark` reads, adds and removes a text watermark that Word itself recognises; linked
+  headers are handled once and other header shapes are never touched. Undo of an add deletes exactly the shapes it
+  created (Word's own undo leaves header shapes behind).
+- **Word sections:** `word_sections` lists sections without creating headers, inserts the four kinds of section break
+  and turns a paragraph range landscape or portrait with continuous page numbering and shared footers.
+- **Excel what-if:** `excel_what_if` builds one- and two-variable data tables and adds, shows, deletes and summarises
+  scenarios (comma-separated cell unions accepted); undo clears the whole data-table array or restores the scenario.
+- **Undo in Word** collects every native step Word splits an agent change into (section breaks, header links), and
+  its change detection ignores what Word adds invisibly: empty headers/footers, separator-only footnote parts and
+  regenerated drawing ids.
+- **Chart export** never reports success for an empty PNG: it retries once, then fails with a clear message.
+- **Development:** `AGENTS.md` and issue/PR templates describe the work cycle; `scripts/live_run.py` runs live Office
+  tests unattended and closes only a hung Office it started itself; `scripts/release.py` coordinates releases.
 
 ## 0.4.6 — 2026-10-15
 

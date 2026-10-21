@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- `word_captions` and `word_sections` list long documents faster: paragraph numbers come from one sweep over the
+  document instead of counting from its start for every caption or section.
+- Undoing `excel_import_table` into an existing sheet now also restores the header row height that wrapped header
+  text had grown.
+
 ## 0.5.0 — 2026-10-21
 
 Table import, captions, watermarks, sections and what-if analysis; unattended live tests.

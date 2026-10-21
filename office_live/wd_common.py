@@ -240,6 +240,20 @@ def paragraph_index_at(doc, position: int) -> int:
     return int(doc.Range(0, max(end, 1)).Paragraphs.Count)
 
 
+def paragraph_indexes(doc, positions) -> dict[int, int]:
+    """paragraph_index_at for many positions in one sweep: Word counts each stretch of the document once.
+
+    Range(prev, stop) counts the paragraph containing prev too, hence the -1; the result equals
+    Range(0, stop).Paragraphs.Count of paragraph_index_at without re-counting from the document start."""
+    end = int(doc.Content.End)
+    found, prev, index = {}, 0, 1
+    for pos in sorted({int(p) for p in positions}):
+        stop = max(min(pos + 1, end), 1)
+        index += int(doc.Range(prev, stop).Paragraphs.Count) - 1
+        found[pos], prev = index, stop - 1
+    return found
+
+
 def para_text(rng_or_para) -> str:
     return clean_word_text(rng_or_para.Range.Text if hasattr(rng_or_para, "Range") else rng_or_para.Text)
 

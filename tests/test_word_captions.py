@@ -1,5 +1,6 @@
 """Caption contracts and refusals on fake Word; no Office activation."""
 
+import bisect
 from dataclasses import replace
 from types import SimpleNamespace as NS
 
@@ -184,3 +185,36 @@ def test_readonly_list_on_protected_autosave_document(o, monkeypatch):
     with pytest.raises(ToolError, match="Read-only"):
         call(o, action="add", target="table", table_index=1)
     assert not o.doc.calls and not o.word.starts
+
+
+class LongDocument:
+    """Paragraphs of 10 characters; Range.Paragraphs counts like Word, which walks every paragraph it counts."""
+
+    def __init__(self, paragraphs):
+        self.starts, self.walked = [10 * i for i in range(paragraphs)], 0
+        self.Content = NS(End=10 * paragraphs, Fields=Collection())
+        self.Tables = self.InlineShapes = Collection()
+
+    def Range(self, start, end):
+        lo, hi = bisect.bisect_right(self.starts, start) - 1, bisect.bisect_left(self.starts, end)
+        self.walked += hi - lo
+        return NS(Start=start, End=end, Paragraphs=NS(Count=hi - lo))
+
+
+def test_list_walks_the_document_once(monkeypatch):
+    doc = LongDocument(5000)
+    for n, p in enumerate(range(7, 5000, 16), 1):  # 300+ captions spread over the document, listed in field order
+        r = NS(Start=10 * p, End=10 * p + 10, Text=f"Table {n}\r")
+        doc.Content.Fields.items.append(NS(Type=12, Code=NS(Text=" SEQ Table "), Result=NS(
+            Text=str(n), Paragraphs=Collection([NS(Range=r)]))))
+    monkeypatch.setattr(c.wd, "range_link", lambda doc, paragraph, rng: "")
+    app = NS(CaptionLabels=lambda i: NS(Name={-2: "Table", -1: "Figure", -3: "Equation"}[i]))
+    captions, _ = c._inventory(app, doc)
+    assert len(captions) >= 300 and [x["paragraph"] for x in captions] == list(range(8, 5001, 16))
+    assert doc.walked <= 5000 + len(captions)  # per-caption counting from the start walked ~750 000 paragraphs
+
+
+@pytest.mark.parametrize("positions", [[0], [9, 10, 11], [49999, 120, 0, 120, 60000], list(range(0, 50000, 777))])
+def test_paragraph_indexes_match_paragraph_index_at(positions):
+    doc = LongDocument(5000)
+    assert c.wd.paragraph_indexes(doc, positions) == {p: c.wd.paragraph_index_at(doc, p) for p in positions}

@@ -1566,7 +1566,7 @@ def record_call(fn, args, kwargs, tool, kind, arguments, supplied):
         if not isinstance(result, dict) or result.get("ok", True):
             recording.finish(result)
             if tool == "excel_import_table":
-                from .excel_core import _compact_import_result
+                from .excel_import import _compact_import_result
 
                 _compact_import_result(result)
             success = True
@@ -1685,7 +1685,7 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
             for pk, pa, po, pe in participants:
                 if pk[0] == "document":
                     if pe.ops and pe.ops[0].get("op") == "word_watermark_add":
-                        from .word_layout import _in_header
+                        from .word_structure import _in_header
 
                         existed = set(pe.ops[0]["before_names"])
                         for owner, typ, _ in pe.ops[0]["targets"]:

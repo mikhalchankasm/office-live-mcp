@@ -703,8 +703,8 @@ office_live/
   journal.py · undo.py      журналы документов, лист «Лог», сеансовая отмена и скрытые снимки Excel
   util.py                  чистая логика: адреса, цвета, значения, форматы чисел, разбор текста
   xl_common.py · wd_common.py        выбор книги/листа/диапазона, документов, стилей, якорей вставки
-  excel_core.py · excel_format.py · excel_analysis.py · excel_pivot.py
-  word_core.py · word_tables.py · word_layout.py   (включая снимок страницы Word через EMF + Pillow)
+  excel_core.py · excel_import.py · excel_format.py · excel_analysis.py · excel_pivot.py
+  word_core.py · word_tables.py · word_layout.py · word_structure.py   (включая снимок страницы Word через EMF + Pillow)
   bridge.py                мосты Word ↔ Excel
   templates.py · inspect_file.py · vba.py     работа по образцу: разбор файла, копия, чертёж, макросы
   evaltool.py              office_run_python (по флагу)

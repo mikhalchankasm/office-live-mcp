@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.0 — 2026-10-21
+
+Table import, captions, watermarks, sections and what-if analysis; unattended live tests.
 
 Five new tools (129 in total): table import into Excel, captions, watermarks and sections in Word, data tables and
 scenarios in Excel — all checked live on Russian Office 365 with undo.

@@ -11,7 +11,7 @@ from . import com, undo
 from . import wd_common as wd
 from .errors import PartialChangeError, ToolError
 from .util import clean_word_text, parse_color
-from .wd_common import paragraph_index_at, paragraphs_range
+from .wd_common import paragraph_indexes, paragraphs_range
 
 
 HF_TYPES = {"primary": 1, "first_page": 2, "even": 3}
@@ -66,12 +66,12 @@ def _section_xml(doc):
 
 
 def _section_list(doc):
-    result = []
-    for index, meta in enumerate(_section_xml(doc), 1):
-        sec = doc.Sections(index)
-        ps, rng = sec.PageSetup, sec.Range
-        result.append({"section": index, "start_paragraph": paragraph_index_at(doc, int(rng.Start)),
-                       "end_paragraph": paragraph_index_at(doc, int(rng.End) - 1),
+    result, sections = [], _section_xml(doc)
+    spans = [(int(s.Range.Start), int(s.Range.End) - 1) for s in _items(doc.Sections)]
+    paragraphs = paragraph_indexes(doc, [p for span in spans for p in span])
+    for index, meta in enumerate(sections, 1):
+        ps, (start, last) = doc.Sections(index).PageSetup, spans[index - 1]
+        result.append({"section": index, "start_paragraph": paragraphs[start], "end_paragraph": paragraphs[last],
                        "orientation": "landscape" if int(ps.Orientation) == 1 else "portrait",  # wdOrientLandscape
                        "paper_size_id": int(ps.PaperSize),
                        "page_cm": [round(float(getattr(ps, n)) * 2.54 / 72, 3) for n in _PAGE_DIMS[:2]],
@@ -416,11 +416,13 @@ def _inventory(app, doc):
         r = field.Result.Paragraphs(1).Range
         near = [{"target": o["target"], "index": o["index"]} for o in objects
                 if o["end"] == int(r.Start) or o["start"] == int(r.End)]
-        paragraph = wd.paragraph_index_at(doc, int(r.Start))
         captions.append({"caption": counts[key], "label_id": labels.get(key), "label": label,
-                         "number": _text(field.Result.Text), "text": _text(r.Text), "paragraph": paragraph,
-                         "objects": near, "orphan": not near, "link": wd.range_link(doc, paragraph, r),
+                         "number": _text(field.Result.Text), "text": _text(r.Text), "paragraph": int(r.Start),
+                         "objects": near, "orphan": not near, "link": wd.range_link(doc, 0, r),
                          "_field": field})
+    paragraphs = wd.paragraph_indexes(doc, [c["paragraph"] for c in captions])
+    for c in captions:  # one sweep instead of counting from the document start for every caption
+        c["paragraph"] = paragraphs[c["paragraph"]]
     missing = {kind: [o["index"] for o in objects if o["target"] == kind and not any(
         {"target": kind, "index": o["index"]} in c["objects"] for c in captions)] for kind in ("table", "picture")}
     return captions, missing

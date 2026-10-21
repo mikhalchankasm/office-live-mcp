@@ -44,6 +44,30 @@ def test_import_acceptance(import_office):
     assert not o.ws.view.FreezePanes
 
 
+def test_import_undo_restores_header_row_height(import_office, monkeypatch):
+    from office_live import excel_format
+
+    o = import_office
+    original = excel_format._prepare_format
+
+    def growing(app, wb, ws, rng, **kw):
+        apply = original(app, wb, ws, rng, **kw)
+
+        def run():
+            apply()
+            ws.Rows(rng.Row).RowHeight = 30  # Excel grows a row whose wrapped header does not fit
+        return run
+
+    monkeypatch.setattr(excel_format, "_prepare_format", growing)
+    path = o.tmp / "table.csv"
+    path.write_text("A long header that wraps;B\n1;2\n", encoding="utf-8")
+    o.ws.Rows(3).RowHeight = 21
+    o.call("excel_import_table", path=str(path), workbook=o.wb.Name, start_cell="A3")
+    assert o.ws.Rows(3).RowHeight == 30
+    o.call("office_undo", file=o.wb.Name)
+    assert o.ws.Rows(3).RowHeight == 21 and o.ws.Range("A3:B4").Value2 == ((None, None),) * 2
+
+
 @pytest.mark.parametrize("ext,encoding,content,expected", [
     ("csv", "utf-8-sig", "code,name\n007,тест", [["code", "name"], ["007", "тест"]]),
     ("tsv", "utf-16", "code\tname\n007\tтест", [["code", "name"], ["007", "тест"]]),

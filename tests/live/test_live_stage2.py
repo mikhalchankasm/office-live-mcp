@@ -64,6 +64,17 @@ def test_live_import_occupied_and_undo(srv, stage_book, tmp):
     assert read(srv, stage_book, "A1:B2") == [["keep", None], [None, None]]
 
 
+def test_live_import_undo_restores_wrapped_header_row_height(srv, stage_book, tmp):
+    path = Path(tmp) / "import.csv"
+    path.write_text("code;" + "a header longer than the sixty character width cap of the import layout\n007;x", encoding="utf-8")
+    height = lambda app, ws: float(ws.Rows(1).RowHeight)  # noqa: E731
+    before = in_excel(stage_book, height)
+    srv.call("excel_import_table", path=str(path), workbook=stage_book)
+    assert in_excel(stage_book, height) > before  # Excel grew the wrapped header row
+    srv.call("office_undo", file=stage_book)
+    assert in_excel(stage_book, height) == before and read(srv, stage_book, "A1:B2") == [[None, None], [None, None]]
+
+
 def test_live_split_preview_literal_types_full_undo_and_conflict(srv, stage_book):
     book = stage_book
     srv.call("excel_write_range", workbook=book, sheet="Data", cells="A1", values=[["007|=x|12,5"], ["TRUE|1,234| text "]], value_mode="text")

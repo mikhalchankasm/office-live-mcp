@@ -785,6 +785,11 @@ def _import_table(app, wb, entry, args):
         if args.get("layout", True) and args.get("header", True) and app.ActiveWorkbook.FullName == wb.FullName and app.ActiveSheet.Name == ws.Name:
             entry.ops.append({"op": "import_view", "sheet": ws.Name, "before": _import_view(app, wb, ws.Name)})
         _snapshots(app, wb, entry, [rng], columns=args.get("layout", True), properties=("NumberFormat",))
+        if args.get("layout", True) and args.get("header", True):
+            # Wrapped header text grows its row; restored after the range so pasted formats cannot re-grow it.
+            r1, c1, _, c2 = xl.bounds(rng)
+            header = xl.sub_range(ws, r1, c1, r1, c2)
+            entry.ops.append({"op": "dimensions", **_area(header), **_dimensions(header, False, True, explicit=True)})
 
 
 def _write_range(app, wb, entry, args):

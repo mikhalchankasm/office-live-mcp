@@ -74,6 +74,8 @@ def o(office, monkeypatch):
         areas = [WhatRange(ws, a) for a in address.split(",")]
         return NS(Count=sum(a.Count for a in areas), Areas=Collection(areas), Address=address)
     monkeypatch.setattr(ws, "Range", get_range)
+    # Real Excel: get_range takes one area, unions are built with Application.Union (live finding 0.5).
+    monkeypatch.setattr(office.excel, "Union", lambda a, b: get_range(f"{a.Address},{b.Address}"), raising=False)
     collection = Scenarios(ws)
     ws.Scenarios = lambda: collection
     ws.Range("A1:A2").Value2 = ((2,), (3,))

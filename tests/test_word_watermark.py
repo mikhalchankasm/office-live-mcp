@@ -110,7 +110,7 @@ def test_add_inherited_first_even_status_and_both_undo_directions(o):
     hf = o.doc.Sections(1).Headers(1)
     hf.exists = True
     hf.Shapes.items.append(Shape(hf.Shapes, "Logo", "untouched"))
-    before = undo.word_fingerprint(o.doc, styles=False)
+    plain_before = undo.watermark_fingerprint(o.doc)
     result = call(o, "add", text="ЧЕРНОВИК", color="#123456")
     assert len(result["changed"]) == 3 and result["undo"] == "available"
     status = call(o)
@@ -122,13 +122,14 @@ def test_add_inherited_first_even_status_and_both_undo_directions(o):
     added = undo.word_fingerprint(o.doc, styles=False)
     with pytest.raises(ToolError, match="already exists"):
         call(o, "add", text="again")
-    assert len(o.word.starts) == 1
+    assert len(o.word.starts) == 0  # add uses a custom inverse, not Word's custom record (live probe 0.5)
     assert len(call(o, "remove")["changed"]) == 3
     assert [s.Name for s in hf.Shapes] == ["Logo"] and not call(o)["present"]
     o.call("office_undo", file=o.doc.Name)
     assert undo.word_fingerprint(o.doc, styles=False) == added
     o.call("office_undo", file=o.doc.Name)
-    assert undo.word_fingerprint(o.doc, styles=False) == before
+    # Word keeps a header once created (empty, invisible); the add undo is verified without empty headers.
+    assert undo.watermark_fingerprint(o.doc) == plain_before
 
 
 @pytest.mark.parametrize("kw", [{"text": ""}, {"text": "x" * 51}, {"text": "a\nb"}, {"font": ""},
@@ -170,12 +171,12 @@ def test_picker_guards(o, guard):
 
 def test_partial_failure_retains_undo_and_reports_uncertain_change(o):
     o.doc.Sections(1).Headers(2).Shapes.fail = True
-    before = undo.word_fingerprint(o.doc, styles=False)
+    before = undo.watermark_fingerprint(o.doc)
     with pytest.raises(ToolError, match="completed=.*possibly changed=.*office_undo"):
         call(o, "add", text="Draft")
     assert len(call(o)["watermarks"]) == 1
-    o.call("office_undo", file=o.doc.Name)
-    assert undo.word_fingerprint(o.doc, styles=False) == before
+    o.call("office_undo", file=o.doc.Name)  # also removes the unnamed shape left by the interrupted call
+    assert undo.watermark_fingerprint(o.doc) == before
 
 
 def test_long_text_fits_the_smallest_linked_page(o):

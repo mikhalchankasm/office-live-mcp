@@ -64,8 +64,27 @@ def test_probe_watermark_linked_headers_shapes_and_undo(srv, watermark_doc):
 
 def test_probe_watermark_add_undo_removes_new_headers(srv, watermark_doc):
     path = watermark_doc
-    before = word_state(path)[0]
+    from office_live import undo
+
+    before = in_word(path, undo.watermark_fingerprint)
+    before_parts = in_word(path, undo._word_body_xml)
     srv.call("word_watermark", document=path, action="add", text="Confidential", layout="horizontal")
-    srv.call("office_undo", file=path)
-    assert word_state(path)[0] == before
+    try:
+        restored = srv.call("office_undo", file=path)
+    except ToolFailed:
+        import os
+        folder = os.environ.get("OFFICE_LIVE_DIAG_DIR")
+        if folder:  # evidence for the failed verification: parts before the add and after the undo attempt
+            for label, parts in (("before", before_parts), ("after", in_word(path, undo._word_body_xml))):
+                for name, body in parts:
+                    target = Path(folder) / "watermark" / label / name.strip("/").replace("/", "_")
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(body, encoding="utf-8")
+                (Path(folder) / "watermark" / f"{label}-counts.txt").write_text(repr(in_word(path, lambda d: (
+                    d.Content.Text, int(d.Paragraphs.Count), int(d.Shapes.Count), int(d.ProtectionType),
+                    bool(d.TrackRevisions), int(d.Comments.Count)))), encoding="utf-8")
+        raise
+    assert not restored.get("warnings"), restored
+    # Word keeps a header once created; empty headers are invisible and excluded from this comparison.
+    assert in_word(path, undo.watermark_fingerprint) == before
     assert not srv.call("word_watermark", document=path)["present"]

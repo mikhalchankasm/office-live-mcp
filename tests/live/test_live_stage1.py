@@ -50,11 +50,53 @@ def in_word(path, fn):
     return com.run_com(invoke)
 
 
-def word_state(path):
-    from office_live.undo import word_fingerprint
+class Fingerprint:
+    """word_fingerprint hash plus its components, so a failed `after == before` shows WHICH part changed; with
+    OFFICE_LIVE_DIAG_DIR set, every snapshot's parts are also written there for an offline diff."""
 
-    # styles=False: Word adds style definitions (Table Grid, the hidden Revision style) that its own Undo never removes.
-    return in_word(path, lambda doc: (word_fingerprint(doc, styles=False), bool(doc.Saved), int(doc.Revisions.Count)))
+    def __init__(self, digest, parts):
+        self.digest, self.parts = digest, parts
+
+    def __eq__(self, other):
+        return isinstance(other, Fingerprint) and self.digest == other.digest
+
+    def __hash__(self):
+        return hash(self.digest)
+
+    def __repr__(self):
+        import hashlib
+
+        short = {k: (hashlib.sha1(str(v).encode()).hexdigest()[:8] if len(str(v)) > 40 else v) for k, v in self.parts.items()}
+        return f"Fingerprint({self.digest[:8]}, {short})"
+
+
+_DIAG = {"n": 0}
+
+
+def word_state(path):
+    import os
+
+    from office_live import undo
+
+    def snapshot(doc):
+        # styles=False: Word adds style definitions (Table Grid, the hidden Revision style) that its own Undo never removes.
+        parts = {"text": doc.Content.Text, "paragraphs": int(doc.Paragraphs.Count), "tables": int(doc.Tables.Count),
+                 "shapes": int(doc.Shapes.Count), "inline": int(doc.InlineShapes.Count)}
+        body = undo._word_body_xml(doc)
+        for name, part in (body if isinstance(body, list) else [("xml", body)]):
+            if not name.startswith("/word/styles"):
+                parts[name] = part
+        digest = undo.word_fingerprint(doc, styles=False)
+        folder = os.environ.get("OFFICE_LIVE_DIAG_DIR")
+        if folder:
+            _DIAG["n"] += 1
+            target = Path(folder) / f"{_DIAG['n']:03d}"
+            target.mkdir(parents=True, exist_ok=True)
+            for name, value in parts.items():
+                (target / (name.strip("/").replace("/", "_") or "x")).write_text(str(value), encoding="utf-8")
+        return Fingerprint(digest, parts), bool(doc.Saved), int(doc.Revisions.Count)
+
+    return in_word(path, snapshot)
 
 
 @contextlib.contextmanager

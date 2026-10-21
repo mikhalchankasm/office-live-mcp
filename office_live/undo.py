@@ -43,7 +43,8 @@ _PART = re.compile(r'<pkg:part pkg:name="(/word/[^"]+)"(.*?)</pkg:part>', re.S)
 _USER_PARTS = re.compile(r"/word/(document|header\d*|footer\d*|comments\w*|footnotes|endnotes|styles|numbering)\.xml")
 # Что Word генерирует сам при каждом чтении WordOpenXML (проверено на живом Word): идентификаторы абзацев и текста
 # (w14:paraId/textId), сеансов правки (rsid), пометки фоновой проверки орфографии (proofErr).
-_XML_NOISE = re.compile(r'<w:proofErr\b[^>]*/>|\s(?:w14:paraId|w14:textId|w:rsid\w*)="[^"]*"')
+# wp14:anchorId/editId: Word regenerates drawing ids on undo/redo (live probe 0.5, inline picture after caption undo).
+_XML_NOISE = re.compile(r'<w:proofErr\b[^>]*/>|\s(?:w14:paraId|w14:textId|w:rsid\w*|wp14:anchorId|wp14:editId)="[^"]*"')
 
 
 def _word_body_xml(doc):
@@ -52,12 +53,43 @@ def _word_body_xml(doc):
     и сам отпечаток. WordOpenXML всей области Content уже содержит колонтитулы, примечания и сноски."""
     xml = doc.Content.WordOpenXML
     parts = [(name, _XML_NOISE.sub("", body)) for name, body in _PART.findall(xml) if _USER_PARTS.fullmatch(name)]
-    return parts or _XML_NOISE.sub("", xml)
+    return _without_empty_headers(parts) if parts else _XML_NOISE.sub("", xml)
+
+
+_HF_NAME = re.compile(r"/word/(header|footer)\d*\.xml")
+_HF_REF = re.compile(r'<w:(?:header|footer)Reference\b[^>]*/>')
+_NOTES_NAME = re.compile(r"/word/(footnotes|endnotes)\.xml")
+_NOTE_SEPARATOR = re.compile(r'<w:(foot|end)note\b[^>]*\bw:type="[^"]*".*?</w:\1note>', re.S)
+_HF_OBJECT = re.compile(r'<v:shape[\s>]|<w:drawing\b|<w:fldSimple\b|<w:instrText\b|<w:fldChar\b')
+
+
+def _without_empty_headers(parts):
+    """Empty header/footer parts are invisible but unstable: Word creates them when a header is touched, keeps them
+    after undo, and WordOpenXML sometimes omits their references (live probes 0.5). Drop empty ones and all references;
+    compare non-empty headers/footers by content (their part numbers may shift)."""
+    kept, headers = [], []
+    for name, body in parts:
+        if _NOTES_NAME.fullmatch(name) and not re.search(r"<w:(?:foot|end)note\b", _NOTE_SEPARATOR.sub("", body)):
+            continue  # only Word's separator notes: added with the first header (live probe 0.5), invisible
+        if _HF_NAME.fullmatch(name):
+            text = re.sub(r"<[^>]+>", "", body.split("<pkg:xmlData>", 1)[-1]).strip()
+            if text or _HF_OBJECT.search(body):
+                headers.append(body)
+        else:
+            kept.append((name, _HF_REF.sub("", body)))
+    return kept + [("/word/header-footer", body) for body in sorted(headers)]
+
+
+def watermark_fingerprint(doc):
+    """Fingerprint used to verify the custom watermark-add undo (styles excluded, like the native-undo check)."""
+    return word_fingerprint(doc, styles=False)
 
 
 def entry_fingerprint(entry, doc):
     """Отпечаток для проверки «пользователь менял документ после агента». Для защиты — без styles.xml: Word сам дописывает
     туда служебные стили, пока документ защищён «только исправления» (живая проверка), это не правка пользователя."""
+    if entry.ops and entry.ops[0].get("op") == "word_watermark_add":
+        return watermark_fingerprint(doc)  # same light form as the verification after the custom undo
     return word_fingerprint(doc, styles=entry.tool != "word_restrict_editing")
 
 
@@ -70,6 +102,12 @@ def _tracked_protection(doc) -> bool:
         if com.is_busy(exc):
             raise
         return False
+
+
+# Word records some agent operations outside the custom UndoRecord as separate native steps: header-story shapes
+# (watermarks), section breaks with PageSetup and header/footer links (live probes 0.5 needed more than two). The loop
+# stops at the exact state before the agent and redoes everything if it never gets there, so a generous cap is safe.
+WORD_EXTRA_STEPS = 30
 
 
 def word_fingerprint(doc, styles=True):
@@ -1287,6 +1325,13 @@ class Recording:
                         entry.ops.append({"op": "word_protection", "mode": self.args["_word_protection_before"], "tracking": self.args.get("_word_tracking_before")})
                 elif bool(app.UndoRecord.IsRecordingCustomRecord):
                     entry.barrier("Word is already recording another custom undo record.")
+                elif self.tool == "word_watermark" and self.args.get("_watermark_add"):
+                    # Custom inverse: Word's native undo of header-story shapes is unreliable (live probe 0.5 left a
+                    # watermark behind after undo). Undo deletes the header shapes this call created: every shape in
+                    # its target headers that did not exist before (also an unnamed one left by an interrupted call).
+                    entry.before_fingerprint = watermark_fingerprint(obj)
+                    entry.ops.append({"op": "word_watermark_add", "targets": list(self.args["_watermark_add"]),
+                                      "before_names": list(self.args["_header_shapes_before"])})
                 else:
                     record = app.UndoRecord
                     entry.before_fingerprint = word_fingerprint(obj)
@@ -1639,6 +1684,19 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
         try:
             for pk, pa, po, pe in participants:
                 if pk[0] == "document":
+                    if pe.ops and pe.ops[0].get("op") == "word_watermark_add":
+                        from .word_layout import _in_header
+
+                        existed = set(pe.ops[0]["before_names"])
+                        for owner, typ, _ in pe.ops[0]["targets"]:
+                            shapes = po.Sections(owner).Headers(typ).Shapes
+                            for i in range(int(shapes.Count), 0, -1):
+                                shape = shapes(i)
+                                if str(shape.Name) not in existed and _in_header(shape, owner, typ):
+                                    shape.Delete()
+                        if watermark_fingerprint(po) != pe.before_fingerprint:
+                            raise ToolError("Watermark undo could not be verified.")
+                        continue
                     if pe.tool == "word_restrict_editing":
                         op = pe.ops[0]
                         if int(po.ProtectionType) != -1:
@@ -1663,7 +1721,7 @@ def office_undo(file: str = "", action: str = "undo", steps: int = 1, force: boo
                         # (checked above), so up to two extra steps are the agent's own; if that still does not reach the
                         # state before the agent, Redo them back and say so.
                         extra = 0
-                        while extra < 2 and word_fingerprint(po, styles=False) != pe.before_light and po.Undo(1):
+                        while extra < WORD_EXTRA_STEPS and word_fingerprint(po, styles=False) != pe.before_light and po.Undo(1):
                             extra += 1
                         if word_fingerprint(po, styles=False) == pe.before_light:
                             native_steps += extra

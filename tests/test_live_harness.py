@@ -468,6 +468,19 @@ def test_dialog_child_text_and_hidden_hung_windows(monkeypatch):
     assert office.hung_office_windows() == [('EXCEL.EXE', p.pid, 'Hidden Excel')]
 
 
+def test_hidden_helper_window_of_a_busy_office_is_not_hung(monkeypatch):
+    # Live run 0.5: Excel's hidden HardwareMonitorWindow reported hung while Excel was busy; the watchdog killed it.
+    p = process()
+    monkeypatch.setattr(office, 'office_processes', lambda: [p])
+    monkeypatch.setattr(office.win32gui, 'EnumWindows', lambda callback, arg: [callback(h, arg) for h in (1, 2)])
+    monkeypatch.setattr(office.win32gui, 'GetWindowText', lambda h: {1: 'HardwareMonitorWindow', 2: 'Book1 - Excel'}[h])
+    monkeypatch.setattr(office.win32gui, 'GetClassName', lambda h: 'HardwareMonitorWindowClass' if h == 1 else 'XLMAIN')
+    monkeypatch.setattr(office.win32gui, 'IsWindowVisible', lambda h: h == 2)
+    monkeypatch.setattr(office.win32process, 'GetWindowThreadProcessId', lambda h: (1, p.pid))
+    monkeypatch.setattr(office.ctypes.windll.user32, 'IsHungAppWindow', Mock(side_effect=lambda h: h == 1))
+    assert office.hung_office_windows() == []
+
+
 def test_recovery_marks_current_test_failed_and_next_test_starts_fresh(monkeypatch):
     from tests.live import conftest as live
 
@@ -501,6 +514,7 @@ def test_recovery_marks_current_test_failed_and_next_test_starts_fresh(monkeypat
     assert live.srv.__wrapped__(None) is first
     assert live.srv.__wrapped__(None) is first
     first.proc.poll.return_value = -9  # killed by the watchdog
+    first.close.side_effect = RuntimeError("MCP exited with code 1")  # live run 0.5: close of a killed server raises
     assert live.srv.__wrapped__(None) is second
     first.close.assert_called_once()
     second.close.assert_not_called()

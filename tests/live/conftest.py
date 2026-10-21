@@ -171,7 +171,10 @@ def srv(_office_watchdog):
     client = _SERVER["client"]
     if client is None or client.proc.poll() is not None:
         if client is not None:
-            client.close()
+            try:
+                client.close()  # a server killed by the watchdog reports its failures here; it is replaced anyway
+            except Exception:  # noqa: BLE001 — live run 0.5: re-raising here failed every following test
+                pass
         client = _SERVER["client"] = Stdio()
     return client
 

@@ -6,6 +6,11 @@
   document instead of counting from its start for every caption or section.
 - Undoing `excel_import_table` into an existing sheet now also restores the header row height that wrapped header
   text had grown.
+- `word_find` with `scope="all"` no longer hangs on documents whose headers or text boxes make Word report a match
+  outside the searched range; a search longer than a minute returns what it found with `partial: true`.
+- Word wildcard counts such as `[0-9]{1,2}` work in Russian Word, which expects `{1;2}`; a rejected pattern now gets
+  an error naming the separator.
+- A Word change no longer loses its undo when Word is briefly busy while the undo record is being started.
 - `scripts/update.ps1` installs or updates to the latest release in one PowerShell command, with no clone needed:
   it checks the setup.exe SHA-256 against the release digest and runs it silently.
 

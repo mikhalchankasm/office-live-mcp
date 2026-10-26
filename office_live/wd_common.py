@@ -281,22 +281,92 @@ def story_ranges(doc, scope: str):
 def find_all(rng_story, text: str, match_case=False, whole_word=False, wildcards=False, limit=100000):
     """Генератор найденных диапазонов (копий) в story; текст уже подготовлен (экранирован) вызывающим."""
     rng = rng_story.Duplicate
-    end = int(rng_story.End)
+    start, end = int(rng_story.Start), int(rng_story.End)
     count = 0
     while count < limit:
         f = rng.Find
         f.ClearFormatting()
         # Execute(FindText, MatchCase, MatchWholeWord, MatchWildcards, MatchSoundsLike, MatchAllWordForms, Forward, Wrap=wdFindStop)
-        ok = f.Execute(text, bool(match_case), bool(whole_word), bool(wildcards), False, False, True, 0)
+        try:
+            ok = f.Execute(text, bool(match_case), bool(whole_word), bool(wildcards), False, False, True, 0)
+        except pywintypes.com_error as exc:
+            err = wildcard_error(exc, text, list_separator(rng_story.Application)) if wildcards else None
+            if err:
+                raise err from exc
+            raise
         if not ok:
             return
         hit_start, hit_end = int(rng.Start), int(rng.End)
+        # Word может вернуть совпадение вне искомого диапазона (колонтитулы, надписи): повторный поиск с той же позиции
+        # находил его снова, и цикл шёл до limit — word_find(scope="all") «висел» 30 минут (#55).
+        if hit_start < start or hit_end > end:
+            return
         yield rng.Duplicate
         count += 1
         if hit_end >= end or hit_end <= hit_start and hit_start >= end:
             return
         nxt = hit_end if hit_end > hit_start else hit_end + 1
+        start = nxt
         rng.SetRange(nxt, end)
+
+
+BAD_WILDCARD = 0x800A15B8  # «Поле "Найти" содержит неверный шаблон поиска»
+
+
+def list_separator(app) -> str:
+    """Разделитель списков, которым Word читает {n,m} в подстановочных знаках (в русской локали — ';')."""
+    try:
+        sep = str(app.International(17))  # wdListSeparator
+        if sep:
+            return sep
+    except Exception:
+        pass
+    import ctypes
+
+    buf = ctypes.create_unicode_buffer(8)
+    if ctypes.windll.kernel32.GetLocaleInfoW(0x400, 0x0C, buf, len(buf)):  # LOCALE_USER_DEFAULT, LOCALE_SLIST
+        return buf.value
+    return ","
+
+
+def localize_wildcards(text: str, separator: str) -> str:
+    """{n,m} и {n;m} -> разделитель текущей локали Word; вне [...] и не после '\\' (#56)."""
+    out, i, in_set = [], 0, False
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            out.append(text[i:i + 2])
+            i += 2
+            continue
+        if in_set:
+            in_set = ch != "]"
+        elif ch == "[":
+            in_set = True
+        elif ch == "{":
+            close = text.find("}", i)
+            body = text[i + 1:close] if close > 0 else ""
+            for sep in (",", ";"):
+                low, mid, high = body.partition(sep)
+                if mid and low.isdigit() and (not high or high.isdigit()):
+                    out.append("{" + low + separator + high + "}")
+                    i = close + 1
+                    break
+            else:
+                out.append(ch)
+                i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def wildcard_error(exc, pattern: str, separator: str) -> ToolError | None:
+    """Понятная ошибка вместо COM 0x800A15B8 для неверного шаблона подстановочных знаков."""
+    if not isinstance(exc, pywintypes.com_error) or BAD_WILDCARD not in (com.hresult_of(exc), com.scode_of(exc)):
+        return None
+    return ToolError(f"Word rejected the wildcard pattern {pattern!r} ({com.com_error_text(exc)}). This Word uses "
+                     f"{separator!r} between counts, e.g. [0-9]{{1{separator}2}}; special characters such as ( ) [ ] {{ }} "
+                     "? * @ < > ! must be escaped with a backslash to be found literally.")
 
 
 def escape_find(text: str) -> str:

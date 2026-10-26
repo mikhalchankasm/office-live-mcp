@@ -131,10 +131,11 @@ def _retry(call):
             delay = min(delay * 1.6, 1.0)
 
 
-def _diagnose_attribute_error(o, name: str, exc: AttributeError):
+def _diagnose_attribute_error(o, name: str, exc: AttributeError, again):
     """CDispatch превращает ЛЮБОЙ сбой GetIDsOfNames в AttributeError, в том числе «приложение занято» и «приложение закрыто».
 
     Выясняем настоящую причину: если это занятость — пробрасываем com_error (его повторит _retry), иначе остаётся AttributeError.
+    Если имя теперь находится, первый сбой был временным (Word был занят между вызовами): повторяем again() один раз (#57).
     """
     try:
         o._oleobj_.GetIDsOfNames(0, name)
@@ -143,6 +144,8 @@ def _diagnose_attribute_error(o, name: str, exc: AttributeError):
             raise com_exc from None
     except AttributeError:
         pass
+    else:
+        return again()
     raise exc
 
 
@@ -189,7 +192,7 @@ class Proxy:
             try:
                 return getattr(o, name)
             except AttributeError as exc:
-                _diagnose_attribute_error(o, name, exc)
+                return _diagnose_attribute_error(o, name, exc, lambda: getattr(o, name))
 
         return _wrap(_retry(fetch))
 
@@ -201,7 +204,7 @@ class Proxy:
             try:
                 setattr(o, name, value)
             except AttributeError as exc:
-                _diagnose_attribute_error(o, name, exc)
+                _diagnose_attribute_error(o, name, exc, lambda: setattr(o, name, value))
 
         _retry(store)
 

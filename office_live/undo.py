@@ -1374,8 +1374,11 @@ class Recording:
                     except Exception:  # noqa: BLE001
                         pending.refresh_previous = False
         except Exception as exc:  # noqa: BLE001 — невозможность снимка создаёт барьер, но не ломает инструмент
+            reason = com.com_error_text(exc) if isinstance(exc, pywintypes.com_error) else str(exc)
+            if isinstance(exc, AttributeError) and reason.startswith("<unknown>."):
+                reason = f"Office did not answer the call {reason[10:]} (busy?)"
             for pending in self.pending.values():
-                pending.barrier(f"Could not prepare undo: {exc}")
+                pending.barrier(f"Could not prepare undo: {reason}")
         finally:
             self.preparing = False
 

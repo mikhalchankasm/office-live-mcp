@@ -466,7 +466,7 @@ def word_find(
         query: text to find (literal unless wildcards=true; Word wildcard syntax like 'cat?', '[0-9]{3}').
         document: exact name or '' for the active document.
         match_case, whole_word: matching options.
-        wildcards: interpret query with Word wildcard syntax.
+        wildcards: interpret query with Word wildcard syntax; counts like {1,2} work in any Word language.
         scope: 'main' (body), 'all' (also headers, footers, footnotes, text boxes) or 'selection'.
         max_results: stop collecting after this many hits.
         context_chars: characters of context on each side.
@@ -479,7 +479,7 @@ def word_find(
     if len(query) > 255:
         raise ToolError("Word cannot search for text longer than 255 characters.")
     app, doc = pick_document(document)
-    text = query if wildcards else escape_find(query)
+    text = wd.localize_wildcards(query, wd.list_separator(app)) if wildcards else escape_find(query)
     hits, total = [], 0
     cap = max(1, int(max_results))
     stories = story_ranges(doc, scope)
@@ -526,6 +526,8 @@ def replace_in_doc(doc, find: str, replace: str, match_case=False, whole_word=Fa
     if len(find) > 255:
         raise ToolError("Word cannot search for text longer than 255 characters.")
     ftext = find if (wildcards or special_codes) else escape_find(find)
+    if wildcards:
+        ftext = wd.localize_wildcards(ftext, wd.list_separator(doc.Application))
     rtext = to_word_text(replace)
     if not (wildcards or special_codes):
         rtext = escape_find(rtext)
@@ -609,7 +611,7 @@ def word_replace_text(
         replace: replacement ('' deletes the text). Newlines become paragraph marks.
         document: exact document name (required).
         match_case, whole_word: matching options.
-        wildcards: Word wildcard syntax in `find`; the replacement may then use \\1 \\2 for groups.
+        wildcards: Word wildcard syntax in `find` (counts like {1,2} work in any Word language); the replacement may then use \\1 \\2 for groups.
         special_codes: let '^p' (paragraph), '^t' (tab), '^l' (line break) etc. work in find/replace.
         scope: 'main' (body, default), 'all' (also headers, footers, footnotes, text boxes) or 'selection'.
     """

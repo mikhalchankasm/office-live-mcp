@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.5.1 — 2026-10-26
+
+Word search and undo fixes; a one-command update script.
 
 - `word_captions` and `word_sections` list long documents faster: paragraph numbers come from one sweep over the
   document instead of counting from its start for every caption or section.

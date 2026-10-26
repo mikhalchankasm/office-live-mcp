@@ -35,4 +35,4 @@ def test_transient_lookup_failure_is_retried():
 
 def test_unknown_name_still_raises():
     with pytest.raises(AttributeError, match="StartCustomRecord"):
-        com.Proxy(Flaky(failures=1, known=False)).StartCustomRecord
+        com.Proxy(Flaky(failures=1, known=False)).StartCustomRecord("x")

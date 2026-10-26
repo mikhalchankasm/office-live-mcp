@@ -3,6 +3,7 @@
 import contextlib
 import os
 import re
+import time
 
 import pywintypes
 
@@ -444,6 +445,9 @@ def word_read_document(
     return {"document": doc.Name, "total_paragraphs": n, "from": start, "to": end, "has_more": end < n, "paragraphs": items}
 
 
+FIND_TIME_BUDGET = 60.0  # с; дальше word_find отдаёт частичный результат вместо зависания клиента (#55)
+
+
 @office_tool("word_core", "read", title="Find text")
 def word_find(
     query: str,
@@ -467,6 +471,8 @@ def word_find(
         max_results: stop collecting after this many hits.
         context_chars: characters of context on each side.
         per_match_links: true returns links for individual matching paragraphs (up to 20); default returns one document link.
+
+    A search that runs longer than a minute stops and returns partial=true with the stories searched so far.
     """
     if not query:
         raise ToolError("'query' is empty.")
@@ -476,8 +482,17 @@ def word_find(
     text = query if wildcards else escape_find(query)
     hits, total = [], 0
     cap = max(1, int(max_results))
-    for story in story_ranges(doc, scope):
+    stories = story_ranges(doc, scope)
+    deadline = time.monotonic() + FIND_TIME_BUDGET
+    searched, partial = 0, False
+    for story in stories:
+        if time.monotonic() >= deadline:
+            partial = True
+            break
         for r in find_all(story, text, match_case, whole_word, wildcards, limit=100000):
+            if time.monotonic() >= deadline:
+                partial = True
+                break
             total += 1
             if len(hits) >= cap:
                 continue
@@ -491,7 +506,14 @@ def word_find(
                 c = max(0, int(context_chars))
                 item["context"] = ptxt[max(0, rel - c): rel + (int(r.End) - int(r.Start)) + c]
             hits.append(item)
-    return {"document": doc.Name, "query": query, "total_matches": total, "returned": len(hits), "matches": hits}
+        if partial:
+            break
+        searched += 1
+    result = {"document": doc.Name, "query": query, "total_matches": total, "returned": len(hits), "matches": hits}
+    if partial:
+        result.update(partial=True, stories_searched=searched, stories_total=len(stories),
+                      note=f"Search stopped after {FIND_TIME_BUDGET:.0f} s; counts cover the stories searched so far.")
+    return result
 
 
 # ================================================================== замена и вставка

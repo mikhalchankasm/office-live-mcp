@@ -281,7 +281,7 @@ def story_ranges(doc, scope: str):
 def find_all(rng_story, text: str, match_case=False, whole_word=False, wildcards=False, limit=100000):
     """Генератор найденных диапазонов (копий) в story; текст уже подготовлен (экранирован) вызывающим."""
     rng = rng_story.Duplicate
-    end = int(rng_story.End)
+    start, end = int(rng_story.Start), int(rng_story.End)
     count = 0
     while count < limit:
         f = rng.Find
@@ -291,11 +291,16 @@ def find_all(rng_story, text: str, match_case=False, whole_word=False, wildcards
         if not ok:
             return
         hit_start, hit_end = int(rng.Start), int(rng.End)
+        # Word может вернуть совпадение вне искомого диапазона (колонтитулы, надписи): повторный поиск с той же позиции
+        # находил его снова, и цикл шёл до limit — word_find(scope="all") «висел» 30 минут (#55).
+        if hit_start < start or hit_end > end:
+            return
         yield rng.Duplicate
         count += 1
         if hit_end >= end or hit_end <= hit_start and hit_start >= end:
             return
         nxt = hit_end if hit_end > hit_start else hit_end + 1
+        start = nxt
         rng.SetRange(nxt, end)
 
 

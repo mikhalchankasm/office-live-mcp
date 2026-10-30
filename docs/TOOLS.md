@@ -120,8 +120,8 @@ are unchanged.
 | `word_select` | ui | Move the user's cursor/selection and scroll there, to point at a result. |
 | `word_insert_document` | write | Insert a saved document into a Range without changing Selection. Uses one Word UndoRecord. |
 | `word_create_from_template` | save | Make a new Word document as an exact copy of a sample (.docx/.docm/.dotx/.dotm: styles, headers, footers, tables, placeholders, macros kept) and open it. The sample is never modified. Then use word_fill_placeholders / word_insert_text / word_write_table to put the new content in. |
-| `word_edit_preview` | read | Preview an exact fragment edit in a main-story paragraph without changes, journal or undo. |
-| `word_edit_apply` | write | Apply an agreed exact fragment replacement as tracked changes; restores TrackRevisions even on failure. |
+| `word_edit_preview` | read | Preview an exact fragment edit without changes, journal or undo; `will_track_changes` reflects `track` (default true). |
+| `word_edit_apply` | write | Apply an agreed exact fragment replacement, tracked by default; `track=false` disables tracking for the edit. Restores TrackRevisions even on failure; formatting outside the fragment is untouched. |
 
 ### word_layout (17)
 

@@ -1,4 +1,4 @@
-"""Exact, tracked fragment edits in Word's main story. No LLM, Selection or file writes."""
+"""Exact fragment edits in Word's main story. No LLM, Selection or file writes."""
 
 import hashlib
 import json
@@ -82,7 +82,7 @@ def _limitations(doc, paragraph_range, rng, expected_text, new_text):
     return list(dict.fromkeys(reasons))
 
 
-def _prepare(document, paragraph, expected_text, occurrence, new_text):
+def _prepare(document, paragraph, expected_text, occurrence, new_text, track):
     if config.SETTINGS.strict_target and not document.strip():
         raise ToolError("Document name is required (OFFICE_LIVE_STRICT_TARGET is on).")
     if type(paragraph) is not int or paragraph < 1 or type(occurrence) is not int or occurrence < 1:
@@ -116,13 +116,13 @@ def _prepare(document, paragraph, expected_text, occurrence, new_text):
               "context_after": text[offset + len(expected_text):offset + len(expected_text) + 80],
               "fingerprint": fingerprint, "link": link, "links": [{"label": f"{doc.Name}: paragraph {paragraph}", "uri": link}],
               "formatting": formatting["kind"], "formatting_details": formatting,
-              "limitations": limitations, "will_track_changes": True, "blocked": bool(limitations),
+              "limitations": limitations, "will_track_changes": track, "blocked": bool(limitations),
               "blocked_reason": "; ".join(limitations) or None, "warnings": warnings}
     return app, doc, para, rng, result
 
 
-@office_tool("word_core", "read", title="Preview tracked fragment edit")
-def word_edit_preview(document: str, paragraph: int, expected_text: str, new_text: str, occurrence: int = 1) -> dict:
+@office_tool("word_core", "read", title="Preview fragment edit")
+def word_edit_preview(document: str, paragraph: int, expected_text: str, new_text: str, occurrence: int = 1, track: bool = True) -> dict:
     """Preview an exact fragment edit in a main-story paragraph without changes, journal or undo.
 
     Args:
@@ -131,25 +131,28 @@ def word_edit_preview(document: str, paragraph: int, expected_text: str, new_tex
         expected_text: exact current fragment, case/whitespace sensitive; required, nonempty.
         new_text: proposed text (empty deletes), max 10000 characters, tab and vertical-tab allowed.
         occurrence: 1-based non-overlapping occurrence within this paragraph.
+        track: whether apply should record revisions (default true); reported as will_track_changes.
 
     Return fingerprint to word_edit_apply after user agreement. A preview is not permission to apply.
     Structural objects, existing revisions and partial comment anchors block edits; mixed formatting inherits the first character.
     """
-    return _prepare(document, paragraph, expected_text, occurrence, new_text)[-1]
+    return _prepare(document, paragraph, expected_text, occurrence, new_text, track)[-1]
 
 
-@office_tool("word_core", "write", title="Apply tracked fragment edit")
-def word_edit_apply(document: str, paragraph: int, expected_text: str, new_text: str, occurrence: int = 1, fingerprint: str = "") -> dict:
-    """Apply an agreed exact fragment replacement as tracked changes; restores TrackRevisions even on failure.
+@office_tool("word_core", "write", title="Apply fragment edit")
+def word_edit_apply(document: str, paragraph: int, expected_text: str, new_text: str, occurrence: int = 1, fingerprint: str = "", track: bool = True) -> dict:
+    """Apply an agreed exact fragment replacement, tracked by default; restores TrackRevisions even on failure.
 
     Args:
         document, paragraph, expected_text, new_text, occurrence: same target/text as word_edit_preview.
         fingerprint: pass the preview fingerprint to reject stale paragraphs/shifted occurrences before writing.
+        track: true records revisions; false temporarily disables tracking for this edit.
 
     Uses one office_undo record; no Accept/Reject, saving, Selection or window changes. New text inherits the first
-    character's font and paragraph style/numbering; mixed inline formatting is lost. Re-read after a stale target error.
+    character's font and paragraph style/numbering; mixed formatting inside the fragment is lost, formatting outside
+    it is untouched. Re-read after a stale target error.
     """
-    app, doc, para, rng, result = _prepare(document, paragraph, expected_text, occurrence, new_text)
+    app, doc, para, rng, result = _prepare(document, paragraph, expected_text, occurrence, new_text, track)
     if fingerprint and fingerprint != result["fingerprint"]:
         raise ToolError(STALE)
     if result["blocked"]:
@@ -160,14 +163,14 @@ def word_edit_apply(document: str, paragraph: int, expected_text: str, new_text:
     undo.require_undo("document", app, doc)
     try:
         try:
-            doc.TrackRevisions = True
+            doc.TrackRevisions = track
             # Range.Text inherits the first character's formatting; re-applying Font here would also format the
             # tracked deletion and add formatting revisions.
             rng.Text = new_text
         finally:
             doc.TrackRevisions = old_tracking
     except pywintypes.com_error as exc:
-        raise PartialChangeError(f"Tracked fragment edit interrupted; {com.translate(exc)}") from None
+        raise PartialChangeError(f"Fragment edit interrupted; {com.translate(exc)}") from None
     try:
         after = doc.Paragraphs(paragraph).Range
         for changed, warning in ((_style_name(after) != old_style, "Стиль абзаца изменился."),
@@ -180,5 +183,5 @@ def word_edit_apply(document: str, paragraph: int, expected_text: str, new_text:
                       location=wd.range_location(doc, rng, paragraph), link=wd.range_link(doc, paragraph, rng))
         result["links"][0]["uri"] = result["link"]
     except pywintypes.com_error as exc:
-        raise PartialChangeError(f"Tracked edit completed but read-back failed; {com.translate(exc)}") from None
+        raise PartialChangeError(f"Fragment edit completed but read-back failed; {com.translate(exc)}") from None
     return result

@@ -25,13 +25,15 @@ def history(o):
     return undo.STACKS.get(undo.stack_key("document", o.word, o.doc), [])
 
 
-def test_preview_readonly_and_no_side_effects(o, monkeypatch):
+@pytest.mark.parametrize("track", [False, True])
+def test_preview_readonly_and_no_side_effects(o, monkeypatch, track):
     before = o.doc.Content.Text
     monkeypatch.setattr(config, "SETTINGS", replace(config.SETTINGS, audit_log=o.tmp / "audit.jsonl"))
     monkeypatch.setattr(registry, "_audit_write", lambda *a, **k: pytest.fail("preview audit"))
     monkeypatch.setattr(journal, "append", lambda *a, **k: pytest.fail("preview journal"))
     monkeypatch.setattr(undo, "require_undo", lambda *a, **k: pytest.fail("preview undo"))
-    result = call(o)
+    result = call(o, track=track)
+    assert result["will_track_changes"] is track
     assert result["original"] == "target" and result["location"]["start"] == 7
     assert result["context_before"] == "before " and result["context_after"] == " after"
     assert result["formatting"] == "uniform" and not result["blocked"]
@@ -47,8 +49,9 @@ def test_preview_readonly_and_no_side_effects(o, monkeypatch):
 
 
 @pytest.mark.parametrize("shift", ["missing", "paragraph", "occurrence", "fingerprint"])
-def test_stale_before_undo_and_write(o, shift):
-    result = call(o)
+@pytest.mark.parametrize("track", [False, True])
+def test_stale_before_undo_and_write(o, shift, track):
+    result = call(o, track=track)
     if shift == "missing":
         o.doc.Content.Text = "before gone after\rnext\r"
     elif shift == "paragraph":
@@ -58,17 +61,18 @@ def test_stale_before_undo_and_write(o, shift):
     refresh(o.doc)
     before = o.doc.Content.Text
     with pytest.raises(ToolError, match="изменился после предпросмотра"):
-        call(o, "word_edit_apply", fingerprint="bad" if shift == "fingerprint" else result["fingerprint"])
+        call(o, "word_edit_apply", track=track, fingerprint="bad" if shift == "fingerprint" else result["fingerprint"])
     assert o.doc.Content.Text == before and not history(o) and not o.word.starts
 
 
 @pytest.mark.parametrize("member", ["Fields", "Footnotes", "Endnotes", "Hyperlinks", "ContentControls", "InlineShapes", "Revisions"])
-def test_structural_collections_block(o, member):
+@pytest.mark.parametrize("track", [False, True])
+def test_structural_collections_block(o, member, track):
     o.doc.range_objects[member] = [NS(Code=NS(Start=8, StoryType=1), Result=NS(End=12))] if member == "Fields" else [NS()]
     refresh(o.doc)
-    assert call(o)["blocked"]
+    assert call(o, track=track)["blocked"]
     with pytest.raises(ToolError, match=member):
-        call(o, "word_edit_apply")
+        call(o, "word_edit_apply", track=track)
     assert not o.word.starts and not o.doc.calls
 
 
@@ -120,20 +124,27 @@ def test_new_text_limits(o, text):
 
 @pytest.mark.parametrize("track", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
-def test_apply_track_restore_error_undo_and_journal(o, track, fail):
+@pytest.mark.parametrize("requested_track", [None, False, True])
+def test_edit_apply_track_restore_error_undo_and_journal(o, track, fail, requested_track):
     before = o.doc.Content.Text
     o.doc.TrackRevisions = track
     o.doc.fail = "edit" if fail else ""
-    preview = call(o)
+    options = {} if requested_track is None else {"track": requested_track}
+    will_track = requested_track is not False
+    preview = call(o, **options)
+    assert preview["will_track_changes"] is will_track
     if fail:
         with pytest.raises(ToolError, match="office_undo will restore"):
-            call(o, "word_edit_apply", fingerprint=preview["fingerprint"])
+            call(o, "word_edit_apply", fingerprint=preview["fingerprint"], **options)
     else:
-        result = call(o, "word_edit_apply", fingerprint=preview["fingerprint"])
-        assert result["undo"] == "available" and result["revisions_added"] == 1
+        result = call(o, "word_edit_apply", fingerprint=preview["fingerprint"], **options)
+        assert result["undo"] == "available" and result["revisions_added"] == int(will_track)
+        assert result["will_track_changes"] is will_track
         assert not result["warnings"]
+    assert o.doc.Revisions.Count == int(will_track)
     assert o.doc.TrackRevisions == track
-    assert o.doc.calls[-1][-1] is True and len(o.word.starts) == o.word.ends == 1
+    assert o.doc.calls[-1] == ("edit", 7, 13, "replacement", will_track)
+    assert len(o.word.starts) == o.word.ends == 1
     log = journal.journal_path(o.doc.Name).read_text(encoding="utf-8")
     assert "word_edit_apply" in log and "target" in log and "replacement" in log
     o.call("office_undo", file=o.doc.Name)

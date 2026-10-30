@@ -74,6 +74,10 @@ For installations managed by setup.exe, prefer setup.exe for future updates.
 | Bridges | Word table → Excel (numbers stay numbers, `007` stays text), Excel range/chart → Word, mail merge Excel → Word/PDF with a read-only plan, inspect a file without opening it |
 | History | per-document change journal, optional `Лог` log sheet in Excel, `office_undo` for the agent's changes |
 
+`word_edit_preview` and `word_edit_apply` accept `track` (default true). Set `track=false` in both calls to apply
+an agreed fragment edit without revisions; preview reports `will_track_changes`. Formatting outside the fragment
+is untouched, tracking is restored even on failure, and `office_undo` remains available.
+
 ### Reproducible examples
 
 [Register → Word/PDF](examples/register-to-acts.md) · [Comments → tracked edits](examples/comments-to-tracked-edits.md) · [Compare registers](examples/compare-registers.md) · [Range → report table](examples/range-to-report-table.md)

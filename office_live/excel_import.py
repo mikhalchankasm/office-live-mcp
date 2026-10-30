@@ -121,7 +121,7 @@ def _neutralize(rows, literal, text_columns):
 
 def _compact_import_result(result):
     """Лимит включает добавленные обёрткой undo и ссылки; данные на листе не обрезаются."""
-    from .excel_core import _runs
+    from .excel_sheets import _runs
 
     if "sample" not in result:
         return
@@ -168,7 +168,8 @@ def excel_import_table(
     Reply includes shape, detected encoding/delimiter, 1-based text columns (compact a-b runs if needed)
     and up to three source rows (2 KB).
     """
-    from .excel_core import _apply_dimension_targets, _dimension_targets, _write_values
+    from .excel_sheets import _apply_dimension_targets, _dimension_targets
+    from .excel_core import _write_values
     from .excel_format import _freeze_panes, _prepare_format
 
     validate_sheet_name(sheet)

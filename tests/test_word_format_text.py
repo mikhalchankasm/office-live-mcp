@@ -4,7 +4,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
-from office_live import undo, word_core as core
+from office_live import undo, word_format as core
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, fake_office  # noqa: F401
 

@@ -7,6 +7,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from office_live import undo_excel
 from office_live import com, undo
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, fake_office  # noqa: F401
@@ -56,12 +57,12 @@ def test_mixed_format_property_is_restored_per_cell(office):
 @pytest.mark.parametrize("options", [{"font_color": "red"}, {"fill_color": "yellow"}, {"borders": "all"}])
 def test_color_and_border_undo_preserves_later_user_content(office, options):
     o = office
-    original = undo._format_state(o.ws.Range("A1"))
+    original = undo_excel._format_state(o.ws.Range("A1"))
     result = o.call("excel_format_range", workbook=o.wb.Name, sheet="Data", cells="A1", **options)
     assert result["undo"] == "available"
     o.ws.Range("A1").Value = "later user text"
     o.call("office_undo", file=o.wb.Name)
-    assert o.ws.Range("A1").Value == "later user text" and undo._format_state(o.ws.Range("A1")) == original
+    assert o.ws.Range("A1").Value == "later user text" and undo_excel._format_state(o.ws.Range("A1")) == original
 
 
 def test_full_copy_undo_checks_named_style_even_when_looks_are_unchanged(office):
@@ -94,7 +95,7 @@ def test_full_snapshot_checks_changed_comment_and_validation(office, monkeypatch
 
     monkeypatch.setattr(Range, "SpecialCells", special)
     monkeypatch.setattr(o.excel, "Intersect", lambda rng, selected: selected, raising=False)
-    entry = undo.Entry("excel_copy_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1"}])
+    entry = undo_excel.Entry("excel_copy_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1"}])
     setattr(value, attribute, old)
     before = undo.excel_fingerprint(o.excel, o.wb, entry)
     setattr(value, attribute, new)
@@ -109,15 +110,15 @@ def test_single_cell_metadata_scan_intersects_before_enumeration(office, monkeyp
     monkeypatch.setattr(Range, "SpecialCells", lambda rng, kind: outside)
     calls = []
     monkeypatch.setattr(o.excel, "Intersect", lambda rng, selected: calls.append(selected), raising=False)
-    assert undo._metadata_state(o.ws.Range("A1"), "validation") == []
+    assert undo_excel._metadata_state(o.ws.Range("A1"), "validation") == []
     assert calls == [outside]
 
 
 @pytest.mark.parametrize("axis,property_name", [("Columns", "ColumnWidth"), ("Rows", "RowHeight")])
 def test_captured_dimensions_participate_in_range_fingerprint(office, axis, property_name):
     o = office
-    entry = undo.Entry("excel_delete_rows_columns", "", "workbook")
-    com.run_com(lambda: undo._snapshots(o.excel, o.wb, entry, [o.ws.Range("A1")], columns=axis == "Columns", rows=axis == "Rows"))
+    entry = undo_excel.Entry("excel_delete_rows_columns", "", "workbook")
+    com.run_com(lambda: undo_excel._snapshots(o.excel, o.wb, entry, [o.ws.Range("A1")], columns=axis == "Columns", rows=axis == "Rows"))
     before = undo.excel_fingerprint(o.excel, o.wb, entry)
     setattr(getattr(o.ws, axis)(1), property_name, 42)
     assert undo.excel_fingerprint(o.excel, o.wb, entry) != before
@@ -127,16 +128,16 @@ def test_captured_dimensions_participate_in_range_fingerprint(office, axis, prop
 def test_full_line_copy_snapshots_only_dimensions_it_can_change(office, address, widths, heights):
     o = office
     o.ws.Rows.Count, o.ws.Columns.Count = 8, 6
-    entry = undo.Entry("excel_copy_range", "", "workbook")
-    com.run_com(lambda: undo._snapshots(o.excel, o.wb, entry, [o.ws.Range(address)]))
+    entry = undo_excel.Entry("excel_copy_range", "", "workbook")
+    com.run_com(lambda: undo_excel._snapshots(o.excel, o.wb, entry, [o.ws.Range(address)]))
     assert len(entry.ops[0]["widths"]) == widths and len(entry.ops[0]["heights"]) == heights
 
 
 @pytest.mark.parametrize("kind", ["rows", "columns", "both"])
 def test_autofit_dimensions_are_fingerprinted(office, monkeypatch, kind):
     o = office
-    entry = undo.Entry("excel_set_dimensions", "", "workbook")
-    undo._dimensions_plan(o.excel, o.wb, entry, {"sheet": "Data", "cells": "A1:B2", "autofit": kind})
+    entry = undo_excel.Entry("excel_set_dimensions", "", "workbook")
+    undo_excel._dimensions_plan(o.excel, o.wb, entry, {"sheet": "Data", "cells": "A1:B2", "autofit": kind})
     before = undo.excel_fingerprint(o.excel, o.wb, entry)
     if kind == "columns":
         o.ws.Columns(1).ColumnWidth = 30
@@ -176,7 +177,7 @@ def test_created_sheet_user_changes_block_undo(office, creator, change):
 
 def foreign_backup(o, pid, session=None):
     wb = o.excel.Workbooks.Add()
-    wb.Names.Add(undo.MARKER, f'="{pid}:{session or uuid.uuid4().hex}:{uuid.uuid4().hex}"', False)
+    wb.Names.Add(undo_excel.MARKER, f'="{pid}:{session or uuid.uuid4().hex}:{uuid.uuid4().hex}"', False)
     wb.Windows(1).Visible = False
     o.wb.Activate()
     return wb
@@ -187,7 +188,7 @@ def test_backup_reuses_only_this_process_session_and_closes_dead_owners(office, 
     dead = [foreign_backup(o, 100 + i) for i in range(2)]
     live = foreign_backup(o, 200)
     same_pid = foreign_backup(o, os.getpid())  # иной session UUID, даже при совпадении PID
-    monkeypatch.setattr(undo, "_process_alive", lambda pid: pid not in {100, 101})
+    monkeypatch.setattr(undo_excel, "_process_alive", lambda pid: pid not in {100, 101})
     calls = []
     for wb in dead:
         original = wb.Close
@@ -198,11 +199,11 @@ def test_backup_reuses_only_this_process_session_and_closes_dead_owners(office, 
             original(save)
 
         monkeypatch.setattr(wb, "Close", close)
-    owned = com.run_com(lambda: undo._backup(o.excel))
+    owned = com.run_com(lambda: undo_excel._backup(o.excel))
     assert all(wb not in o.excel.Workbooks.items for wb in dead) and calls == [False, False]
     assert live in o.excel.Workbooks.items and same_pid in o.excel.Workbooks.items
-    assert str(os.getpid()) + ":" + undo.SESSION in owned.Names(undo.MARKER).RefersTo
-    assert com.run_com(lambda: undo._backup(o.excel)) is owned
+    assert str(os.getpid()) + ":" + undo_excel.SESSION in owned.Names(undo_excel.MARKER).RefersTo
+    assert com.run_com(lambda: undo_excel._backup(o.excel)) is owned
     assert o.excel.DisplayAlerts and o.excel.EnableEvents and o.excel.ActiveWorkbook is o.wb
 
 
@@ -210,10 +211,10 @@ def test_restarted_session_never_reuses_old_entry_backup(office, monkeypatch):
     o = office
     o.call("excel_write_range", workbook=o.wb.Name, sheet="Data", cells="A1", values=1)
     old = o.excel.Workbooks(2)
-    old.Names(undo.MARKER).RefersTo = '="101:' + uuid.uuid4().hex + ':' + uuid.uuid4().hex + '"'
+    old.Names(undo_excel.MARKER).RefersTo = '="101:' + uuid.uuid4().hex + ':' + uuid.uuid4().hex + '"'
     entry = undo.STACKS[undo.stack_key("workbook", o.excel, o.wb)][-1]
-    entry.backup_token = old.Names(undo.MARKER).RefersTo
-    monkeypatch.setattr(undo, "_process_alive", lambda pid: False)
+    entry.backup_token = old.Names(undo_excel.MARKER).RefersTo
+    monkeypatch.setattr(undo_excel, "_process_alive", lambda pid: False)
     history = o.call("office_undo", file=o.wb.Name, action="history")["history"]
     assert old not in o.excel.Workbooks.items and not history[0]["undoable"]
     with pytest.raises(ToolError, match="closed"):
@@ -223,10 +224,10 @@ def test_restarted_session_never_reuses_old_entry_backup(office, monkeypatch):
 def test_dead_backup_close_failure_restores_alerts_and_events(office, monkeypatch):
     o = office
     old = foreign_backup(o, 101)
-    monkeypatch.setattr(undo, "_process_alive", lambda pid: False)
+    monkeypatch.setattr(undo_excel, "_process_alive", lambda pid: False)
     monkeypatch.setattr(old, "Close", lambda save: (_ for _ in ()).throw(ValueError("close failed")))
     with pytest.raises(ToolError, match="close failed"):
-        com.run_com(lambda: undo._backup(o.excel))
+        com.run_com(lambda: undo_excel._backup(o.excel))
     assert o.excel.DisplayAlerts and o.excel.EnableEvents
 
 
@@ -253,5 +254,5 @@ def test_windows_liveness_uses_query_api_and_closes_handle(monkeypatch, handle, 
     monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: error)
     monkeypatch.setattr(os, "kill", lambda *a: pytest.fail("os.kill must never be used"))
-    assert undo._process_alive(123) is expected
+    assert undo_excel._process_alive(123) is expected
     assert calls == ([handle] if handle else [])

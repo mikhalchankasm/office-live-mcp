@@ -10,6 +10,7 @@ from types import SimpleNamespace as NS
 import pytest
 import pywintypes
 
+from office_live import excel_cf, excel_charts
 from office_live import excel_analysis, excel_pivot, word_core
 from office_live.errors import ToolError
 
@@ -107,11 +108,10 @@ def chart_book(monkeypatch, *, fail=False, auto_bind="Спецификация")
     ws.PivotTables = lambda: type("Pivots", (), {"Count": 2, "__call__": lambda self, j: pivots[j - 1]})()
     wb = NS(Name="Book.xlsx", Worksheets=type("Sheets", (), {"Count": 1, "__call__": lambda self, i: ws})(), Activate=lambda: None)
     app = NS(ActiveWorkbook=wb, ActiveSheet=ws, Selection=NS(Address="$A$3"))
-    monkeypatch.setattr(excel_analysis, "pick_workbook", lambda name: (app, wb))
-    monkeypatch.setattr(excel_analysis, "_style_chart", lambda *args: None)
-    from office_live import excel_format
+    monkeypatch.setattr(excel_charts, "pick_workbook", lambda name: (app, wb))
+    monkeypatch.setattr(excel_charts, "_style_chart", lambda *args: None)
 
-    monkeypatch.setattr(excel_format, "_restore_view", lambda app, state: log.append("restore view"))
+    monkeypatch.setattr(excel_cf, "_restore_view", lambda app, state: log.append("restore view"))
     return log
 
 

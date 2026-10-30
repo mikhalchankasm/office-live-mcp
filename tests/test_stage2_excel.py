@@ -8,6 +8,7 @@ from types import SimpleNamespace as NS
 import pytest
 import pywintypes
 
+from office_live import undo_excel
 from office_live import config, excel_core, excel_format, formula_trace, journal, registry, undo
 from office_live.errors import AppBusyError, ToolError
 from office_live.util import DATE_FORMATS, excel_date_serial
@@ -83,6 +84,7 @@ def test_split_input_refusals_before_snapshot(office, monkeypatch, args, message
     o.ws.Range("A1:A2").Value = "a|b|c"
     before = copy.deepcopy(o.ws.data)
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("preflight first"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("preflight first"))
     with pytest.raises(ToolError, match=message):
         o.call("excel_split_column", **{"workbook": o.wb.Name, "sheet": "Data", "cells": "A1:A2", "delimiter": "pipe", "preview": False, **args})
     assert o.ws.data == before and not history(o)
@@ -115,6 +117,7 @@ def test_split_state_refusals(office, monkeypatch, problem):
         o.wb.AutoSaveOn = True
     before = copy.deepcopy(o.ws.data)
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("preflight first"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("preflight first"))
     with pytest.raises(ToolError):
         split(o, preview=False)
     assert o.ws.data == before and not history(o)
@@ -141,6 +144,7 @@ def test_split_snapshot_failure_and_partial_failure(office, monkeypatch):
     o.ws.Range("A1:A2").Value = "a|12"
     with monkeypatch.context() as patch:
         patch.setattr(undo, "_snapshots", lambda *a, **kw: (_ for _ in ()).throw(ValueError("snapshot failed")))
+        patch.setattr(undo_excel, "_snapshots", lambda *a, **kw: (_ for _ in ()).throw(ValueError("snapshot failed")))
         with pytest.raises(ToolError, match="prepare office_undo"):
             split(o, preview=False)
     assign = Range._assign
@@ -194,6 +198,7 @@ def test_dates_preview_write_format_undo_and_skips(office, date1904):
                                   {"operations": ["trim"]}])
 def test_date_argument_refusals(office, monkeypatch, args):
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("preflight first"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("preflight first"))
     with pytest.raises(ToolError):
         dates(office, preview=False, **args)
 

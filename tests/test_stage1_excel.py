@@ -6,6 +6,7 @@ from dataclasses import replace
 import pytest
 import pywintypes
 
+from office_live import undo_excel
 from office_live import config, excel_analysis, excel_core, registry, undo
 from office_live.errors import AppBusyError, ToolError
 from office_live.util import EXCEL_ERRORS
@@ -156,6 +157,7 @@ def test_new_excel_tools_reject_multi_area_before_read_or_snapshot(office, monke
 
     monkeypatch.setattr(Range, "__init__", multiple)
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("must validate first"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("must validate first"))
     with pytest.raises(ToolError, match="Multi-area"):
         compare(office) if tool == "compare" else clean(office, preview=False)
 
@@ -188,6 +190,7 @@ def test_clean_preview_has_no_journal_audit_events_or_snapshot(office, monkeypat
     monkeypatch.setattr(journal, "append_sheet", lambda *a, **kw: pytest.fail("preview sheet"))
     monkeypatch.setattr(registry, "_audit", lambda *a, **kw: pytest.fail("preview audit"))
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("preview snapshot"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("preview snapshot"))
     assert clean(o)["preview"] is True
     assert o.excel.EnableEvents and not history(o)
 
@@ -226,6 +229,7 @@ def test_clean_expanded_unicode_too_long_refuses_before_snapshot(office, monkeyp
     o = office
     o.ws.Range("A1").Value = "ß" * 20000
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("must validate first"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("must validate first"))
     with pytest.raises(ToolError, match="32767"):
         clean(o, operations=["upper"], preview=False)
     assert o.ws.Range("A1").Value == "ß" * 20000
@@ -304,6 +308,7 @@ def test_clean_merged_anchor_and_followers(office):
 ])
 def test_clean_input_refusals_no_snapshot(office, monkeypatch, args, message):
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: pytest.fail("must validate first"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: pytest.fail("must validate first"))
     with pytest.raises(ToolError, match=message):
         clean(office, preview=False, **args)
     assert not history(office)
@@ -327,6 +332,7 @@ def test_clean_state_refusals_leave_data_and_prior_history(office, monkeypatch, 
         monkeypatch.setattr(config, "SETTINGS", replace(config.SETTINGS, undo_max_cells=1))
     else:
         monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: (_ for _ in ()).throw(ValueError("snapshot failed")))
+        monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: (_ for _ in ()).throw(ValueError("snapshot failed")))
     with pytest.raises(ToolError, match=message):
         clean(o, preview=False)
     assert o.ws.Range("A1").Value == " x " and not history(o)
@@ -361,7 +367,7 @@ def test_clean_busy_readback_keeps_snapshot_for_explicit_force(office, monkeypat
     o.ws.Range("A1:A3").Value = ((" a ",), ("=1",), (" b ",))
     before = dict(o.ws.data)
     busy = False
-    assign, matches, fingerprint, finish = Range._assign, excel_core._clean_matches, undo.excel_fingerprint, undo._finish_excel
+    assign, matches, fingerprint, finish = Range._assign, excel_core._clean_matches, undo.excel_fingerprint, undo_excel._finish_excel
 
     def fail(self, value, formula=False):
         nonlocal busy

@@ -7,6 +7,7 @@ from dataclasses import replace
 
 import pytest
 
+from office_live import excel_sheets, undo_excel
 from office_live import com, config, journal, undo
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, Section, fake_office  # noqa: F401 — фикстура office
@@ -56,11 +57,11 @@ def test_replace_does_not_snapshot_other_sheets_or_log(office):
     other.Name = "Other"
     other.Range("A1").Value = "untouched"
     o.ws.Activate()
-    entry = undo.Entry("excel_replace", "", "workbook")
-    com.run_com(lambda: undo._replace(o.excel, o.wb, entry, {"sheet": "", "cells": ""}))
+    entry = undo_excel.Entry("excel_replace", "", "workbook")
+    com.run_com(lambda: undo_excel._replace(o.excel, o.wb, entry, {"sheet": "", "cells": ""}))
     assert entry.areas == [{"sheet": "Data", "address": "A1"}]
     other.Range("A1").Value = "user edit"
-    com.run_com(lambda: undo.restore_excel(o.excel, o.wb, entry))
+    com.run_com(lambda: undo_excel.restore_excel(o.excel, o.wb, entry))
     assert other.Range("A1").Value == "user edit"
 
 
@@ -285,7 +286,7 @@ def set_format(rng, prop, value):
 @pytest.mark.parametrize("prop,value", FORMAT_CHANGES)
 def test_excel_format_edit_blocks_full_copy_undo_and_force_restores_it(office, prop, value):
     o = office
-    original = undo._format_state(o.ws.Range("A1:B2"))
+    original = undo_excel._format_state(o.ws.Range("A1:B2"))
     o.ws.Range("D1:E2").Value = 1
     o.call("excel_copy_range", workbook=o.wb.Name, sheet="Data", source="D1:E2", dest_cell="A1")
     set_format(o.ws.Range("A1"), prop, value)
@@ -293,7 +294,7 @@ def test_excel_format_edit_blocks_full_copy_undo_and_force_restores_it(office, p
         o.call("office_undo", file=o.wb.Name)
     assert o.ws.Range("A1").Value == 1
     o.call("office_undo", file=o.wb.Name, force=True)
-    assert undo._format_state(o.ws.Range("A1:B2")) == original
+    assert undo_excel._format_state(o.ws.Range("A1:B2")) == original
 
 
 def test_excel_format_signature_reads_each_whole_range_property_once(office, monkeypatch):
@@ -310,7 +311,7 @@ def test_excel_format_signature_reads_each_whole_range_property_once(office, mon
 
         monkeypatch.setattr(Range, member, property(counted))
     o = office
-    entry = undo.Entry("excel_write_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1:B2"}])
+    entry = undo_excel.Entry("excel_write_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1:B2"}])
     o.ws.format_reads.clear()
     undo.excel_fingerprint(o.excel, o.wb, entry)
     assert Counter(o.ws.format_reads) == Counter({("A1:B2", prop): 1 for prop in RangeFormat.defaults})
@@ -320,7 +321,7 @@ def test_excel_format_signature_reads_each_whole_range_property_once(office, mon
 def test_excel_already_mixed_format_signature_has_documented_limit(office):
     o = office
     o.ws.Range("A1").Font.Bold = True
-    entry = undo.Entry("excel_write_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1:C1"}])
+    entry = undo_excel.Entry("excel_write_range", "", "workbook", areas=[{"sheet": "Data", "address": "A1:C1"}])
     assert o.ws.Range("A1:C1").Font.Bold is None
     before = undo.excel_fingerprint(o.excel, o.wb, entry)
     o.ws.Range("B1").Font.Bold = True
@@ -333,9 +334,9 @@ def test_full_line_dimensions_skip_orthogonal_axis_using_sheet_counts(office, mo
     o = office
     # Нестандартный размер листа ловит жёстко заданные 16384/1048576. У пропускаемой оси нет Item.
     monkeypatch.setattr(o.ws, axis, NS(Count=6 if axis == "Columns" else 8))
-    dimensions = undo._dimensions(o.ws.Range(address))
+    dimensions = undo_excel._dimensions(o.ws.Range(address))
     assert dimensions[skipped] == [] and len(dimensions[kept]) == 1
-    undo._restore_dimensions(o.ws, dimensions)  # пропускаемая ось также не восстанавливается
+    undo_excel._restore_dimensions(o.ws, dimensions)  # пропускаемая ось также не восстанавливается
 
 
 def test_explicit_dimensions_still_capture_full_axis(office):
@@ -350,12 +351,11 @@ def test_explicit_dimensions_still_capture_full_axis(office):
 @pytest.mark.parametrize("axis,address", [("rows", "2:2"), ("columns", "B:B")])
 def test_deleted_lines_warn_about_unrestored_dependencies(office, monkeypatch, axis, address):
     from tests.history_fakes import Range
-    from office_live import excel_core
 
     o = office
     # Маленький лист позволяет проверить удаление столбца, не обходя лимит ячеек и не выделяя миллион ячеек.
     o.ws.Rows.Count, o.ws.Columns.Count = 8, 6
-    monkeypatch.setattr(excel_core, "_rows_cols_range", lambda ws, axis, start, count: Range(ws, "A2:F2" if axis == "rows" else "B1:B8"))
+    monkeypatch.setattr(excel_sheets, "_rows_cols_range", lambda ws, axis, start, count: Range(ws, "A2:F2" if axis == "rows" else "B1:B8"))
     o.ws.Range("B2").Value = "007"
     other = o.wb.Sheets.Add(None, o.ws)
     other.Range("A1").Formula = "=Data!B2"
@@ -464,7 +464,7 @@ def test_screen_updating_is_restored_even_if_hiding_the_backup_window_fails():
     backup = NS(Application=app, Windows=lambda i: win)
     win = Win()
     with pytest.raises(RuntimeError, match="cannot hide"):
-        with undo._shown(backup):
+        with undo_excel._shown(backup):
             assert app.ScreenUpdating is False
     assert app.ScreenUpdating is True
 

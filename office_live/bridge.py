@@ -412,7 +412,7 @@ def bridge_excel_chart_to_word(
         paragraph: paragraph number for the *_paragraph positions.
         width_cm: picture width. caption: optional caption. alignment: left|center|right.
     """
-    from .excel_analysis import _find_chart
+    from .excel_charts import _find_chart
 
     app, wb = pick_workbook(workbook)
     ws, co = _find_chart(wb, chart_name, sheet)

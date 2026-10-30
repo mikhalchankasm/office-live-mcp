@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 import pywintypes
 
+from office_live import undo_excel
 from office_live import com, config, safety, vba
 from office_live.errors import AppBusyError, ToolError
 from tests.history_fakes import fake_office  # noqa: F401
@@ -113,6 +114,7 @@ def test_import_refuses_before_changes(import_office, monkeypatch, problem):
         args["text_columns"] = ["missing"]
     elif problem == "snapshot":
         monkeypatch.setattr(undo, "_snapshots", lambda *a, **k: (_ for _ in ()).throw(ValueError("snapshot failed")))
+        monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **k: (_ for _ in ()).throw(ValueError("snapshot failed")))
     else:
         o.wb.ProtectStructure = True
         args["sheet"] = "New"

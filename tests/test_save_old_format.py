@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 import pywintypes
 
-from office_live import excel_core as core
+from office_live import excel_workbooks as core
 from office_live.errors import ToolError
 
 

@@ -277,7 +277,9 @@ def word_open_document(path: str, read_only: bool = False) -> dict:
 
 @office_tool("word_core", "destructive", title="Reload document")
 def word_reload_document(document: str, discard_changes: bool = False) -> dict:
-    """Re-read an open document from disk after an external edit. Refuses unsaved changes unless discard_changes=true.
+    """Revert an open document to its saved file on disk. Refuses unsaved changes unless discard_changes=true.
+
+    Word locks an open file, so other programs cannot overwrite it until it is closed; this drops in-memory changes.
 
     Closes without saving and reopens in the same Word instance, preserving read-only mode and window placement.
     This is an undo barrier: history for the old document instance is dropped. Allowed folders and AutoSave guards apply.

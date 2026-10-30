@@ -3,7 +3,6 @@
 from pathlib import Path
 
 import pytest
-from docx import Document
 
 from tests.live.mcpclient import ToolFailed
 from tests.live.office_cleanup import DialogWatch
@@ -29,21 +28,22 @@ def placement(path):
 
 
 @pytest.mark.parametrize("read_only", [False, True])
-def test_probe_reload_external_python_docx_edit(srv, reload_doc, read_only):
+def test_probe_reload_reverts_to_saved_file(srv, reload_doc, read_only):
+    # Word locks an open file against writes and replacement (seen live on 2026-10-30), so the reload is checked as a
+    # revert to the saved file, keeping read-only mode and window placement.
     path = reload_doc
     if read_only:
         srv.call("word_close_document", document=path)
         srv.call("word_open_document", path=path, read_only=True)
     before = placement(path)
-    external = Document(path)
-    external.paragraphs[0].text = "External python-docx text"
-    external.save(path)
+    in_word(path, lambda d: d.Content.InsertAfter("Unsaved in-memory text"))
     with DialogWatch() as dialogs:
-        result = srv.call("word_reload_document", document=path)
+        result = srv.call("word_reload_document", document=path, discard_changes=True)
     assert not dialogs.seen, dialogs.seen
     assert result["path"] == path and result["read_only"] == read_only and result["links"]
     assert "history" in result["undo"]
-    assert "External python-docx text" in srv.call("word_read_document", document=path)["text"]
+    text = srv.call("word_read_document", document=path)["text"]
+    assert "Original disk text" in text and "Unsaved in-memory text" not in text
     assert placement(path) == pytest.approx(before)
 
 

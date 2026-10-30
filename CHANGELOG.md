@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- `word_edit_preview` and `word_edit_apply` accept `track=false` for fragment edits without revisions, preserving
+  formatting outside the fragment and restoring the prior tracking setting even on failure.
+
 ## 0.5.1 — 2026-10-26
 
 Word search and undo fixes; a one-command update script.

@@ -41,6 +41,42 @@ def test_probe_tracked_fragment_style_numbering_selection_and_undo(srv, review_d
     assert word_state(path)[0] == fingerprint
 
 
+@pytest.mark.parametrize("prior_tracking", [False, True])
+def test_probe_edit_apply_untracked_mixed_formatting_and_undo(srv, review_doc, prior_tracking):
+    path = review_doc
+
+    def prepare(doc):
+        doc.TrackRevisions = False
+        doc.Range(0, 7).Font.Bold = True
+        doc.Range(13, 19).Font.Italic = True
+        doc.TrackRevisions = prior_tracking
+
+    def state(doc):
+        text = str(doc.Paragraphs(1).Range.Text)
+        # Compare every character outside the replaced fragment, including the shifted suffix.
+        suffix = text.index(" after")
+        fonts = [(int(doc.Range(i, i + 1).Font.Bold), int(doc.Range(i, i + 1).Font.Italic))
+                 for i in [*range(7), *range(suffix, suffix + 6)]]
+        return text, bool(doc.TrackRevisions), int(doc.Revisions.Count), fonts
+
+    in_word(path, prepare)
+    before = in_word(path, state)
+    assert before[1:3] == (prior_tracking, 0)
+    assert all(bold for bold, _ in before[3][:7])
+    assert all(italic for _, italic in before[3][7:])
+    args = {"document": path, "paragraph": 1, "expected_text": "target", "new_text": "replacement", "track": False}
+    preview = srv.call("word_edit_preview", **args)
+    assert not preview["blocked"] and preview["will_track_changes"] is False
+    assert in_word(path, state) == before
+    result = srv.call("word_edit_apply", **args, fingerprint=preview["fingerprint"])
+    assert result["revisions_added"] == 0 and result["undo"] == "available"
+    after = in_word(path, state)
+    assert after[0] == before[0].replace("target", "replacement", 1)
+    assert after[1:] == before[1:]
+    srv.call("office_undo", file=path)
+    assert in_word(path, state) == before
+
+
 def test_probe_comment_threads_reply_key_date_and_context(srv, review_doc):
     path = review_doc
     srv.call("word_manage_comments", document=path, action="add", find_text="target", text="Please clarify")

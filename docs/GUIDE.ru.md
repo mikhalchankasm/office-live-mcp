@@ -16,6 +16,12 @@
 | `eval` | 1 | `office_run_python` — произвольный Python с живыми COM-объектами; выключен по умолчанию |
 | `history` | 3 | `office_journal` — журнал и лист «Лог»; `office_undo` — история и отмена. Включается автоматически с `excel_core` или `word_core`, отдельно не выбирается |
 
+`word_replace_text` принимает либо `find`/`replace`, либо `pairs` — от 1 до 200 объектов `{find, replace}`.
+Пары выполняются по порядку: `В2→В1`, затем `В3→В2` перенумеровывают вопросы при `whole_word=true`.
+Флаги `match_case`, `whole_word`, `wildcards`, `special_codes` и `scope` общие; все пары проверяются до первой правки.
+Ответ содержит общий `replacements` и `pairs: [{find, replace, count}]`; весь вызов — одна запись журнала и одна отмена `office_undo`.
+При одиночной замене поля ответа прежние.
+
 Каталог основных инструментов: [docs/TOOLS.md](TOOLS.md). Полный список доступен командой `python -m office_live tools --markdown`.
 
 ## Установка, подключения и обновление

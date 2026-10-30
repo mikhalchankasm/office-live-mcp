@@ -6,6 +6,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from office_live import undo_excel
 from office_live import config, undo, xl_common as xl
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, fake_office  # noqa: F401
@@ -220,12 +221,11 @@ def test_scenario_and_undo_preflight_refusals(o, monkeypatch, problem):
 
 def test_scenario_undo_rebuilds_long_union_addresses():
     # Review finding: Range() refuses addresses over 255 characters; a 32-cell union is rebuilt area by area.
-    from office_live import undo
 
     address = ",".join(f"$AAA${10000 + i}" for i in range(32))
     assert len(address) > 255
     calls = []
     ws = NS(Range=lambda a: (calls.append(a), NS(addr=a))[1])
     app = NS(Union=lambda x, y: NS(addr=x.addr + "," + y.addr))
-    assert undo._union_range(app, ws, address).addr == address and len(calls) == 32
-    assert undo._union_range(app, ws, "$A$1,$B$2") is not None and calls[-1] == "$A$1,$B$2"
+    assert undo_excel._union_range(app, ws, address).addr == address and len(calls) == 32
+    assert undo_excel._union_range(app, ws, "$A$1,$B$2") is not None and calls[-1] == "$A$1,$B$2"

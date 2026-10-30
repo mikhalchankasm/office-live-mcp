@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 import pywintypes
 
+from office_live import excel_charts
 from office_live import cli, config, excel_format, excel_pivot, registry
 from office_live.errors import ToolError
 
@@ -336,7 +337,7 @@ def test_real_chart_export_to_a_file_is_audited(monkeypatch, reregister, tmp_pat
     from office_live import excel_analysis
 
     log = tmp_path / "audit.jsonl"
-    monkeypatch.setattr(excel_analysis, "pick_workbook", lambda name: (_ for _ in ()).throw(ToolError("stop after the audit start")))
+    monkeypatch.setattr(excel_charts, "pick_workbook", lambda name: (_ for _ in ()).throw(ToolError("stop after the audit start")))
     tool = reregister(excel_analysis.excel_manage_charts, OFFICE_LIVE_AUDIT_LOG=str(log))
     with pytest.raises(ToolError):
         tool(workbook="B.xlsx", action="export_image", chart_name="C1")

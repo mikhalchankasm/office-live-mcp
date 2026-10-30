@@ -676,7 +676,7 @@ class Word:
 
 @pytest.fixture(name="office")
 def fake_office(monkeypatch, tmp_path):
-    from office_live import bridge, com, config, excel_analysis, excel_core, excel_format, excel_pivot, journal, navigation, registry, templates, undo, wd_common, window, word_core, word_tables, word_layout, word_edits
+    from office_live import bridge, com, config, excel_analysis, excel_cf, excel_charts, excel_core, excel_format, excel_pivot, excel_sheets, excel_workbooks, journal, navigation, registry, templates, undo, wd_common, window, word_core, word_format, word_tables, word_layout, word_edits
 
     excel, word = Excel(), Word()
     wb = excel.Workbooks.Add()
@@ -690,7 +690,7 @@ def fake_office(monkeypatch, tmp_path):
     saved_catalog = dict(registry.CATALOG)
     registered = {}
     monkeypatch.setattr(registry, "mcp", NS(add_tool=lambda fn, name, **kw: registered.__setitem__(name, fn)))
-    modules = (excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, window, word_core, word_tables, word_layout, word_edits)
+    modules = (excel_workbooks, excel_sheets, excel_charts, excel_cf, word_format, excel_core, excel_format, excel_analysis, excel_pivot, templates, bridge, journal, navigation, undo, window, word_core, word_tables, word_layout, word_edits)
 
     def call(tool_name, **kwargs):
         fn = next(getattr(m, tool_name) for m in modules if hasattr(m, tool_name))

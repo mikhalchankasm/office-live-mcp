@@ -4,7 +4,7 @@ from functools import wraps
 
 import pytest
 
-from office_live import excel_core, xl_common as xl
+from office_live import excel_sheets as excel_core, xl_common as xl
 from office_live.errors import PartialChangeError, ToolError
 from tests.history_fakes import Range, Sheet, fake_office  # noqa: F401
 from tests.test_undo import revert, stack

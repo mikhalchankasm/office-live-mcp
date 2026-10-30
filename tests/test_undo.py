@@ -5,6 +5,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from office_live import undo_excel
 from office_live import com, config, undo, xl_common as xl
 from office_live.errors import ToolError
 from tests.history_fakes import fake_office  # noqa: F401 — общая фикстура office
@@ -30,7 +31,7 @@ def test_range_snapshot_and_restore_repairs_only_formulas(office):
     result = write(o, [[1, 2, 3]])
     assert result["undo"] == "available"
     backup = o.excel.Workbooks(2)
-    assert backup.Windows(1).Visible is False and backup.Names(undo.MARKER).Visible is False and backup.Saved
+    assert backup.Windows(1).Visible is False and backup.Names(undo_excel.MARKER).Visible is False and backup.Saved
     assert backup.Sheets.Count == 2
     o.ws.formula_writes.clear()
     revert(o)
@@ -582,10 +583,10 @@ def test_dimensions_and_hidden_inverse(office):
     assert o.excel.Workbooks.Count == 1
     revert(o)
     assert o.ws.Columns(1).ColumnWidth == 8.43 and o.ws.Rows(3).RowHeight == 15
-    entry = undo.Entry("excel_hide_rows_columns", "Data!1:3", "workbook")
-    undo._hidden(o.excel, o.wb, entry, {"sheet": "Data", "axis": "rows", "lines": "1-3"})
+    entry = undo_excel.Entry("excel_hide_rows_columns", "Data!1:3", "workbook")
+    undo_excel._hidden(o.excel, o.wb, entry, {"sheet": "Data", "axis": "rows", "lines": "1-3"})
     o.ws.Rows(2).Hidden = True
-    com.run_com(lambda: undo.restore_excel(o.excel, o.wb, entry))
+    com.run_com(lambda: undo_excel.restore_excel(o.excel, o.wb, entry))
     assert o.ws.Rows(2).Hidden is False
 
 
@@ -603,17 +604,17 @@ def test_sheet_view_and_calculation_inverse(office):
 @pytest.mark.parametrize("tool,result_key,op", [("excel_create_chart", "chart", "shape"), ("excel_insert_image", "shape", "shape"), ("excel_manage_slicers", "cache", "slicer"), ("excel_manage_tables", "table", "table")])
 def test_created_object_inverse_and_table_format_snapshot(office, tool, result_key, op):
     o = office
-    entry = undo.Entry(tool, "Data!A1", "workbook")
+    entry = undo_excel.Entry(tool, "Data!A1", "workbook")
     args = {"sheet": "Data", "cells": "A1", "action": "create" if op == "table" else "add"}
     o.excel.EnableEvents = False
-    undo.RESOLVERS[tool](o.excel, o.wb, entry, args)
+    undo_excel.RESOLVERS[tool](o.excel, o.wb, entry, args)
     calls = []
     item = NS(Name="Created", Delete=lambda: calls.append("delete"), Unlist=lambda: calls.append("unlist"))
     coll = o.wb.SlicerCaches if op == "slicer" else o.ws.ListObjects if op == "table" else o.ws.Shapes
     coll.items.append(item)
     o.ws.Range("A1").Value = "table header"
-    undo._finish_excel(o.wb, entry, {result_key: item.Name})
-    com.run_com(lambda: undo.restore_excel(o.excel, o.wb, entry))
+    undo_excel._finish_excel(o.wb, entry, {result_key: item.Name})
+    com.run_com(lambda: undo_excel.restore_excel(o.excel, o.wb, entry))
     assert calls == ["unlist" if op == "table" else "delete"]
     if op == "table":
         assert o.ws.Range("A1").Value is None
@@ -643,12 +644,12 @@ def test_move_snapshots_both_source_and_destination(office):
 def test_autofill_bounding_box_and_replace_active_sheet_plan(office):
     o = office
     o.excel.EnableEvents = False
-    entry = undo.Entry("excel_autofill", "", "workbook")
-    undo._autofill(o.excel, o.wb, entry, {"sheet": "Data", "source": "B2:C3", "dest": "B2:C9"})
+    entry = undo_excel.Entry("excel_autofill", "", "workbook")
+    undo_excel._autofill(o.excel, o.wb, entry, {"sheet": "Data", "source": "B2:C3", "dest": "B2:C9"})
     assert entry.areas == [{"sheet": "Data", "address": "B2:C9"}]
     o.wb.Sheets.Add(None, o.ws)
-    entry = undo.Entry("excel_replace", "", "workbook")
-    undo._replace(o.excel, o.wb, entry, {"sheet": "", "cells": ""})
+    entry = undo_excel.Entry("excel_replace", "", "workbook")
+    undo_excel._replace(o.excel, o.wb, entry, {"sheet": "", "cells": ""})
     assert entry.areas == [{"sheet": o.wb.ActiveSheet.Name, "address": "A1"}]
 
 
@@ -768,8 +769,8 @@ def test_bridge_into_word_uses_native_record_and_no_excel_entry(office):
 def test_hidden_where_stores_all_data_rows_before_matching(office):
     o = office
     o.ws.Range("A3:A6").Value = (("Header",), ("yes",), ("no",), ("yes",))
-    entry = undo.Entry("excel_hide_rows_columns", "", "workbook")
-    undo._hidden(o.excel, o.wb, entry, {"sheet": "Data", "cells": "A3:A6", "where": {"column": "A", "value": "yes"}})
+    entry = undo_excel.Entry("excel_hide_rows_columns", "", "workbook")
+    undo_excel._hidden(o.excel, o.wb, entry, {"sheet": "Data", "cells": "A3:A6", "where": {"column": "A", "value": "yes"}})
     assert entry.ops[0]["values"] == [(3, False), (4, False), (5, False), (6, False)]
 
 
@@ -927,6 +928,7 @@ def test_clean_text_snapshot_failure_keeps_previous_undo_available(office, monke
         raise ValueError("snapshot interrupted")
 
     monkeypatch.setattr(undo, "_snapshots", fail)
+    monkeypatch.setattr(undo_excel, "_snapshots", fail)
     with pytest.raises(ToolError, match="could not prepare office_undo"):
         o.call("excel_clean_text", workbook=o.wb.Name, sheet="Data", cells="A1", operations=["trim"], preview=False)
     assert stack(o) == [previous] and previous.undoable and o.ws.Range("A1").Value == " x "

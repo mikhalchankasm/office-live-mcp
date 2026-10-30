@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from office_live import excel_analysis as analysis
+from office_live import excel_charts as analysis
 from office_live.errors import ToolError
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 600

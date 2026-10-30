@@ -19,8 +19,8 @@ import pywintypes
 from . import com
 from .errors import ToolError
 from .excel_analysis import _kind
-from .excel_core import excel_open_workbook
-from .excel_format import _remember_view, _restore_view, cf_rules_detail
+from .excel_workbooks import excel_open_workbook
+from .excel_cf import _remember_view, _restore_view, cf_rules_detail
 from .inspect_file import inspect_docx, inspect_xlsx
 from .registry import office_tool
 from .safety import EXCEL_EXTS, WORD_EXTS, check_path

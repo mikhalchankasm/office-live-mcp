@@ -226,7 +226,7 @@ def _result_links(recording, result):
                     for address in result.get("affected", []):
                         add(app, obj, sheet=result["sheet"], range=address)
                 elif tool in {"excel_insert_rows_columns", "excel_delete_rows_columns", "excel_group_rows_columns"}:
-                    from .excel_core import _line_spec
+                    from .excel_sheets import _line_spec
                     from .util import col_letter
 
                     spans = _line_spec(args["lines"], args["axis"]) if args.get("lines") else [(args["start"], args["start"] + args.get("count", 1) - 1)] if "start" in args else []

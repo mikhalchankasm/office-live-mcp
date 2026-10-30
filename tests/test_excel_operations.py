@@ -6,6 +6,7 @@ from types import SimpleNamespace as NS
 
 import pytest
 
+from office_live import excel_sheets, undo_excel
 from office_live import config, excel_analysis as analysis, excel_core as core, registry, excel_format as formatting, undo
 from office_live.errors import ToolError
 from tests.history_fakes import Collection, fake_office  # noqa: F401
@@ -81,6 +82,7 @@ def test_goal_nonconvergence_local_rollback_or_keep(o, keep, original):
 def test_goal_invalid_inputs_before_snapshot(o, monkeypatch, kw):
     goal_data(o)
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **k: pytest.fail("snapshot before preflight"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **k: pytest.fail("snapshot before preflight"))
     with pytest.raises(ToolError):
         goal(o, **kw)
     assert not o.ws.calls and not history(o)
@@ -177,7 +179,7 @@ def test_subtotals_full_rows_and_order_undo(o, sort):
     assert o.ws.Range("B3").NumberFormat == "0.00"
 
 
-@pytest.mark.parametrize("function,value", list(core.FUNCTIONS.items()))
+@pytest.mark.parametrize("function,value", list(excel_sheets.FUNCTIONS.items()))
 def test_subtotal_function_and_absolute_column_mapping(o, function, value):
     subtotal_data(o)
     subtotal(o, group_by="A", columns=["B"], function=function)
@@ -207,6 +209,7 @@ def test_subtotal_preflight_refusals(o, monkeypatch, problem):
         kw = {"column": {"columns": ["Unknown"]}, "group": {"group_by": "Unknown"}, "columns": {"columns": []}}[problem]
     before = copy.deepcopy(o.ws.data)
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **k: pytest.fail("snapshot before checks"))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **k: pytest.fail("snapshot before checks"))
     with pytest.raises(ToolError):
         subtotal(o, **kw)
     assert o.ws.data == before and not history(o)
@@ -239,6 +242,7 @@ def test_subtotals_barriers_for_existing_outline_and_remove(o):
 def test_subtotal_snapshot_failure_refuses_before_sort(o, monkeypatch):
     subtotal_data(o)
     monkeypatch.setattr(undo, "_snapshots", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("snapshot failed")))
+    monkeypatch.setattr(undo_excel, "_snapshots", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("snapshot failed")))
     with pytest.raises(ToolError, match="snapshot failed"):
         subtotal(o, sort_first=True)
     assert not o.ws.calls

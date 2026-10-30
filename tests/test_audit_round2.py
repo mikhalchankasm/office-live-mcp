@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import pytest
 import pywintypes
 
+from office_live import excel_sheets, excel_workbooks
 from office_live import bridge, cli, com, config, excel_core, excel_format, excel_pivot, inspect_file, registry, word_core, word_layout, xl_common
 from office_live.errors import ToolError
 
@@ -81,8 +82,8 @@ def test_list_workbooks_does_not_name_a_forbidden_active_workbook_or_sheet(monke
     secret, ok = book("Secret.xlsx", r"C:\Secret"), book("Ok.xlsx", r"D:\Docs")
     app = SimpleNamespace(ActiveWorkbook=secret, ActiveSheet=SimpleNamespace(Name="Hidden sheet"), Workbooks=Coll([secret, ok]))
     monkeypatch.setattr(com, "apps", lambda kind, launch=False: [app])
-    monkeypatch.setattr(excel_core, "_is_visible", lambda wb: True)
-    monkeypatch.setattr(excel_core, "_sheet_list", lambda wb: list(wb.sheets))
+    monkeypatch.setattr(excel_workbooks, "_is_visible", lambda wb: True)
+    monkeypatch.setattr(excel_workbooks, "_sheet_list", lambda wb: list(wb.sheets))
     with_settings(monkeypatch, OFFICE_LIVE_ALLOWED_DIRS=r"D:\Docs")
     out = excel_core.excel_list_workbooks()
     assert [b["name"] for b in out["workbooks"]] == ["Ok.xlsx"]
@@ -213,8 +214,8 @@ def test_filter_range_validates_every_condition_before_removing_the_old_filter(m
     ws = FakeSheetForFilter()
     rng = SimpleNamespace(Row=1, Column=1, Rows=SimpleNamespace(Count=5), Columns=SimpleNamespace(Count=2), applied=[])
     rng.AutoFilter = lambda *a: rng.applied.append(a)
-    monkeypatch.setattr(excel_core, "pick_workbook", lambda name: (SimpleNamespace(), SimpleNamespace(Name="B.xlsx")))
-    monkeypatch.setattr(excel_core, "get_range", lambda wb, sheet, cells, **kw: (ws, rng))
+    monkeypatch.setattr(excel_sheets, "pick_workbook", lambda name: (SimpleNamespace(), SimpleNamespace(Name="B.xlsx")))
+    monkeypatch.setattr(excel_sheets, "get_range", lambda wb, sheet, cells, **kw: (ws, rng))
     with_settings(monkeypatch)
     with pytest.raises(ToolError, match="Unknown operator"):
         excel_core.excel_filter_range("B.xlsx", "S", "A1:B5", filters=[{"column": "name", "criteria": "x"}, {"column": "qty", "operator": "typo", "criteria": "1"}])
@@ -228,8 +229,8 @@ def test_sort_range_validates_keys_before_clearing_old_sort_fields(monkeypatch):
     cleared = []
     ws = SimpleNamespace(Range=lambda addr: SimpleNamespace(Value=(("name", "qty"),)), Sort=SimpleNamespace(SortFields=SimpleNamespace(Clear=lambda: cleared.append(1))))
     rng = SimpleNamespace(Row=1, Column=1, Rows=SimpleNamespace(Count=4), Columns=SimpleNamespace(Count=2))
-    monkeypatch.setattr(excel_core, "pick_workbook", lambda name: (SimpleNamespace(), SimpleNamespace(Name="B.xlsx")))
-    monkeypatch.setattr(excel_core, "get_range", lambda wb, sheet, cells, **kw: (ws, rng))
+    monkeypatch.setattr(excel_sheets, "pick_workbook", lambda name: (SimpleNamespace(), SimpleNamespace(Name="B.xlsx")))
+    monkeypatch.setattr(excel_sheets, "get_range", lambda wb, sheet, cells, **kw: (ws, rng))
     with_settings(monkeypatch)
     with pytest.raises(ToolError, match="order must be"):
         excel_core.excel_sort_range("B.xlsx", "S", "A1:B4", keys=[{"column": "name"}, {"column": "qty", "order": "sideways"}])

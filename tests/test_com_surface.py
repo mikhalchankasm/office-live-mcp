@@ -140,6 +140,9 @@ WORD["Section"] += " Range PageSetup"
 WORD["_Document"] += " GoTo Repaginate ComputeStatistics"
 WORD["Range"] += " ParagraphFormat"
 WORD["_ParagraphFormat"] = "PageBreakBefore"
+WORD["_ParagraphFormat"] += " Shading Borders KeepTogether"
+WORD.update({"Shading": "Texture ForegroundPatternColor BackgroundPatternColor",
+             "Borders": "Item", "Border": "LineStyle LineWidth Color"})
 WORD["Range"] += " InsertBreak"
 WORD["HeaderFooter"] += " LinkToPrevious PageNumbers"
 WORD["Shapes"] += " Item"
@@ -210,6 +213,7 @@ CALLS = {
     "UndoRecord.StartCustomRecord": ("Name",),
 }
 CALLS.update({"Protection." + member: () for member in EXCEL["Protection"].split()})
+CALLS["Borders.Item"] = ("Index",)
 CALLS.update({"Range.HasArray": (), "Sheets.Item": ("Index",), "_Worksheet.Delete": ()})
 CALLS.update({"_Application.Ready": (), "_Application.Interactive": (), "Window.Hwnd": (), "_Document.ActiveWindow": (), "Windows.Item": ("Index",)})
 CALLS.update({
@@ -237,13 +241,14 @@ SETTERS = {
     "Tab": "Color ColorIndex",
 }
 WORD_SETTERS = {"_Application": "AutomationSecurity"}
+WORD_SETTERS.update({"Shading": "Texture BackgroundPatternColor", "Border": "LineStyle LineWidth Color"})
 WORD_SETTERS.update({"Shape": "Name Rotation RelativeHorizontalPosition RelativeVerticalPosition Left Top Width LockAspectRatio",
                      "FillFormat": "Transparency", "ColorFormat": "RGB", "LineFormat": "Visible", "WrapFormat": "Type"})
 CALLS.update({"Shapes.AddTextEffect": ("PresetTextEffect", "Text", "FontName", "FontSize", "FontBold", "FontItalic", "Left", "Top", "Anchor"),
               "Shapes.Item": ("Index",), "Shape.Delete": (), "FillFormat.Solid": (),
               "Sections.Item": ("Index",), "HeadersFooters.Item": ("Index",)})
 WORD_SETTERS.update({"PageSetup": "Orientation PageWidth PageHeight TopMargin BottomMargin LeftMargin RightMargin",
-                     "HeaderFooter": "LinkToPrevious", "PageNumbers": "RestartNumberingAtSection StartingNumber", "_ParagraphFormat": "PageBreakBefore"})
+                     "HeaderFooter": "LinkToPrevious", "PageNumbers": "RestartNumberingAtSection StartingNumber", "_ParagraphFormat": "PageBreakBefore KeepTogether"})
 SETTERS["_Application"] += " MaxIterations MaxChange"
 SETTERS.update({"SparklineGroup": "DateRange DisplayBlanksAs DisplayHidden LineWeight PlotBy", "SparkColor": "Visible",
                 "FormatColor": "Color ThemeColor TintAndShade", "SparkHorizontalAxis": "RightToLeftPlotOrder",

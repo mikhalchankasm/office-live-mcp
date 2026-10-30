@@ -112,6 +112,7 @@ WORD["Range"] += " Select Start End StoryType Sections"
 WORD["Paragraphs"] += " Item"
 WORD["Paragraph"] = "Range"
 WORD["Window"] = "Hwnd ScrollIntoView"
+WORD["Window"] += " WindowState Left Top Width Height Visible"
 WORD["Bookmarks"] = "Exists Item"
 WORD["Bookmark"] = "Range"
 WORD["_Document"] += " Protect Unprotect Styles"
@@ -242,6 +243,7 @@ SETTERS = {
 }
 WORD_SETTERS = {"_Application": "AutomationSecurity"}
 WORD_SETTERS.update({"Shading": "Texture BackgroundPatternColor", "Border": "LineStyle LineWidth Color"})
+WORD_SETTERS["Window"] = "WindowState Left Top Width Height Visible"
 WORD_SETTERS.update({"Shape": "Name Rotation RelativeHorizontalPosition RelativeVerticalPosition Left Top Width LockAspectRatio",
                      "FillFormat": "Transparency", "ColorFormat": "RGB", "LineFormat": "Visible", "WrapFormat": "Type"})
 CALLS.update({"Shapes.AddTextEffect": ("PresetTextEffect", "Text", "FontName", "FontSize", "FontBold", "FontItalic", "Left", "Top", "Anchor"),

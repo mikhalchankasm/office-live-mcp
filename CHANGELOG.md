@@ -6,6 +6,7 @@
   formatting outside the fragment and restoring the prior tracking setting even on failure.
 - `word_format_text` supports paragraph shading, borders and keep-together in every scope, with undo and reported border widths.
 - `word_replace_text` accepts up to 200 ordered find/replace pairs with per-pair counts, one journal entry and one undo.
+- `word_reload_document` re-reads external disk edits, preserves read-only mode and window placement, refuses unsaved changes unless explicitly discarded, and drops old undo history.
 
 ## 0.5.1 — 2026-10-26
 

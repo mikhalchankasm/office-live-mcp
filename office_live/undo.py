@@ -1281,7 +1281,7 @@ def restore_excel(app, wb, entry):
 
 
 EXCLUDED = {"office_journal", "office_undo", "excel_new_workbook", "word_new_document", "excel_create_from_template",
-            "excel_close_workbook", "word_close_document", "word_compare_documents"}
+            "excel_close_workbook", "word_close_document", "word_reload_document", "word_compare_documents"}
 
 DEFERRED = {"word_replace_text", "excel_what_if", "word_sections", "word_watermark", "excel_import_table", "excel_clean_text", "excel_split_column", "excel_protection", "word_sort_table", "excel_format_ranges",
             "excel_goal_seek", "excel_subtotals", "excel_sparklines", "word_insert_document", "word_table_text", "word_restrict_editing", "word_edit_apply", "word_manage_comments", "word_captions"}
@@ -1432,10 +1432,13 @@ class Recording:
 
     def finish(self, result, partial=False):
         self.end_records()
+        if self.tool == "word_reload_document":
+            if isinstance(result, dict) and partial:
+                result.setdefault("undo", "not available: reload closed the old instance and dropped its history")
+            return  # reload already dropped history; never inspect the closed COM instance
         if self.tool in {"excel_close_workbook", "word_close_document"}:
             for key, (app, _) in self.targets.items():
-                for entry in STACKS.pop(key, []):
-                    _drop(app, entry)
+                forget_closed_target(key, app)
                 if key[0] == "workbook":
                     try:
                         _close_orphan_backups(app)
@@ -1527,6 +1530,12 @@ class Recording:
                 _drop(app, entry)
         self.targets.clear()  # все COM-ссылки отпускаем до CoUninitialize
         self.pending.clear()
+
+
+def forget_closed_target(key, app):
+    """Drop stale history immediately after closing, including a reload whose reopen might fail."""
+    for entry in STACKS.pop(key, []):
+        _drop(app, entry)
 
 
 def selected(kind, app, obj):

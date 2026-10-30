@@ -278,6 +278,52 @@ def word_open_document(path: str, read_only: bool = False) -> dict:
     return {"ok": True, "already_open": False, "document": doc.Name, "path": doc.FullName, "read_only": bool(doc.ReadOnly), "paragraphs": para_count(doc)}
 
 
+@office_tool("word_core", "destructive", title="Reload document")
+def word_reload_document(document: str, discard_changes: bool = False) -> dict:
+    """Re-read an open document from disk after an external edit. Refuses unsaved changes unless discard_changes=true.
+
+    Closes without saving and reopens in the same Word instance, preserving read-only mode and window placement.
+    This is an undo barrier: history for the old document instance is dropped. Allowed folders and AutoSave guards apply.
+    """
+    if not document.strip():
+        raise ToolError("'document' is required for reloading.")
+    app, doc = wd.pick_document(document)
+    if not doc.Path:
+        raise ToolError(f"{doc.Name} has never been saved; use word_save_as first.")
+    full = check_path(doc.FullName, "read")
+    if not os.path.isfile(full):
+        raise ToolError(f"File not found: {full}")
+    if not doc.Saved and not discard_changes:
+        raise ToolError(f"{doc.Name} has unsaved changes. Pass discard_changes=true to drop them and reload from disk.")
+    read_only = bool(doc.ReadOnly)
+    window = doc.ActiveWindow
+    state = int(window.WindowState)
+    bounds = (window.Left, window.Top, window.Width, window.Height)
+    visible = bool(window.Visible)
+    key = undo.stack_key("document", app, doc)
+    doc.Close(0)  # wdDoNotSaveChanges
+    undo.forget_closed_target(key, app)
+    reason = "Reload closes the old document instance; its undo history has been dropped."
+    try:
+        with com.macros_disabled(app):
+            # Same positional Open contract as temporary comparison sources: no password/conversion dialogs.
+            reopened = app.Documents.Open(full, False, read_only, False, "__office_live_no_password__",
+                                          "__office_live_no_password__", False, "__office_live_no_password__",
+                                          "__office_live_no_password__", 0, None, True, False, None, True)
+        new_window = reopened.ActiveWindow
+        new_window.WindowState = 0  # wdWindowStateNormal
+        new_window.Left, new_window.Top, new_window.Width, new_window.Height = bounds
+        new_window.WindowState = state
+        new_window.Visible = visible
+        from .navigation import saved_as
+
+        return {"ok": True, "document": reopened.Name, "path": reopened.FullName, "read_only": bool(reopened.ReadOnly),
+                "undo": "not available: " + reason, **saved_as("word", reopened, (full,))}
+    except Exception as exc:  # noqa: BLE001 — the old instance is already closed
+        raise PartialChangeError(f"Reload of {full} interrupted after closing without saving. Open {full} manually if it is not open. "
+                                 f"{reason} {com.translate(exc)}") from None
+
+
 @office_tool("word_core", "write", title="New document")
 def word_new_document(text: str = "") -> dict:
     """Create a new blank document in Word (starts Word if needed). The document is unsaved until word_save_as.

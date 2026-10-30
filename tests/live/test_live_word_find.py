@@ -60,3 +60,20 @@ def test_probe_wildcard_counts_any_language(srv, find_doc):
     srv.call("word_replace_text", document=path, find="В([0-9]{1,2}).", replace="Q\\1.", wildcards=True)
     text = srv.call("word_read_document", document=path)["text"]
     assert "Q1. Вопрос" in text and "Q12. Вопрос" in text and "В123. Вопрос" in text
+
+
+def test_probe_replace_25_pairs_one_undo(srv, find_doc):
+    path = find_doc
+    original = "\n".join(f"В{i}. Вопрос" for i in range(2, 27))
+    srv.call("word_insert_text", document=path, text=original)
+    before = srv.call("word_read_document", document=path)["text"]
+    assert original in before
+    pairs = [{"find": f"В{i}", "replace": f"В{i-1}"} for i in range(2, 27)]
+    result = srv.call("word_replace_text", document=path, pairs=pairs, whole_word=True)
+    assert result["replacements"] == 25 and result["undo"] == "available"
+    assert result["pairs"] == [{**p, "count": 1} for p in pairs]
+    after = srv.call("word_read_document", document=path)["text"]
+    assert after == before.replace(original, "\n".join(f"В{i}. Вопрос" for i in range(1, 26)))
+    undone = srv.call("office_undo", file=path)
+    assert len(undone["undone"]) == 1
+    assert srv.call("word_read_document", document=path)["text"] == before

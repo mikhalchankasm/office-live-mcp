@@ -596,14 +596,15 @@ def word_fill_placeholders(document: str, values: dict, left_delimiter: str = "{
 
 @office_tool("word_core", "write", title="Find and replace")
 def word_replace_text(
-    find: str,
-    replace: str,
-    document: str,
+    find: str | None = None,
+    replace: str | None = None,
+    document: str | None = None,
     match_case: bool = False,
     whole_word: bool = False,
     wildcards: bool = False,
     special_codes: bool = False,
     scope: str = "main",
+    pairs: list[dict[str, str]] | None = None,
 ) -> dict:
     """Replace every occurrence of a text (formatting of the replaced text is kept). Literal by default: the characters '^' and '\\' are NOT special. Returns the exact number of replacements. With 'Track changes' on, replacements are recorded as revisions.
 
@@ -615,13 +616,67 @@ def word_replace_text(
         wildcards: Word wildcard syntax in `find` (counts like {1,2} work in any Word language); the replacement may then use \\1 \\2 for groups.
         special_codes: let '^p' (paragraph), '^t' (tab), '^l' (line break) etc. work in find/replace.
         scope: 'main' (body, default), 'all' (also headers, footers, footnotes, text boxes) or 'selection'.
+        pairs: 1–200 {find, replace} objects instead of find/replace. Applied in order
+            (later pairs see earlier replacements), with shared flags and one undo.
     """
+    if document is None:
+        raise ToolError("'document' is required.")
+    batch = pairs is not None
+    if batch:
+        if find is not None or replace is not None:
+            raise ToolError("'pairs' is mutually exclusive with 'find'/'replace'.")
+        if not isinstance(pairs, list) or not 1 <= len(pairs) <= 200:
+            raise ToolError("'pairs' must contain 1–200 find/replace objects.")
+    else:
+        pairs = [{"find": find, "replace": replace}]
+    for pair in pairs:
+        if not isinstance(pair, dict) or set(pair) != {"find", "replace"}:
+            raise ToolError("Each pair must contain exactly 'find' and 'replace'.")
+        if not isinstance(pair["find"], str) or not pair["find"]:
+            raise ToolError("'find' must be a non-empty string.")
+        if len(pair["find"]) > 255:
+            raise ToolError("Word cannot search for text longer than 255 characters.")
+        if not isinstance(pair["replace"], str):
+            raise ToolError("'replace' must be a string ('' deletes the text).")
+        if (wildcards or special_codes) and len(to_word_text(pair["replace"])) > 255:
+            raise ToolError("A replacement longer than 255 characters cannot be combined with wildcards/special codes.")
+        if wildcards:
+            # Count unescaped groups outside character sets; Word checks the pattern syntax below.
+            groups, in_set = 0, False
+            for token in re.findall(r"\\.|.", pair["find"]):
+                if token == "[":
+                    in_set = True
+                elif token == "]":
+                    in_set = False
+                elif token == "(" and not in_set:
+                    groups += 1
+            for token in re.findall(r"\\.|.", pair["replace"]):
+                if len(token) == 2 and token[0] == "\\" and token[1] in "123456789" and int(token[1]) > groups:
+                    raise ToolError(f"Replacement refers to missing wildcard group {token}.")
     app, doc = pick_document(document)
-    total = replace_in_doc(doc, find, replace, match_case, whole_word, wildcards, special_codes, scope)
-    return {
-        "ok": True, "document": doc.Name, "replacements": total, "scope": scope,
-        "track_changes_on": bool(doc.TrackRevisions),
+    stories = story_ranges(doc, scope)  # validate scope before preparing undo or changing text
+    if wildcards or special_codes:
+        for pair in pairs:
+            text = wd.localize_wildcards(pair["find"], wd.list_separator(app)) if wildcards else pair["find"]
+            # Let Word validate every pattern, including pairs which currently have no hits.
+            for story in stories or [doc.Content]:
+                list(find_all(story, text, match_case, whole_word, wildcards, limit=1))
+    name, tracking = doc.Name, bool(doc.TrackRevisions)
+    undo.require_undo("document", app, doc)
+    counts = []
+    try:
+        for pair in pairs:
+            count = replace_in_doc(doc, pair["find"], pair["replace"], match_case, whole_word, wildcards, special_codes, scope)
+            counts.append({**pair, "count": count})
+    except Exception as exc:
+        raise PartialChangeError(f"Replacement interrupted after {len(counts)} completed pairs; text may have changed. {exc}") from None
+    result = {
+        "ok": True, "document": name, "replacements": sum(p["count"] for p in counts), "scope": scope,
+        "track_changes_on": tracking,
     }
+    if batch:
+        result["pairs"] = counts
+    return result
 
 
 def _ensure_empty_last_paragraph(doc):

@@ -4,6 +4,7 @@
 
 - `word_edit_preview` and `word_edit_apply` accept `track=false` for fragment edits without revisions, preserving
   formatting outside the fragment and restoring the prior tracking setting even on failure.
+- `word_format_text` supports paragraph shading, borders and keep-together in every scope, with undo and reported border widths.
 
 ## 0.5.1 — 2026-10-26
 

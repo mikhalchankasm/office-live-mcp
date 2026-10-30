@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-10-31
+
+Word batch replace, paragraph shading and borders, untracked fragment edits, revert to the saved file.
 
 - `word_edit_preview` and `word_edit_apply` accept `track=false` for fragment edits without revisions, preserving
   formatting outside the fragment and restoring the prior tracking setting even on failure.

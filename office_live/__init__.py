@@ -1,6 +1,6 @@
 """Office Live MCP — управление ОТКРЫТЫМИ документами Excel и Word через COM."""
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 
 class ConfigError(ValueError):
